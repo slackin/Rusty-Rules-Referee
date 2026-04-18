@@ -18,6 +18,15 @@ rcon_password = "your_rcon_password_here"
 game_log = "/path/to/server/games.log"
 delay = 0.33                # Seconds between log reads
 
+# ---- Web Admin UI ----
+[web]
+enabled = true              # Set to true to enable the web admin dashboard
+bind_address = "0.0.0.0"   # Listen address (use 127.0.0.1 to restrict to localhost)
+port = 8080                 # Web UI port
+# jwt_secret = "your-secret" # Optional: auto-generated if not set
+
+# Default login: admin / changeme (change after first login!)
+
 # Plugins to load (order matters for dependencies)
 
 # ---- Core admin plugin (must be first) ----

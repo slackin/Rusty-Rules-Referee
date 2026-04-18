@@ -1,6 +1,6 @@
 # Rusty Rules Referee
 
-A high-performance game server administration bot written in Rust, inspired by [Big Brother Bot (B3)](https://github.com/BigBrotherBot/big-brother-bot).
+A high-performance game server administration bot written in Rust, inspired by [Big Brother Bot](https://github.com/BigBrotherBot/big-brother-bot).
 
 Rusty Rules Referee monitors your **Urban Terror 4.3** server in real-time — enforcing rules automatically (offensive language, team killing, spam) and providing admin commands (`!kick`, `!ban`, `!warn`, and more).
 
@@ -188,7 +188,7 @@ Rusty Rules Referee supports **SQLite** and **MySQL** backends. Database migrati
 
 ## Credits
 
-Rusty Rules Referee is inspired by [Big Brother Bot (B3)](https://github.com/BigBrotherBot/big-brother-bot) originally created by Michael "ThorN" Thornton.
+Rusty Rules Referee is inspired by [Big Brother Bot](https://github.com/BigBrotherBot/big-brother-bot) originally created by Michael "ThorN" Thornton.
 
 ## License
 

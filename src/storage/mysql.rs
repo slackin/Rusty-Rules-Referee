@@ -4,7 +4,7 @@ use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, Client, Group, Penalty, PenaltyType};
+use crate::core::{Alias, AdminUser, AuditEntry, Client, Group, Penalty, PenaltyType};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct MysqlStorage {
@@ -202,6 +202,28 @@ fn row_to_alias(row: &MySqlRow) -> Alias {
         num_used: row.get::<i32, _>("num_used") as u32,
         time_add: parse_dt(row.get("time_add")),
         time_edit: parse_dt(row.get("time_edit")),
+    }
+}
+
+fn row_to_admin_user(row: &MySqlRow) -> AdminUser {
+    AdminUser {
+        id: row.get("id"),
+        username: row.get("username"),
+        password_hash: row.get("password_hash"),
+        role: row.get("role"),
+        created_at: parse_dt(row.get("created_at")),
+        updated_at: parse_dt(row.get("updated_at")),
+    }
+}
+
+fn row_to_audit_entry(row: &MySqlRow) -> AuditEntry {
+    AuditEntry {
+        id: row.get("id"),
+        admin_user_id: row.get("admin_user_id"),
+        action: row.get("action"),
+        detail: row.get("detail"),
+        ip_address: row.get("ip_address"),
+        created_at: parse_dt(row.get("created_at")),
     }
 }
 
@@ -523,5 +545,179 @@ impl Storage for MysqlStorage {
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(row.get::<i64, _>("cnt") as u64)
+    }
+
+    // ---- Admin user operations ----
+
+    async fn get_admin_user(&self, username: &str) -> Result<AdminUser, StorageError> {
+        sqlx::query("SELECT * FROM admin_users WHERE username = ?")
+            .bind(username)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?
+            .map(|row| row_to_admin_user(&row))
+            .ok_or(StorageError::NotFound)
+    }
+
+    async fn get_admin_user_by_id(&self, id: i64) -> Result<AdminUser, StorageError> {
+        sqlx::query("SELECT * FROM admin_users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?
+            .map(|row| row_to_admin_user(&row))
+            .ok_or(StorageError::NotFound)
+    }
+
+    async fn get_admin_users(&self) -> Result<Vec<AdminUser>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM admin_users ORDER BY id ASC")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_admin_user).collect())
+    }
+
+    async fn save_admin_user(&self, user: &AdminUser) -> Result<i64, StorageError> {
+        if user.id > 0 {
+            sqlx::query(
+                "UPDATE admin_users SET username = ?, password_hash = ?, role = ? WHERE id = ?"
+            )
+            .bind(&user.username)
+            .bind(&user.password_hash)
+            .bind(&user.role)
+            .bind(user.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(user.id)
+        } else {
+            let result = sqlx::query(
+                "INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)"
+            )
+            .bind(&user.username)
+            .bind(&user.password_hash)
+            .bind(&user.role)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(result.last_insert_id() as i64)
+        }
+    }
+
+    async fn delete_admin_user(&self, id: i64) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM admin_users WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn save_audit_entry(&self, entry: &AuditEntry) -> Result<i64, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO audit_log (admin_user_id, action, detail, ip_address) VALUES (?, ?, ?, ?)"
+        )
+        .bind(entry.admin_user_id)
+        .bind(&entry.action)
+        .bind(&entry.detail)
+        .bind(&entry.ip_address)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_id() as i64)
+    }
+
+    async fn get_audit_log(&self, limit: u32, offset: u32) -> Result<Vec<AuditEntry>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        )
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_audit_entry).collect())
+    }
+
+    async fn get_xlr_leaderboard(&self, limit: u32, offset: u32) -> Result<Vec<serde_json::Value>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT s.*, c.name, c.guid FROM xlr_playerstats s \
+             INNER JOIN clients c ON s.client_id = c.id \
+             WHERE s.kills >= 10 \
+             ORDER BY s.skill DESC LIMIT ? OFFSET ?"
+        )
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        Ok(rows.iter().map(|row| {
+            serde_json::json!({
+                "client_id": row.get::<i64, _>("client_id"),
+                "name": row.get::<String, _>("name"),
+                "kills": row.get::<i64, _>("kills"),
+                "deaths": row.get::<i64, _>("deaths"),
+                "ratio": row.get::<f64, _>("ratio"),
+                "skill": row.get::<f64, _>("skill"),
+                "rounds": row.get::<i64, _>("rounds"),
+            })
+        }).collect())
+    }
+
+    async fn get_xlr_player_stats(&self, client_id: i64) -> Result<Option<serde_json::Value>, StorageError> {
+        let row = sqlx::query(
+            "SELECT s.*, c.name FROM xlr_playerstats s \
+             INNER JOIN clients c ON s.client_id = c.id WHERE s.client_id = ?"
+        )
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.map(|row| {
+            serde_json::json!({
+                "client_id": row.get::<i64, _>("client_id"),
+                "name": row.get::<String, _>("name"),
+                "kills": row.get::<i64, _>("kills"),
+                "deaths": row.get::<i64, _>("deaths"),
+                "ratio": row.get::<f64, _>("ratio"),
+                "skill": row.get::<f64, _>("skill"),
+            })
+        }))
+    }
+
+    async fn get_xlr_weapon_stats(&self, client_id: Option<i64>) -> Result<Vec<serde_json::Value>, StorageError> {
+        let rows = if let Some(cid) = client_id {
+            sqlx::query("SELECT * FROM xlr_weaponstats WHERE client_id = ? ORDER BY kills DESC")
+                .bind(cid)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default()
+        } else {
+            sqlx::query("SELECT * FROM xlr_weaponusage ORDER BY kills DESC LIMIT 50")
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default()
+        };
+        Ok(rows.iter().map(|row| {
+            serde_json::json!({
+                "name": row.get::<String, _>("name"),
+                "kills": row.get::<i64, _>("kills"),
+                "deaths": row.get::<i64, _>("deaths"),
+            })
+        }).collect())
+    }
+
+    async fn get_xlr_map_stats(&self) -> Result<Vec<serde_json::Value>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM xlr_mapstats ORDER BY rounds DESC LIMIT 50")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        Ok(rows.iter().map(|row| {
+            serde_json::json!({
+                "name": row.get::<String, _>("name"),
+                "kills": row.get::<i64, _>("kills"),
+                "rounds": row.get::<i64, _>("rounds"),
+            })
+        }).collect())
     }
 }

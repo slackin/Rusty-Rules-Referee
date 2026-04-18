@@ -8,4 +8,4 @@ mod types;
 pub use client::{Client, ClientVar, Team};
 pub use clients::Clients;
 pub use game::Game;
-pub use types::{Alias, Group, Penalty, PenaltyType};
+pub use types::{Alias, AdminUser, AuditEntry, Group, Penalty, PenaltyType};

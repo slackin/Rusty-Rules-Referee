@@ -4,7 +4,7 @@ pub mod sqlite;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::core::{Alias, Client, Group, Penalty, PenaltyType};
+use crate::core::{Alias, AdminUser, AuditEntry, Client, Group, Penalty, PenaltyType};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -79,6 +79,23 @@ pub trait Storage: Send + Sync {
 
     // ---- Schema / migration ----
     async fn get_tables(&self) -> Result<Vec<String>, StorageError>;
+
+    // ---- Admin user operations (web UI) ----
+    async fn get_admin_user(&self, username: &str) -> Result<AdminUser, StorageError>;
+    async fn get_admin_user_by_id(&self, id: i64) -> Result<AdminUser, StorageError>;
+    async fn get_admin_users(&self) -> Result<Vec<AdminUser>, StorageError>;
+    async fn save_admin_user(&self, user: &AdminUser) -> Result<i64, StorageError>;
+    async fn delete_admin_user(&self, id: i64) -> Result<(), StorageError>;
+
+    // ---- Audit log operations ----
+    async fn save_audit_entry(&self, entry: &AuditEntry) -> Result<i64, StorageError>;
+    async fn get_audit_log(&self, limit: u32, offset: u32) -> Result<Vec<AuditEntry>, StorageError>;
+
+    // ---- XLR stats queries ----
+    async fn get_xlr_leaderboard(&self, limit: u32, offset: u32) -> Result<Vec<serde_json::Value>, StorageError>;
+    async fn get_xlr_player_stats(&self, client_id: i64) -> Result<Option<serde_json::Value>, StorageError>;
+    async fn get_xlr_weapon_stats(&self, client_id: Option<i64>) -> Result<Vec<serde_json::Value>, StorageError>;
+    async fn get_xlr_map_stats(&self) -> Result<Vec<serde_json::Value>, StorageError>;
 }
 
 /// Parse a DSN string like "mysql://user:pass@host:port/db" into components.
@@ -179,19 +196,19 @@ mod tests {
 
     #[test]
     fn test_parse_dsn_mysql() {
-        let dsn = parse_dsn("mysql://b3user:b3pass@localhost:3306/b3db").unwrap();
+        let dsn = parse_dsn("mysql://r3user:r3pass@localhost:3306/r3db").unwrap();
         assert_eq!(dsn.protocol, StorageProtocol::Mysql);
         assert_eq!(dsn.host, "localhost");
         assert_eq!(dsn.port, Some(3306));
-        assert_eq!(dsn.user.as_deref(), Some("b3user"));
-        assert_eq!(dsn.password.as_deref(), Some("b3pass"));
-        assert_eq!(dsn.database, "b3db");
+        assert_eq!(dsn.user.as_deref(), Some("r3user"));
+        assert_eq!(dsn.password.as_deref(), Some("r3pass"));
+        assert_eq!(dsn.database, "r3db");
     }
 
     #[test]
     fn test_parse_dsn_sqlite() {
-        let dsn = parse_dsn("sqlite:///path/to/b3.db").unwrap();
+        let dsn = parse_dsn("sqlite:///path/to/r3.db").unwrap();
         assert_eq!(dsn.protocol, StorageProtocol::Sqlite);
-        assert_eq!(dsn.database, "/path/to/b3.db");
+        assert_eq!(dsn.database, "/path/to/r3.db");
     }
 }

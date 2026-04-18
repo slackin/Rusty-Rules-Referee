@@ -5,7 +5,7 @@ use super::Plugin;
 use crate::core::context::BotContext;
 
 /// Manages all loaded plugins and their lifecycle.
-/// Equivalent to the plugin management in Python B3's `Parser` class.
+/// Equivalent to the plugin management in the original Python bot's `Parser` class.
 pub struct PluginRegistry {
     plugins: Vec<Box<dyn Plugin>>,
     name_index: HashMap<String, usize>,

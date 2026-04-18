@@ -36,5 +36,18 @@ anyhow = "1"
 # Async trait support
 async-trait = "0.1"
 
+# Web server / Admin UI
+axum = { version = "0.7", features = ["ws"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "fs"] }
+rust-embed = { version = "8", features = ["compression"] }
+mime_guess = "2"
+
+# Authentication
+jsonwebtoken = "9"
+bcrypt = "0.16"
+uuid = { version = "1", features = ["v4"] }
+
 [dev-dependencies]
 tokio-test = "0.4"

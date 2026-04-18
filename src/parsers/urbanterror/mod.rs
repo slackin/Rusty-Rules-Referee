@@ -93,7 +93,7 @@ pub struct StatusPlayer {
 
 /// Urban Terror 4.3 parser.
 ///
-/// Parses UrT 4.3 game server log lines into B3 events and sends
+/// Parses UrT 4.3 game server log lines into R3 events and sends
 /// RCON commands using the Quake 3 UDP protocol.
 pub struct UrbanTerrorParser {
     pub commands: GameCommands,

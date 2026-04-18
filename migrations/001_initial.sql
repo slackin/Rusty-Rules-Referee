@@ -1,4 +1,4 @@
--- B3 initial schema
+-- R3 initial schema
 
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS penalties (
 CREATE INDEX IF NOT EXISTS idx_penalties_client ON penalties(client_id);
 CREATE INDEX IF NOT EXISTS idx_penalties_type ON penalties(type);
 
--- Default groups matching B3's standard permission levels
+-- Default groups matching R3's standard permission levels
 INSERT OR IGNORE INTO groups (id, name, keyword, level) VALUES (0,  'Guest',      'guest',     0);
 INSERT OR IGNORE INTO groups (id, name, keyword, level) VALUES (1,  'User',       'user',      1);
 INSERT OR IGNORE INTO groups (id, name, keyword, level) VALUES (2,  'Regular',    'reg',       2);

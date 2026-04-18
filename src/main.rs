@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info};
 
 use rusty_rules_referee::config::RefereeConfig;
@@ -117,6 +117,29 @@ async fn main() -> anyhow::Result<()> {
     plugins.startup_all().await?;
     info!("All plugins started");
 
+    // Broadcast channel for WebSocket event streaming
+    let (ws_event_tx, _ws_event_rx) = broadcast::channel::<Event>(256);
+
+    // Start the web admin server if enabled
+    if config.web.enabled {
+        let web_ctx = ctx.clone();
+        let web_config = config.clone();
+        let web_config_path = config_path.clone();
+        let web_storage = db.clone();
+        let web_event_tx = ws_event_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = rusty_rules_referee::web::start_server(
+                web_ctx,
+                web_config,
+                web_config_path,
+                web_storage,
+                web_event_tx,
+            ).await {
+                error!(error = %e, "Web admin server failed");
+            }
+        });
+    }
+
     // Event queue (channel between log reader and event handler)
     let (event_tx, mut event_rx) = mpsc::channel::<Event>(1024);
 
@@ -128,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
     let handler_clients = clients.clone();
     let handler_storage = db.clone();
     let _handler_event_tx = event_tx.clone();
+    let handler_ws_tx = ws_event_tx.clone();
     let handler_task = tokio::spawn(async move {
         info!("Event handler started");
         while let Some(event) = event_rx.recv().await {
@@ -204,6 +228,9 @@ async fn main() -> anyhow::Result<()> {
 
             // Dispatch event to plugins
             handler_plugins.dispatch(&event, &handler_ctx).await;
+
+            // Forward event to WebSocket clients
+            let _ = handler_ws_tx.send(event);
         }
         info!("Event handler stopped");
     });

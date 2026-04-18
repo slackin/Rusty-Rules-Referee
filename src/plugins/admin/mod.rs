@@ -8,7 +8,7 @@ use crate::core::{Client, Penalty, PenaltyType};
 use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
 
-// ---- Permission levels (mirrors Python B3 group levels) ----
+// ---- Permission levels (mirrors R3 group levels) ----
 const LEVEL_GUEST: u32 = 0;
 const LEVEL_USER: u32 = 1;
 const LEVEL_REGULAR: u32 = 2;
@@ -81,7 +81,7 @@ impl AdminPlugin {
     /// Get the required permission level for a command.
     fn required_level(command: &str) -> u32 {
         match command {
-            "help" | "leveltest" | "time" | "register" | "regme" | "b3" => LEVEL_GUEST,
+            "help" | "leveltest" | "time" | "register" | "regme" | "r3" => LEVEL_GUEST,
             "regulars" | "rules" => LEVEL_USER,
             "status" | "lookup" | "list" | "admins" => LEVEL_MOD,
             "warn" | "kick" | "find" | "seen" | "aliases" | "poke" => LEVEL_MOD,
@@ -314,8 +314,8 @@ impl AdminPlugin {
                 mode.respond(ctx, &issuer_cid_str, &cmds.join(" ")).await?;
             }
 
-            "b3" => {
-                mode.respond(ctx, &issuer_cid_str, "^2Big Brother Bot ^7(B3) v2.0.0 — Rust Edition").await?;
+            "r3" => {
+                mode.respond(ctx, &issuer_cid_str, "^2Rusty Rules Referee ^7(R3) v2.0.0 — Rust Edition").await?;
             }
 
             "time" => {
@@ -1260,13 +1260,13 @@ impl AdminPlugin {
             // ---- Bot management ----
 
             "die" => {
-                ctx.say("^1B3 is shutting down...").await?;
+                ctx.say("^1R3 is shutting down...").await?;
                 info!("!die command issued — shutting down");
                 std::process::exit(0);
             }
 
             "restart" => {
-                ctx.say("^2B3 is restarting...").await?;
+                ctx.say("^2R3 is restarting...").await?;
                 info!("!restart command issued");
                 // In Rust, we signal the main loop to restart
                 // For now, just exit (systemd/supervisor will restart)
@@ -1319,7 +1319,7 @@ impl AdminPlugin {
                     "tempban", "ban", "permban", "banall", "unban", "lastbans", "baninfo",
                     "putgroup", "ungroup", "makereg", "unreg", "mask", "unmask", "iamgod",
                     "say", "scream", "spam", "spams", "maps", "nextmap", "maprotate", "map",
-                    "die", "restart", "reconfig", "pause", "rebuild", "runas", "b3",
+                    "die", "restart", "reconfig", "pause", "rebuild", "runas", "r3",
                 ];
                 if let Some(suggestion) = find_closest(&command, &known) {
                     ctx.message(&issuer_cid_str, &format!("^7Unknown command '{}'. Did you mean ^3!{}^7?", command, suggestion)).await?;

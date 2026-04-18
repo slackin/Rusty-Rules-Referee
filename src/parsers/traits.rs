@@ -17,7 +17,7 @@ pub struct LogLine {
 /// Data extracted from parsing a single log line.
 #[derive(Debug, Clone)]
 pub enum ParsedAction {
-    /// The line produced a B3 event.
+    /// The line produced an R3 event.
     Event(Event),
     /// The line was recognized but produced no event (e.g., server info).
     NoOp,
@@ -66,7 +66,7 @@ impl GameCommands {
 /// The GameParser trait — the game engine parser interface.
 ///
 /// A parser is responsible for:
-///   1. Parsing game log lines into B3 events
+///   1. Parsing game log lines into R3 events
 ///   2. Formatting RCON commands for the game engine
 ///   3. Querying game server state (players, map, etc.)
 #[async_trait]
@@ -77,7 +77,7 @@ pub trait GameParser: Send + Sync {
     /// The RCON command templates for this game.
     fn commands(&self) -> &GameCommands;
 
-    /// Parse a single log line into a B3 action.
+    /// Parse a single log line into an R3 action.
     fn parse_line(&self, line: &LogLine) -> ParsedAction;
 
     /// Get the current map name from the server.

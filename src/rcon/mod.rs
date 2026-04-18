@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
 /// RCON client for Quake 3 engine based games (UDP protocol).
-/// Equivalent to Python B3's `b3.parsers.q3a.rcon.Rcon`.
+/// Equivalent to the original Python bot's `parsers.q3a.rcon.Rcon`.
 ///
 /// Protocol: send `\xFF\xFF\xFF\xFFrcon "password" command\n`
 ///           recv `\xFF\xFF\xFF\xFFprint\n<response>`

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 /// Represents the current game state on the server.
-/// Equivalent to Python B3's `Game` class.
+/// Equivalent to the original Python bot's `Game` class.
 #[derive(Debug, Clone)]
 pub struct Game {
     pub game_name: String,

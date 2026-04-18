@@ -1,0 +1,57 @@
+# Rusty Rules Referee (R3)
+# Urban Terror 4.3 server administration bot
+# Production configuration for 10.10.0.2
+
+[referee]
+bot_name = "R3"
+bot_prefix = "^2R3:^3"
+database = "sqlite://r3.db"
+logfile = "r3.log"
+log_level = "info"
+
+[server]
+public_ip = "10.10.0.2"
+port = 25000
+rcon_password = "rustybot"
+game_log = "/home/rusty/.q3a/q3ut4/games.log"
+delay = 0.33
+
+# Plugins to load (order matters for dependencies)
+
+# ---- Core admin plugin (must be first) ----
+[[plugins]]
+name = "admin"
+enabled = true
+[plugins.settings]
+warn_reason = "^7behave yourself"
+max_warnings = 3
+
+# ---- Welcome messages ----
+[[plugins]]
+name = "welcome"
+enabled = true
+
+# ---- Chat flood protection ----
+[[plugins]]
+name = "spamcontrol"
+enabled = true
+
+# ---- Team kill monitoring ----
+[[plugins]]
+name = "tk"
+enabled = true
+
+# ---- Player statistics ----
+[[plugins]]
+name = "stats"
+enabled = true
+
+# ---- Extended statistics ----
+[[plugins]]
+name = "xlrstats"
+enabled = true
+
+# ---- Ping monitoring ----
+[[plugins]]
+name = "pingwatch"
+enabled = true

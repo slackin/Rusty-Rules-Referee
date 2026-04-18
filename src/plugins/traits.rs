@@ -3,7 +3,7 @@ use crate::core::context::BotContext;
 use crate::events::Event;
 
 /// Static metadata about a plugin.
-/// Equivalent to Python B3's `PluginData` / class-level attributes.
+/// Equivalent to the original Python bot's `PluginData` / class-level attributes.
 #[derive(Debug, Clone)]
 pub struct PluginInfo {
     /// The plugin's unique name (used as a key).
@@ -22,8 +22,8 @@ pub struct PluginInfo {
     pub load_after: &'static [&'static str],
 }
 
-/// The Plugin trait — every B3 plugin must implement this.
-/// Equivalent to Python B3's `Plugin` base class.
+/// The Plugin trait — every R3 plugin must implement this.
+/// Equivalent to the original Python bot's `Plugin` base class.
 ///
 /// Lifecycle:
 ///   1. `info()` — return static metadata

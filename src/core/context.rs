@@ -11,7 +11,7 @@ use crate::storage::Storage;
 /// Shared context passed to plugins, giving them access to the bot's
 /// core services: RCON, storage, game state, parser, and event registry.
 ///
-/// This is the Rust equivalent of Python B3's `self.console` reference
+/// This is the Rust equivalent of the original Python bot's `self.console` reference
 /// that plugins use to interact with the game server and database.
 pub struct BotContext {
     pub rcon: Arc<RconClient>,

@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+	* {
+		@apply border-surface-800;
+	}
+	body {
+		@apply bg-surface-950 text-surface-100;
+	}
+}
+
+@layer components {
+	.btn {
+		@apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-150
+			focus:outline-none focus:ring-2 focus:ring-accent/50 focus:ring-offset-2 focus:ring-offset-surface-950
+			disabled:opacity-50 disabled:cursor-not-allowed;
+	}
+	.btn-primary {
+		@apply btn bg-accent hover:bg-accent-600 text-white shadow-lg shadow-accent/20;
+	}
+	.btn-secondary {
+		@apply btn bg-surface-800 hover:bg-surface-700 text-surface-200 border border-surface-700;
+	}
+	.btn-danger {
+		@apply btn bg-red-600 hover:bg-red-700 text-white;
+	}
+	.btn-ghost {
+		@apply btn hover:bg-surface-800 text-surface-400 hover:text-surface-200;
+	}
+	.btn-sm {
+		@apply px-3 py-1.5 text-xs;
+	}
+	.card {
+		@apply rounded-xl border border-surface-800 bg-surface-900/50 backdrop-blur-sm;
+	}
+	.input {
+		@apply w-full rounded-lg border border-surface-700 bg-surface-800/50 px-3 py-2 text-sm text-surface-100
+			placeholder:text-surface-500
+			focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent
+			transition-colors duration-150;
+	}
+	.badge {
+		@apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+	}
+	.badge-green {
+		@apply badge bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20;
+	}
+	.badge-red {
+		@apply badge bg-red-500/10 text-red-400 ring-1 ring-red-500/20;
+	}
+	.badge-yellow {
+		@apply badge bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20;
+	}
+	.badge-blue {
+		@apply badge bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/20;
+	}
+	.badge-gray {
+		@apply badge bg-surface-500/10 text-surface-400 ring-1 ring-surface-500/20;
+	}
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	@apply bg-surface-700 rounded-full;
+}
+::-webkit-scrollbar-thumb:hover {
+	@apply bg-surface-600;
+}

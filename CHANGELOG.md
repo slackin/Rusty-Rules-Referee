@@ -6,7 +6,7 @@ All notable changes to Rusty Rules Referee will be documented in this file.
 
 ### Added
 
-- Complete rewrite in Rust (from the original Python Big Brother Bot)
+- Complete rewrite in Rust (from the original Python bot)
 - Async runtime powered by tokio
 - Urban Terror 4.3 log parser with 18 regex patterns and 40+ weapon mappings
 - 22 plugins: admin, poweradminurt, censor, censorurt, spamcontrol, tk, welcome, chatlogger, stats, xlrstats, pingwatch, countryfilter, vpncheck, afk, spree, spawnkill, firstkill, flagannounce, adv, scheduler, mapconfig, makeroom, nickreg, callvote, customcommands, login, follow

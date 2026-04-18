@@ -1,17 +1,19 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
 /// Top-level Rusty Rules Referee configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RefereeConfig {
     pub referee: RefereeSection,
     pub server: ServerSection,
     #[serde(default)]
+    pub web: WebSection,
+    #[serde(default)]
     pub plugins: Vec<PluginConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RefereeSection {
     pub bot_name: String,
     #[serde(default = "default_bot_prefix")]
@@ -30,7 +32,7 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerSection {
     pub public_ip: String,
     pub port: u16,
@@ -49,7 +51,7 @@ fn default_delay() -> f64 {
     0.33
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PluginConfig {
     pub name: String,
     #[serde(default)]
@@ -60,6 +62,38 @@ pub struct PluginConfig {
 
 fn default_enabled() -> bool {
     true
+}
+
+/// Web admin UI configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub jwt_secret: Option<String>,
+}
+
+impl Default for WebSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: default_bind_address(),
+            port: default_web_port(),
+            jwt_secret: None,
+        }
+    }
+}
+
+fn default_bind_address() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_web_port() -> u16 {
+    8080
 }
 
 impl RefereeConfig {
