@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api.js';
+	import { api } from '$lib/api.svelte.js';
 	import { stripColors, timeAgo, formatDuration } from '$lib/utils.js';
 	import { Search, XCircle } from 'lucide-svelte';
 

@@ -1,4 +1,4 @@
-import { getToken } from './api.js';
+import { getToken } from './api.svelte.js';
 
 /** @typedef {(event: any) => void} EventHandler */
 

@@ -1,4 +1,4 @@
-import { api, getToken, setToken } from './api.js';
+import { api, getToken, setToken } from './api.svelte.js';
 
 /** @type {{ user: any, loading: boolean }} */
 let auth = $state({ user: null, loading: true });

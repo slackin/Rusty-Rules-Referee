@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api.js';
+	import { api } from '$lib/api.svelte.js';
 	import { Trophy, Target, MapPin, Crosshair } from 'lucide-svelte';
 
 	let tab = $state('leaderboard');

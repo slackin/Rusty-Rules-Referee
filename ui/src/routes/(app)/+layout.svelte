@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { checkAuth, getAuth, logout } from '$lib/auth.js';
+	import { checkAuth, getAuth, logout } from '$lib/auth.svelte.js';
 	import { connectWs, disconnectWs } from '$lib/ws.js';
 	import {
 		LayoutDashboard, Users, Shield, Gavel, Terminal, BarChart3, Settings,

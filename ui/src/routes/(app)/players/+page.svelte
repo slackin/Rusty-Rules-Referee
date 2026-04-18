@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api.js';
+	import { api } from '$lib/api.svelte.js';
 	import { stripColors, timeAgo } from '$lib/utils.js';
 	import { Search, Ban, MessageSquare, ExternalLink } from 'lucide-svelte';
 

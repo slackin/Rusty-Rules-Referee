@@ -1,7 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { api } from '$lib/api.js';
+	import { api } from '$lib/api.svelte.js';
 	import { stripColors, timeAgo, formatDuration, colorize } from '$lib/utils.js';
 	import { ArrowLeft, Ban, MessageSquare, Shield, Clock, Globe } from 'lucide-svelte';
 

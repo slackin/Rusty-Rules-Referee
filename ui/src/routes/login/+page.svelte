@@ -1,5 +1,5 @@
 <script>
-	import { api, setToken } from '$lib/api.js';
+	import { api, setToken } from '$lib/api.svelte.js';
 
 	let username = $state('');
 	let password = $state('');

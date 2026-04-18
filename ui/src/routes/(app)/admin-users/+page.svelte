@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api.js';
+	import { api } from '$lib/api.svelte.js';
 	import { UserPlus, Trash2, Save } from 'lucide-svelte';
 
 	let users = $state([]);

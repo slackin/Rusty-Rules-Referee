@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api.js';
+	import { api } from '$lib/api.svelte.js';
 	import { onEvent } from '$lib/ws.js';
 	import { stripColors, timeAgo } from '$lib/utils.js';
 	import { Users, Map, Clock, Activity, Zap } from 'lucide-svelte';
