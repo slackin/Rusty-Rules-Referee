@@ -245,6 +245,59 @@ async fn main() -> anyhow::Result<()> {
         info!("Event handler stopped");
     });
 
+    // --- Startup sync: discover already-connected players via RCON ---
+    {
+        let sync_parser = UrbanTerrorParser::new(rcon.clone(), event_registry.clone());
+        match sync_parser.get_status_players().await {
+            Ok(status_players) => {
+                info!(count = status_players.len(), "Startup sync: found players from RCON status");
+                for sp in &status_players {
+                    match sync_parser.dumpuser(&sp.slot).await {
+                        Ok(info) => {
+                            if info.guid.is_empty() {
+                                continue;
+                            }
+                            let db_client = db.get_client_by_guid(&info.guid).await.ok();
+                            let mut client = match db_client {
+                                Some(existing) => existing,
+                                None => {
+                                    let mut c = Client::new(&info.guid, &info.name);
+                                    c.cid = Some(sp.slot.clone());
+                                    if let Ok(ip) = info.ip.parse() {
+                                        c.ip = Some(ip);
+                                    }
+                                    if let Err(e) = db.save_client(&c).await {
+                                        error!(error = %e, "Startup sync: failed to save client");
+                                    }
+                                    c
+                                }
+                            };
+                            client.cid = Some(sp.slot.clone());
+                            client.connected = true;
+                            if let Ok(ip) = info.ip.parse() {
+                                client.ip = Some(ip);
+                            }
+                            client.name = info.name.clone();
+
+                            if client.id > 0 && !info.name.is_empty() {
+                                let _ = db.save_alias(client.id, &info.name).await;
+                            }
+
+                            clients.connect(&sp.slot, client).await;
+                            info!(slot = %sp.slot, name = %info.name, guid = %info.guid, "Startup sync: registered player");
+                        }
+                        Err(e) => {
+                            error!(slot = %sp.slot, error = %e, "Startup sync: dumpuser failed");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "Startup sync: RCON status query failed");
+            }
+        }
+    }
+
     // Main loop: tail game log continuously and parse into events
     if let Some(ref log_path) = config.server.game_log {
         info!(path = %log_path, "Starting log tailer");
