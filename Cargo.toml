@@ -1,0 +1,40 @@
+[package]
+name = "rusty-rules-referee"
+version = "2.0.0"
+edition = "2021"
+description = "Rusty Rules Referee — Game server administration bot written in Rust"
+license = "GPL-2.0-or-later"
+readme = "README.md"
+repository = "https://github.com/slackin/Rusty-Rules-Referee"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Regex for log parsing
+regex = "1"
+
+# Database (SQLx with async support)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "mysql", "chrono"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async trait support
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"

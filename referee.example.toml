@@ -1,0 +1,182 @@
+# Rusty Rules Referee
+# Urban Terror 4.3 server administration bot
+# Example configuration file
+
+[referee]
+bot_name = "Referee"
+bot_prefix = "^2RRR:^3"
+database = "sqlite://referee.db"
+logfile = "referee.log"
+log_level = "info"
+
+[server]
+public_ip = "192.168.1.100"
+port = 27960
+# rcon_ip = "192.168.1.100" # Optional: defaults to public_ip
+# rcon_port = 27960          # Optional: defaults to port
+rcon_password = "your_rcon_password_here"
+game_log = "/path/to/server/games.log"
+delay = 0.33                # Seconds between log reads
+
+# Plugins to load (order matters for dependencies)
+
+# ---- Core admin plugin (must be first) ----
+[[plugins]]
+name = "admin"
+enabled = true
+# Admin plugin settings
+[plugins.settings]
+warn_reason = "^7behave yourself"
+max_warnings = 3
+# Warn keywords: name = [duration_minutes, reason_text]
+# warn_reasons = { spam = [1, "do not spam"], lang = [2, "bad language"], rage = [5, "raging"], tk = [10, "team killing"], camp = [3, "camping"], afk = [3, "AFK"] }
+# Spam messages: keyword = text_to_display
+# spam_messages = { rules = "^3Server rules: no cheating, no racism", website = "^7Visit us at ^2example.com" }
+# rules = ["^3Rule 1: No cheating", "^3Rule 2: No racism", "^3Rule 3: Respect all players"]
+
+# ---- Urban Terror specific admin (depends on admin) ----
+[[plugins]]
+name = "poweradminurt"
+enabled = true
+[plugins.settings]
+# team_balance_enabled = true
+# team_diff = 1
+# rsp_enable = false           # Radio spam protection
+# rsp_mute_duration = 2
+# rsp_max_spamins = 10
+
+# ---- Moderation plugins ----
+[[plugins]]
+name = "censor"
+enabled = true
+
+[[plugins]]
+name = "censorurt"
+enabled = false
+# [plugins.settings]
+# banned_names = ["hack", "cheat", "admin"]
+
+[[plugins]]
+name = "spamcontrol"
+enabled = true
+
+[[plugins]]
+name = "tk"
+enabled = true
+
+# ---- Player management ----
+[[plugins]]
+name = "welcome"
+enabled = true
+
+[[plugins]]
+name = "makeroom"
+enabled = false
+# [plugins.settings]
+# max_players = 32
+# min_admin_level = 20
+
+[[plugins]]
+name = "nickreg"
+enabled = false
+
+# ---- Chat & Logging ----
+[[plugins]]
+name = "chatlogger"
+enabled = true
+
+[[plugins]]
+name = "customcommands"
+enabled = false
+# [plugins.settings]
+# commands = { website = "^7Visit ^2example.com", discord = "^7Join ^2discord.gg/example" }
+
+# ---- Statistics ----
+[[plugins]]
+name = "stats"
+enabled = true
+
+[[plugins]]
+name = "xlrstats"
+enabled = false
+# [plugins.settings]
+# kill_bonus = 1.2
+# assist_bonus = 0.5
+# min_kills = 50
+
+# ---- Kill tracking / announcements ----
+[[plugins]]
+name = "firstkill"
+enabled = false
+
+[[plugins]]
+name = "spree"
+enabled = false
+# [plugins.settings]
+# min_spree = 5
+
+[[plugins]]
+name = "spawnkill"
+enabled = false
+# [plugins.settings]
+# grace_period_secs = 3
+# max_spawnkills = 3
+# action = "warn"
+
+[[plugins]]
+name = "flagannounce"
+enabled = false
+
+# ---- Server management ----
+[[plugins]]
+name = "adv"
+enabled = false
+# [plugins.settings]
+# interval_secs = 120
+# messages = ["^2Welcome!", "^3Type !help for commands"]
+
+[[plugins]]
+name = "scheduler"
+enabled = false
+
+[[plugins]]
+name = "mapconfig"
+enabled = false
+
+# ---- Anti-abuse / Player filtering ----
+[[plugins]]
+name = "afk"
+enabled = false
+# [plugins.settings]
+# afk_threshold_secs = 300
+# min_players = 4
+# move_to_spec = true
+
+[[plugins]]
+name = "callvote"
+enabled = false
+# [plugins.settings]
+# blocked_votes = ["kick"]
+
+[[plugins]]
+name = "vpncheck"
+enabled = false
+
+[[plugins]]
+name = "countryfilter"
+enabled = false
+
+[[plugins]]
+name = "pingwatch"
+enabled = true
+
+# ---- Admin tools ----
+[[plugins]]
+name = "login"
+enabled = false
+# [plugins.settings]
+# min_level = 20
+
+[[plugins]]
+name = "follow"
+enabled = false

@@ -1,0 +1,33 @@
+mod registry;
+mod traits;
+
+pub use registry::PluginRegistry;
+pub use traits::{Plugin, PluginInfo};
+
+pub mod admin;
+pub mod adv;
+pub mod afk;
+pub mod callvote;
+pub mod censor;
+pub mod censorurt;
+pub mod chatlogger;
+pub mod countryfilter;
+pub mod customcommands;
+pub mod firstkill;
+pub mod flagannounce;
+pub mod follow;
+pub mod login;
+pub mod makeroom;
+pub mod mapconfig;
+pub mod nickreg;
+pub mod pingwatch;
+pub mod poweradminurt;
+pub mod scheduler;
+pub mod spamcontrol;
+pub mod spawnkill;
+pub mod spree;
+pub mod stats;
+pub mod tk;
+pub mod vpncheck;
+pub mod welcome;
+pub mod xlrstats;
