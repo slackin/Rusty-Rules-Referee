@@ -7,7 +7,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::core::AdminUser;
-use crate::web::auth::AdminOnly;
+use crate::web::auth::{AdminOnly, AuthUser};
 use crate::web::state::AppState;
 
 /// GET /api/v1/users
@@ -113,6 +113,56 @@ pub async fn delete_user(
     }
 
     match state.storage.delete_admin_user(id).await {
+        Ok(_) => Json(serde_json::json!({"status": "ok"})).into_response(),
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ChangePasswordBody {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// PUT /api/v1/users/me/password
+pub async fn change_password(
+    AuthUser(claims): AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<ChangePasswordBody>,
+) -> impl IntoResponse {
+    if body.new_password.len() < 6 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "New password must be at least 6 characters"}))).into_response();
+    }
+
+    let user = match state.storage.get_admin_user_by_id(claims.user_id).await {
+        Ok(u) => u,
+        Err(_) => {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "User not found"}))).into_response();
+        }
+    };
+
+    // Verify current password
+    match bcrypt::verify(&body.current_password, &user.password_hash) {
+        Ok(true) => {}
+        _ => {
+            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Current password is incorrect"}))).into_response();
+        }
+    }
+
+    let hash = match bcrypt::hash(&body.new_password, bcrypt::DEFAULT_COST) {
+        Ok(h) => h,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Hash error: {}", e)}))).into_response();
+        }
+    };
+
+    let mut updated = user;
+    updated.password_hash = hash;
+    updated.updated_at = chrono::Utc::now();
+
+    match state.storage.save_admin_user(&updated).await {
         Ok(_) => Json(serde_json::json!({"status": "ok"})).into_response(),
         Err(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()

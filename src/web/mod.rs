@@ -68,6 +68,7 @@ pub fn build_router(state: AppState) -> Router {
         // Admin users
         .route("/users", get(api::users::list_users))
         .route("/users", post(api::users::create_user))
+        .route("/users/me/password", put(api::users::change_password))
         .route("/users/{id}", put(api::users::update_user))
         .route("/users/{id}", delete(api::users::delete_user));
 
