@@ -150,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
     let handler_parser_raw = Arc::new(UrbanTerrorParser::new(rcon.clone(), event_registry.clone()));
     let handler_clients = clients.clone();
     let handler_storage = db.clone();
+    let handler_game = game.clone();
     let _handler_event_tx = event_tx.clone();
     let handler_ws_tx = ws_event_tx.clone();
     let handler_task = tokio::spawn(async move {
@@ -216,6 +217,15 @@ async fn main() -> anyhow::Result<()> {
                             error!(cid = %cid, error = %e, "Failed to dumpuser on connect");
                         }
                     }
+                }
+            }
+
+            // --- Map change ---
+            if evt_key == Some("EVT_GAME_MAP_CHANGE") {
+                if let rusty_rules_referee::events::EventData::MapChange { new, .. } = &event.data {
+                    let mut g = handler_game.write().await;
+                    g.start_map(new);
+                    info!(map = %new, "Game state updated: map change");
                 }
             }
 

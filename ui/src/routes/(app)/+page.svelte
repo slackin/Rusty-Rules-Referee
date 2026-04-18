@@ -14,7 +14,7 @@
 		try {
 			const [s, p] = await Promise.all([api.serverStatus(), api.players()]);
 			status = s;
-			players = p;
+			players = p.players || [];
 		} catch (e) {
 			console.error('Failed to load dashboard:', e);
 		}
@@ -25,17 +25,19 @@
 		});
 	});
 
+	const gameTypes = { '0': 'FFA', '1': 'LMS', '3': 'TDM', '4': 'TS', '5': 'FTL', '6': 'C&H', '7': 'CTF', '8': 'Bomb', '9': 'Jump', '10': 'Freeze', '11': 'GunGame' };
+
 	let statCards = $derived([
 		{ label: 'Players Online', value: players.length, max: status?.max_clients ?? '?', icon: Users, color: 'text-emerald-400' },
 		{ label: 'Current Map', value: status?.map_name ?? '—', icon: Map, color: 'text-blue-400' },
-		{ label: 'Game Type', value: status?.game_type ?? '—', icon: Zap, color: 'text-amber-400' },
+		{ label: 'Game Type', value: gameTypes[status?.game_type] ?? status?.game_type ?? '—', icon: Zap, color: 'text-amber-400' },
 		{ label: 'Uptime', value: status?.map_time_start ? timeAgo(status.map_time_start) : '—', icon: Clock, color: 'text-purple-400' }
 	]);
 </script>
 
 <div class="space-y-6 animate-fade-in">
 	<div>
-		<h1 class="text-2xl font-semibold">Dashboard</h1>
+		<h1 class="text-2xl font-semibold">{status?.hostname ? stripColors(status.hostname) : 'Dashboard'}</h1>
 		<p class="mt-1 text-sm text-surface-500">Server overview and live activity</p>
 	</div>
 
