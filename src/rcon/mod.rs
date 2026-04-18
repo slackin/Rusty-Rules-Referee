@@ -75,30 +75,58 @@ impl RconClient {
         let guard = self.socket.lock().await;
         let socket = guard.as_ref().unwrap();
 
+        // Drain any stale packets from previous commands
+        let mut drain_buf = vec![0u8; 4096];
+        loop {
+            match socket.try_recv(&mut drain_buf) {
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+
         // Send the command
         socket.send(&packet).await?;
 
-        // Receive the response with timeout
+        // Receive response — collect multiple packets (Q3 may split responses)
         let mut buf = vec![0u8; 4096];
         let mut response = String::new();
+        let deadline = tokio::time::Instant::now() + self.socket_timeout;
 
-        match tokio::time::timeout(self.socket_timeout, socket.recv(&mut buf)).await {
-            Ok(Ok(n)) => {
-                let data = &buf[..n];
-                // Strip the response header "\xFF\xFF\xFF\xFFprint\n"
-                let header_len = 4 + 6; // 4 bytes \xFF + "print\n"
-                if n > header_len && &data[..4] == RCON_HEADER {
-                    response = String::from_utf8_lossy(&data[header_len..]).to_string();
-                } else {
-                    response = String::from_utf8_lossy(data).to_string();
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            match tokio::time::timeout(remaining, socket.recv(&mut buf)).await {
+                Ok(Ok(n)) => {
+                    let data = &buf[..n];
+                    // Strip the response header "\xFF\xFF\xFF\xFFprint\n"
+                    let header_len = 4 + 6; // 4 bytes \xFF + "print\n"
+                    if n > header_len && &data[..4] == RCON_HEADER {
+                        response.push_str(&String::from_utf8_lossy(&data[header_len..]));
+                    } else if !response.is_empty() {
+                        // Continuation packet without header
+                        response.push_str(&String::from_utf8_lossy(data));
+                    } else {
+                        response = String::from_utf8_lossy(data).to_string();
+                    }
+                    // Short wait to see if more packets follow
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-            }
-            Ok(Err(e)) => {
-                error!(error = %e, "RCON recv error");
-                return Err(e.into());
-            }
-            Err(_) => {
-                debug!(command = command, "RCON response timeout (may be normal for write commands)");
+                Ok(Err(e)) => {
+                    error!(error = %e, "RCON recv error");
+                    if response.is_empty() {
+                        return Err(e.into());
+                    }
+                    break;
+                }
+                Err(_) => {
+                    if response.is_empty() {
+                        debug!(command = command, "RCON response timeout (may be normal for write commands)");
+                    }
+                    break;
+                }
             }
         }
 
