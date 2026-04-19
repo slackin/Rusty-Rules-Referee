@@ -50,6 +50,21 @@ impl Plugin for AdvPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("interval_secs").and_then(|v| v.as_integer()) {
+                self.interval_secs = v as u64;
+            }
+            if let Some(arr) = s.get("messages").and_then(|v| v.as_array()) {
+                let msgs: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                if !msgs.is_empty() {
+                    self.messages = msgs;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             count = self.messages.len(),

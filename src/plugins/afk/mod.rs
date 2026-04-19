@@ -92,6 +92,27 @@ impl Plugin for AfkPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("afk_threshold_secs").and_then(|v| v.as_integer()) {
+                self.afk_threshold_secs = v as u64;
+            }
+            if let Some(v) = s.get("min_players").and_then(|v| v.as_integer()) {
+                self.min_players = v as u32;
+            }
+            if let Some(v) = s.get("check_interval_secs").and_then(|v| v.as_integer()) {
+                self.check_interval_secs = v as u64;
+            }
+            if let Some(v) = s.get("move_to_spec").and_then(|v| v.as_bool()) {
+                self.move_to_spec = v;
+            }
+            if let Some(v) = s.get("afk_message").and_then(|v| v.as_str()) {
+                self.afk_message = v.to_string();
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             threshold = self.afk_threshold_secs,

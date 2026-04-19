@@ -1,9 +1,13 @@
 pub mod aliases;
+pub mod audit;
+pub mod chat;
 pub mod config;
 pub mod groups;
+pub mod notes;
 pub mod penalties;
 pub mod players;
 pub mod plugins;
 pub mod server;
 pub mod stats;
 pub mod users;
+pub mod votes;

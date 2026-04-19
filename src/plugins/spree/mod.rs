@@ -59,6 +59,23 @@ impl Plugin for SpreePlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("min_spree").and_then(|v| v.as_integer()) {
+                self.min_spree = v as u32;
+            }
+            if let Some(t) = s.get("spree_messages").and_then(|v| v.as_table()) {
+                self.spree_messages.clear();
+                for (key, val) in t {
+                    if let (Ok(k), Some(v)) = (key.parse::<u32>(), val.as_str()) {
+                        self.spree_messages.insert(k, v.to_string());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(min_spree = self.min_spree, "Spree plugin started");
         Ok(())

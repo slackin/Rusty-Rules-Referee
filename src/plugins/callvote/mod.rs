@@ -1,8 +1,10 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use std::collections::HashSet;
 use tracing::info;
 
 use crate::core::context::BotContext;
+use crate::core::VoteRecord;
 use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
 
@@ -48,6 +50,21 @@ impl Plugin for CallvotePlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("min_level").and_then(|v| v.as_integer()) {
+                self.min_level = v as u32;
+            }
+            if let Some(v) = s.get("max_votes_per_round").and_then(|v| v.as_integer()) {
+                self.max_votes_per_round = v as u32;
+            }
+            if let Some(arr) = s.get("blocked_votes").and_then(|v| v.as_array()) {
+                self.blocked_votes = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(blocked = ?self.blocked_votes, "Callvote plugin started");
         Ok(())
@@ -59,6 +76,25 @@ impl Plugin for CallvotePlugin {
                 if let EventData::Text(ref vote_text) = event.data {
                     // Parse the vote type from the text (e.g., "kick 3" -> "kick")
                     let vote_type = vote_text.split_whitespace().next().unwrap_or("").to_lowercase();
+                    let vote_data = vote_text.splitn(2, ' ').nth(1).unwrap_or("").to_string();
+
+                    // Persist vote to DB for dashboard history
+                    if let Some(client_id) = event.client_id {
+                        let client_name = ctx.clients.get_by_id(client_id).await
+                            .map(|c| c.name.clone())
+                            .unwrap_or_default();
+                        let record = VoteRecord {
+                            id: 0,
+                            client_id,
+                            client_name,
+                            vote_type: vote_type.clone(),
+                            vote_data: vote_data.clone(),
+                            time_add: Utc::now(),
+                        };
+                        if let Err(e) = ctx.storage.save_vote(&record).await {
+                            tracing::warn!(error = %e, "Failed to persist vote to DB");
+                        }
+                    }
 
                     // Check blocked votes
                     if self.blocked_votes.contains(&vote_type) {

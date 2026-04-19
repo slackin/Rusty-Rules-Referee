@@ -168,6 +168,21 @@ impl Plugin for XlrstatsPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("kill_bonus").and_then(|v| v.as_float()) {
+                self.kill_bonus = v;
+            }
+            if let Some(v) = s.get("assist_bonus").and_then(|v| v.as_float()) {
+                self.assist_bonus = v;
+            }
+            if let Some(v) = s.get("min_kills").and_then(|v| v.as_integer()) {
+                self.min_kills = v as u32;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             kill_bonus = self.kill_bonus,

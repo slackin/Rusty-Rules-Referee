@@ -16,8 +16,11 @@ use rusty_rules_referee::plugins::admin::AdminPlugin;
 use rusty_rules_referee::plugins::censor::CensorPlugin;
 use rusty_rules_referee::plugins::chatlogger::ChatLogPlugin;
 use rusty_rules_referee::plugins::countryfilter::CountryFilterPlugin;
+use rusty_rules_referee::plugins::headshotcounter::HeadshotCounterPlugin;
+use rusty_rules_referee::plugins::namechecker::NameCheckerPlugin;
 use rusty_rules_referee::plugins::pingwatch::PingWatchPlugin;
 use rusty_rules_referee::plugins::spamcontrol::SpamControlPlugin;
+use rusty_rules_referee::plugins::specchecker::SpecCheckerPlugin;
 use rusty_rules_referee::plugins::stats::StatsPlugin;
 use rusty_rules_referee::plugins::tk::TkPlugin;
 use rusty_rules_referee::plugins::welcome::WelcomePlugin;
@@ -112,9 +115,12 @@ async fn main() -> anyhow::Result<()> {
     plugins.register(Box::new(PingWatchPlugin::new()))?;
     plugins.register(Box::new(CountryFilterPlugin::new()))?;
     plugins.register(Box::new(StatsPlugin::new()))?;
+    plugins.register(Box::new(NameCheckerPlugin::new()))?;
+    plugins.register(Box::new(SpecCheckerPlugin::new()))?;
+    plugins.register(Box::new(HeadshotCounterPlugin::new()))?;
 
     // Start all plugins
-    plugins.startup_all().await?;
+    plugins.startup_all(&config.plugins).await?;
     info!("All plugins started");
 
     // Broadcast channel for WebSocket event streaming
@@ -179,9 +185,10 @@ async fn main() -> anyhow::Result<()> {
                                     if let Ok(ip) = info.ip.parse() {
                                         c.ip = Some(ip);
                                     }
-                                    // Save to DB
-                                    if let Err(e) = handler_storage.save_client(&c).await {
-                                        error!(error = %e, "Failed to save new client");
+                                    // Save to DB and assign the new ID
+                                    match handler_storage.save_client(&c).await {
+                                        Ok(new_id) => c.id = new_id,
+                                        Err(e) => error!(error = %e, "Failed to save new client"),
                                     }
                                     c
                                 }
@@ -245,6 +252,94 @@ async fn main() -> anyhow::Result<()> {
         info!("Event handler stopped");
     });
 
+    // --- Spawn background RCON poller: keeps game/client state fresh ---
+    {
+        let poller_rcon = rcon.clone();
+        let poller_clients = clients.clone();
+        let poller_game = game.clone();
+        tokio::spawn(async move {
+            use regex::Regex;
+            use std::collections::HashMap;
+            let re_status = Regex::new(
+                r"^\s*(?P<slot>\d+)\s+(?P<score>-?\d+)\s+(?P<ping>\d+)\s+(?P<name>.*?)\s+(?P<lastmsg>\d+)\s+(?P<address>\S+)\s+(?P<qport>\d+)\s+(?P<rate>\d+)$"
+            ).unwrap();
+
+            let mut tick: u64 = 0;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tick += 1;
+
+                // Poll status every tick (score + ping for all players)
+                if let Ok(raw) = poller_rcon.send("status").await {
+                    for line in raw.lines() {
+                        if let Some(caps) = re_status.captures(line) {
+                            let slot = caps.name("slot").unwrap().as_str().to_string();
+                            let score: i32 = caps.name("score").unwrap().as_str().parse().unwrap_or(0);
+                            let ping: u32 = caps.name("ping").unwrap().as_str().parse().unwrap_or(0);
+                            poller_clients.update(&slot, |c| {
+                                c.score = score;
+                                c.ping = ping;
+                            }).await;
+                        }
+                    }
+                }
+
+                // Poll dumpuser for each client every 3rd tick (~15s) to get gear
+                if tick % 3 == 0 {
+                    let all = poller_clients.get_all().await;
+                    for client in &all {
+                        if let Some(ref cid) = client.cid {
+                            if let Ok(raw) = poller_rcon.send(&format!("dumpuser {}", cid)).await {
+                                let mut gear: Option<String> = None;
+                                let mut auth: Option<String> = None;
+                                for line in raw.lines() {
+                                    let trimmed = line.trim();
+                                    let mut parts = trimmed.splitn(2, char::is_whitespace);
+                                    if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+                                        let val = val.trim();
+                                        match key {
+                                            "gear" => gear = Some(val.to_string()),
+                                            "auth" => auth = Some(val.to_string()),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                let g = gear;
+                                let a = auth;
+                                poller_clients.update(cid, |c| {
+                                    if let Some(ref v) = g { c.gear = Some(v.clone()); }
+                                    if let Some(ref v) = a { c.auth_name = Some(v.clone()); }
+                                }).await;
+                            }
+                        }
+                    }
+                }
+
+                // Poll serverinfo every 6th tick (~30s)
+                if tick % 6 == 0 {
+                    if let Ok(raw) = poller_rcon.send("serverinfo").await {
+                        let mut info = HashMap::new();
+                        for line in raw.lines() {
+                            let line = line.trim();
+                            if line.is_empty() || line.starts_with("Server info") { continue; }
+                            let mut parts = line.splitn(2, char::is_whitespace);
+                            if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+                                info.insert(key.trim().to_string(), val.trim().to_string());
+                            }
+                        }
+                        let mut g = poller_game.write().await;
+                        g.hostname = info.get("sv_hostname").cloned();
+                        g.max_clients = info.get("sv_maxclients").and_then(|v| v.parse().ok());
+                        if let Some(gt) = info.get("g_gametype") { g.game_type = Some(gt.clone()); }
+                        if let Some(mn) = info.get("mapname") { g.map_name = Some(mn.clone()); }
+                        g.server_info = info;
+                    }
+                }
+            }
+        });
+        info!("Background RCON poller started (status every 5s, dumpuser every 15s, serverinfo every 30s)");
+    }
+
     // --- Startup sync: discover already-connected players via RCON ---
     {
         let sync_parser = UrbanTerrorParser::new(rcon.clone(), event_registry.clone());
@@ -266,14 +361,20 @@ async fn main() -> anyhow::Result<()> {
                                     if let Ok(ip) = info.ip.parse() {
                                         c.ip = Some(ip);
                                     }
-                                    if let Err(e) = db.save_client(&c).await {
-                                        error!(error = %e, "Startup sync: failed to save client");
+                                    match db.save_client(&c).await {
+                                        Ok(new_id) => c.id = new_id,
+                                        Err(e) => error!(error = %e, "Startup sync: failed to save client"),
                                     }
                                     c
                                 }
                             };
                             client.cid = Some(sp.slot.clone());
                             client.connected = true;
+                            client.score = sp.score.parse().unwrap_or(0);
+                            client.ping = sp.ping.parse().unwrap_or(0);
+                            if !info.auth.is_empty() {
+                                client.auth_name = Some(info.auth.clone());
+                            }
                             if let Ok(ip) = info.ip.parse() {
                                 client.ip = Some(ip);
                             }
@@ -295,6 +396,28 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => {
                 error!(error = %e, "Startup sync: RCON status query failed");
             }
+        }
+
+        // Also fetch initial serverinfo
+        if let Ok(raw) = rcon.send("serverinfo").await {
+            let mut g = game.write().await;
+            for line in raw.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with("Server info") { continue; }
+                let mut parts = line.splitn(2, char::is_whitespace);
+                if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+                    let (key, val) = (key.trim().to_string(), val.trim().to_string());
+                    match key.as_str() {
+                        "sv_hostname" => g.hostname = Some(val.clone()),
+                        "sv_maxclients" => g.max_clients = val.parse().ok(),
+                        "g_gametype" => g.game_type = Some(val.clone()),
+                        "mapname" => g.map_name = Some(val.clone()),
+                        _ => {}
+                    }
+                    g.server_info.insert(key, val);
+                }
+            }
+            info!("Startup sync: serverinfo loaded");
         }
     }
 

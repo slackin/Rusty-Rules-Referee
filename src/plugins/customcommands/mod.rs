@@ -78,6 +78,20 @@ impl Plugin for CustomcommandsPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(t) = s.get("commands").and_then(|v| v.as_table()) {
+                self.commands.clear();
+                for (key, val) in t {
+                    if let Some(v) = val.as_str() {
+                        self.commands.insert(key.clone(), v.to_string());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             commands = self.commands.len(),

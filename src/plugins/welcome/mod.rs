@@ -49,6 +49,18 @@ impl Plugin for WelcomePlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("new_player_message").and_then(|v| v.as_str()) {
+                self.new_player_message = v.to_string();
+            }
+            if let Some(v) = s.get("returning_player_message").and_then(|v| v.as_str()) {
+                self.returning_player_message = v.to_string();
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!("Welcome plugin started");
         Ok(())

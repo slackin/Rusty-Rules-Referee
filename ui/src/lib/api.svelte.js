@@ -62,7 +62,7 @@ export const api = {
 		request('/server/say', { method: 'POST', body: JSON.stringify({ message }) }),
 
 	// Players
-	players: () => request('/players'),
+	players: () => request('/players').then(r => r.players),
 	player: (id) => request(`/players/${id}`),
 	kickPlayer: (cid, reason) =>
 		request(`/players/${cid}/kick`, { method: 'POST', body: JSON.stringify({ reason }) }),
@@ -70,14 +70,16 @@ export const api = {
 		request(`/players/${cid}/ban`, { method: 'POST', body: JSON.stringify({ reason, duration }) }),
 	messagePlayer: (cid, message) =>
 		request(`/players/${cid}/message`, { method: 'POST', body: JSON.stringify({ message }) }),
-	searchClients: (query) => request(`/clients/search?q=${encodeURIComponent(query)}`),
+	searchClients: (query) => request(`/clients/search?q=${encodeURIComponent(query)}`).then(r => r.clients),
+	updatePlayerGroup: (id, groupId) =>
+		request(`/players/${id}/group`, { method: 'PUT', body: JSON.stringify({ group_id: groupId }) }),
 
 	// Penalties
 	penalties: (params = '') => request(`/penalties${params ? '?' + params : ''}`),
 	disablePenalty: (id) => request(`/penalties/${id}/disable`, { method: 'POST' }),
 
 	// Groups
-	groups: () => request('/groups'),
+	groups: () => request('/groups').then(r => r.groups),
 
 	// Aliases
 	aliases: (clientId) => request(`/aliases?client_id=${clientId}`),
@@ -96,9 +98,27 @@ export const api = {
 	playerStats: (id) => request(`/stats/player/${id}`),
 	weaponStats: () => request('/stats/weapons'),
 	mapStats: () => request('/stats/maps'),
+	dashboardSummary: () => request('/stats/summary'),
+
+	// Chat
+	chat: (limit = 50, beforeId = null) =>
+		request(`/chat?limit=${limit}${beforeId ? '&before_id=' + beforeId : ''}`).then(r => r.messages),
+
+	// Votes
+	votes: (limit = 20) =>
+		request(`/votes?limit=${limit}`).then(r => r.votes),
+
+	// Notes
+	notes: () => request('/notes').then(r => r.content),
+	saveNotes: (content) =>
+		request('/notes', { method: 'PUT', body: JSON.stringify({ content }) }),
+
+	// Audit log
+	auditLog: (limit = 50, offset = 0) =>
+		request(`/audit-log?limit=${limit}&offset=${offset}`).then(r => r.entries),
 
 	// Admin Users
-	users: () => request('/users'),
+	users: () => request('/users').then(r => r.users),
 	createUser: (user) =>
 		request('/users', { method: 'POST', body: JSON.stringify(user) }),
 	updateUser: (id, user) =>

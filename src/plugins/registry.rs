@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use tracing::{info, warn};
 
 use super::Plugin;
+use crate::config::PluginConfig;
 use crate::core::context::BotContext;
 
 /// Manages all loaded plugins and their lifecycle.
@@ -56,10 +57,13 @@ impl PluginRegistry {
     }
 
     /// Initialize all plugins: load config, then startup.
-    pub async fn startup_all(&mut self) -> anyhow::Result<()> {
+    pub async fn startup_all(&mut self, plugin_configs: &[PluginConfig]) -> anyhow::Result<()> {
         for plugin in &mut self.plugins {
             let name = plugin.info().name;
-            if let Err(e) = plugin.on_load_config().await {
+            let settings = plugin_configs.iter()
+                .find(|pc| pc.name == name)
+                .and_then(|pc| pc.settings.as_ref());
+            if let Err(e) = plugin.on_load_config(settings).await {
                 warn!(plugin = name, error = %e, "Failed to load config");
             }
             plugin.on_startup().await?;

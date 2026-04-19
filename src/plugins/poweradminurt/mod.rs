@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::core::context::BotContext;
-use crate::core::Client;
+use crate::core::{Client, Team};
 use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
 
@@ -107,7 +107,11 @@ pub struct PowerAdminUrtPlugin {
     /// Per-client radio spam tracking: client_id -> (spamins, last_radio_time, last_data)
     radio_spam: RwLock<HashMap<i64, (u32, i64, String)>>,
     /// Match mode
-    match_mode: bool,
+    match_mode: RwLock<bool>,
+    /// Team lock: force players back if they switch teams
+    team_lock_enabled: RwLock<bool>,
+    /// Locked team assignments: client_id -> team_name
+    locked_teams: RwLock<HashMap<i64, String>>,
     /// Identify: level required to see full info (IP, GUID)
     full_ident_level: u32,
 }
@@ -127,7 +131,9 @@ impl PowerAdminUrtPlugin {
             rsp_max_spamins: 10,
             rsp_falloff_rate: 2,
             radio_spam: RwLock::new(HashMap::new()),
-            match_mode: false,
+            match_mode: RwLock::new(false),
+            team_lock_enabled: RwLock::new(false),
+            locked_teams: RwLock::new(HashMap::new()),
             full_ident_level: LEVEL_SENIOR_ADMIN,
         }
     }
@@ -137,11 +143,19 @@ impl PowerAdminUrtPlugin {
             "ident" | "id" => LEVEL_MOD,
             "slap" | "nuke" | "mute" | "kill" | "force" | "poke" => LEVEL_ADMIN,
             "swap" | "swap2" | "swap3" | "balance" => LEVEL_ADMIN,
+            "veto" | "swapteams" | "shuffleteams" | "muteall" => LEVEL_ADMIN,
             "captain" | "sub" => LEVEL_ADMIN,
             "gear" | "skins" | "funstuff" | "goto" => LEVEL_SENIOR_ADMIN,
             "instagib" | "hardcore" | "randomorder" | "stamina" => LEVEL_SENIOR_ADMIN,
             "lms" | "jump" | "freeze" | "gungame" => LEVEL_SENIOR_ADMIN,
-            "setnextmap" | "maplist" => LEVEL_SENIOR_ADMIN,
+            "setnextmap" | "maplist" | "cyclemap" => LEVEL_SENIOR_ADMIN,
+            "moon" | "public" | "hotpotato" => LEVEL_SENIOR_ADMIN,
+            "waverespawns" | "respawngod" | "respawndelay" => LEVEL_SENIOR_ADMIN,
+            "caplimit" | "fraglimit" | "timelimit" => LEVEL_SENIOR_ADMIN,
+            "mapreload" | "maprestart" => LEVEL_SENIOR_ADMIN,
+            "lock" | "unlock" => LEVEL_ADMIN,
+            "matchon" | "matchoff" => LEVEL_SENIOR_ADMIN,
+            "set" | "get" | "exec" => LEVEL_SUPER_ADMIN,
             _ => LEVEL_SUPER_ADMIN,
         }
     }
@@ -397,7 +411,7 @@ impl PowerAdminUrtPlugin {
             }
 
             "captain" => {
-                if !self.match_mode {
+                if !*self.match_mode.read().await {
                     ctx.message(&issuer_cid_str, "^7!captain is only available in match mode").await?;
                     return Ok(());
                 }
@@ -417,7 +431,7 @@ impl PowerAdminUrtPlugin {
             }
 
             "sub" => {
-                if !self.match_mode {
+                if !*self.match_mode.read().await {
                     ctx.message(&issuer_cid_str, "^7!sub is only available in match mode").await?;
                     return Ok(());
                 }
@@ -664,6 +678,271 @@ impl PowerAdminUrtPlugin {
                 }
             }
 
+            // ---- Quick RCON commands ----
+
+            "poke" => {
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !poke <player> [message]").await?;
+                    return Ok(());
+                }
+                let (target_q, msg) = split_target_reason(args);
+                let poke_msg = if msg.is_empty() { "^1You have been poked by an admin" } else { msg };
+                if let Some(target) = self.find_target(target_q, ctx).await {
+                    if let Some(ref cid) = target.cid {
+                        ctx.message(cid, &format!("^1>>> {} <<<", poke_msg)).await?;
+                        ctx.message(cid, &format!("^1>>> {} <<<", poke_msg)).await?;
+                        ctx.message(cid, &format!("^1>>> {} <<<", poke_msg)).await?;
+                        ctx.message(&issuer_cid_str, &format!("^7Poked ^2{}", target.name)).await?;
+                    }
+                } else {
+                    ctx.message(&issuer_cid_str, &format!("No player found matching '{}'", target_q)).await?;
+                }
+            }
+
+            "veto" => {
+                ctx.write("veto").await?;
+                ctx.say("^7Vote has been ^1vetoed").await?;
+            }
+
+            "cyclemap" => {
+                ctx.say("^7Cycling to next map...").await?;
+                ctx.write("cyclemap").await?;
+            }
+
+            "mapreload" => {
+                ctx.say("^7Reloading current map...").await?;
+                ctx.write("map_reload").await?;
+            }
+
+            "maprestart" => {
+                ctx.say("^7Restarting current map...").await?;
+                ctx.write("map_restart").await?;
+            }
+
+            "swapteams" => {
+                ctx.write("swapteams").await?;
+                ctx.say("^7Teams have been ^3swapped").await?;
+            }
+
+            "shuffleteams" => {
+                ctx.write("shuffleteams").await?;
+                ctx.say("^7Teams have been ^3shuffled").await?;
+            }
+
+            "muteall" => {
+                match args.to_lowercase().as_str() {
+                    "on" => {
+                        ctx.set_cvar("g_muteall", "1").await?;
+                        ctx.say("^7All players ^1muted").await?;
+                    }
+                    "off" | "" => {
+                        ctx.set_cvar("g_muteall", "0").await?;
+                        ctx.say("^7All players ^2unmuted").await?;
+                    }
+                    _ => ctx.message(&issuer_cid_str, "Usage: !muteall <on/off>").await?,
+                }
+            }
+
+            "moon" => {
+                match args.to_lowercase().as_str() {
+                    "on" => {
+                        ctx.set_cvar("g_gravity", "100").await?;
+                        ctx.say("^7Moon mode: ^2ON ^7(low gravity)").await?;
+                    }
+                    "off" => {
+                        ctx.set_cvar("g_gravity", "800").await?;
+                        ctx.say("^7Moon mode: ^1OFF ^7(normal gravity)").await?;
+                    }
+                    _ => ctx.message(&issuer_cid_str, "Usage: !moon <on/off>").await?,
+                }
+            }
+
+            "public" => {
+                match args.to_lowercase().as_str() {
+                    "on" | "" => {
+                        ctx.set_cvar("g_password", "").await?;
+                        ctx.say("^7Server is now ^2public").await?;
+                    }
+                    _ => {
+                        // !public <password> sets the server password
+                        ctx.set_cvar("g_password", args).await?;
+                        ctx.say("^7Server is now ^1private").await?;
+                    }
+                }
+            }
+
+            "waverespawns" => {
+                match args.to_lowercase().as_str() {
+                    "on" => {
+                        ctx.set_cvar("g_waverespawns", "1").await?;
+                        ctx.say("^7Wave respawns: ^2ON").await?;
+                    }
+                    "off" => {
+                        ctx.set_cvar("g_waverespawns", "0").await?;
+                        ctx.say("^7Wave respawns: ^1OFF").await?;
+                    }
+                    _ => ctx.message(&issuer_cid_str, "Usage: !waverespawns <on/off>").await?,
+                }
+            }
+
+            "respawngod" => {
+                match args.to_lowercase().as_str() {
+                    "on" => {
+                        ctx.set_cvar("g_respawnprotection", "1").await?;
+                        ctx.say("^7Respawn protection: ^2ON").await?;
+                    }
+                    "off" => {
+                        ctx.set_cvar("g_respawnprotection", "0").await?;
+                        ctx.say("^7Respawn protection: ^1OFF").await?;
+                    }
+                    _ => ctx.message(&issuer_cid_str, "Usage: !respawngod <on/off>").await?,
+                }
+            }
+
+            "respawndelay" => {
+                if args.is_empty() {
+                    let val = ctx.get_cvar("g_respawndelay").await.unwrap_or_default();
+                    ctx.message(&issuer_cid_str, &format!("^7Respawn delay: ^3{}", val)).await?;
+                } else if let Ok(secs) = args.parse::<u32>() {
+                    ctx.set_cvar("g_respawndelay", &secs.to_string()).await?;
+                    ctx.say(&format!("^7Respawn delay set to ^3{} ^7seconds", secs)).await?;
+                } else {
+                    ctx.message(&issuer_cid_str, "Usage: !respawndelay <seconds>").await?;
+                }
+            }
+
+            "caplimit" => {
+                if args.is_empty() {
+                    let val = ctx.get_cvar("capturelimit").await.unwrap_or_default();
+                    ctx.message(&issuer_cid_str, &format!("^7Capture limit: ^3{}", val)).await?;
+                } else if let Ok(n) = args.parse::<u32>() {
+                    ctx.set_cvar("capturelimit", &n.to_string()).await?;
+                    ctx.say(&format!("^7Capture limit set to ^3{}", n)).await?;
+                } else {
+                    ctx.message(&issuer_cid_str, "Usage: !caplimit <number>").await?;
+                }
+            }
+
+            "fraglimit" => {
+                if args.is_empty() {
+                    let val = ctx.get_cvar("fraglimit").await.unwrap_or_default();
+                    ctx.message(&issuer_cid_str, &format!("^7Frag limit: ^3{}", val)).await?;
+                } else if let Ok(n) = args.parse::<u32>() {
+                    ctx.set_cvar("fraglimit", &n.to_string()).await?;
+                    ctx.say(&format!("^7Frag limit set to ^3{}", n)).await?;
+                } else {
+                    ctx.message(&issuer_cid_str, "Usage: !fraglimit <number>").await?;
+                }
+            }
+
+            "timelimit" => {
+                if args.is_empty() {
+                    let val = ctx.get_cvar("timelimit").await.unwrap_or_default();
+                    ctx.message(&issuer_cid_str, &format!("^7Time limit: ^3{}", val)).await?;
+                } else if let Ok(n) = args.parse::<u32>() {
+                    ctx.set_cvar("timelimit", &n.to_string()).await?;
+                    ctx.say(&format!("^7Time limit set to ^3{} ^7minutes", n)).await?;
+                } else {
+                    ctx.message(&issuer_cid_str, "Usage: !timelimit <minutes>").await?;
+                }
+            }
+
+            "hotpotato" => {
+                if args.is_empty() {
+                    let val = ctx.get_cvar("g_hotpotato").await.unwrap_or_default();
+                    ctx.message(&issuer_cid_str, &format!("^7Hot potato: ^3{}", val)).await?;
+                } else {
+                    ctx.set_cvar("g_hotpotato", args).await?;
+                    ctx.say(&format!("^7Hot potato set to ^3{}", args)).await?;
+                }
+            }
+
+            // ---- Server cvar get/set and exec ----
+
+            "set" => {
+                let (cvar, val) = split_target_reason(args);
+                if cvar.is_empty() || val.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !set <cvar> <value>").await?;
+                } else {
+                    ctx.set_cvar(cvar, val).await?;
+                    ctx.message(&issuer_cid_str, &format!("^7Set ^3{} ^7= ^3{}", cvar, val)).await?;
+                }
+            }
+
+            "get" => {
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !get <cvar>").await?;
+                } else {
+                    let val = ctx.get_cvar(args).await.unwrap_or_else(|_| "<not set>".to_string());
+                    ctx.message(&issuer_cid_str, &format!("^3{} ^7= ^3{}", args, val)).await?;
+                }
+            }
+
+            "exec" => {
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !exec <configfile>").await?;
+                } else {
+                    ctx.write(&format!("exec {}", args)).await?;
+                    ctx.message(&issuer_cid_str, &format!("^7Executed config: ^3{}", args)).await?;
+                }
+            }
+
+            // ---- Team lock ----
+
+            "lock" => {
+                // Lock all current players to their current teams
+                let all_clients = ctx.clients.get_all().await;
+                let mut locked = self.locked_teams.write().await;
+                locked.clear();
+                let mut count = 0u32;
+                for c in &all_clients {
+                    let team = match c.team {
+                        Team::Red => "red",
+                        Team::Blue => "blue",
+                        _ => continue,
+                    };
+                    locked.insert(c.id, team.to_string());
+                    count += 1;
+                }
+                *self.team_lock_enabled.write().await = true;
+                ctx.say(&format!("^7Teams are now ^1LOCKED ^7({} players)", count)).await?;
+            }
+
+            "unlock" => {
+                *self.team_lock_enabled.write().await = false;
+                self.locked_teams.write().await.clear();
+                ctx.say("^7Teams are now ^2UNLOCKED").await?;
+            }
+
+            // ---- Match mode ----
+
+            "matchon" => {
+                *self.match_mode.write().await = true;
+                ctx.say("^7Match mode: ^2ON").await?;
+                ctx.say("^7Use ^3!captain ^7and ^3!sub ^7for team management").await?;
+                // Lock teams and password the server
+                *self.team_lock_enabled.write().await = true;
+                // Lock current team assignments
+                let all_clients = ctx.clients.get_all().await;
+                let mut locked = self.locked_teams.write().await;
+                locked.clear();
+                for c in &all_clients {
+                    let team = match c.team {
+                        Team::Red => "red",
+                        Team::Blue => "blue",
+                        _ => continue,
+                    };
+                    locked.insert(c.id, team.to_string());
+                }
+            }
+
+            "matchoff" => {
+                *self.match_mode.write().await = false;
+                *self.team_lock_enabled.write().await = false;
+                self.locked_teams.write().await.clear();
+                ctx.say("^7Match mode: ^1OFF").await?;
+            }
+
             _ => {} // Unknown PA command — ignore
         }
 
@@ -744,6 +1023,33 @@ impl Plugin for PowerAdminUrtPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("team_balance_enabled").and_then(|v| v.as_bool()) {
+                self.team_balance_enabled = v;
+            }
+            if let Some(v) = s.get("team_diff").and_then(|v| v.as_integer()) {
+                self.team_diff = v as u32;
+            }
+            if let Some(v) = s.get("rsp_enable").and_then(|v| v.as_bool()) {
+                self.rsp_enable = v;
+            }
+            if let Some(v) = s.get("rsp_mute_duration").and_then(|v| v.as_integer()) {
+                self.rsp_mute_duration = v as u32;
+            }
+            if let Some(v) = s.get("rsp_max_spamins").and_then(|v| v.as_integer()) {
+                self.rsp_max_spamins = v as u32;
+            }
+            if let Some(v) = s.get("rsp_falloff_rate").and_then(|v| v.as_integer()) {
+                self.rsp_falloff_rate = v as u32;
+            }
+            if let Some(v) = s.get("full_ident_level").and_then(|v| v.as_integer()) {
+                self.full_ident_level = v as u32;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!("PowerAdminUrt plugin started");
         Ok(())
@@ -755,6 +1061,30 @@ impl Plugin for PowerAdminUrtPlugin {
             if event_key == "EVT_CLIENT_RADIO" {
                 self.handle_radio(event, ctx).await?;
                 return Ok(());
+            }
+
+            // Enforce team lock on team change
+            if event_key == "EVT_CLIENT_TEAM_CHANGE" || event_key == "EVT_CLIENT_TEAM_CHANGE2" {
+                if *self.team_lock_enabled.read().await {
+                    if let Some(client_id) = event.client_id {
+                        let locked = self.locked_teams.read().await;
+                        if let Some(locked_team) = locked.get(&client_id) {
+                            if let Some(client) = ctx.clients.get_by_id(client_id).await {
+                                let current_team = match client.team {
+                                    Team::Red => "red",
+                                    Team::Blue => "blue",
+                                    _ => "",
+                                };
+                                if !current_team.is_empty() && current_team != locked_team {
+                                    if let Some(ref cid) = client.cid {
+                                        ctx.write(&format!("forceteam {} {}", cid, locked_team)).await?;
+                                        ctx.message(cid, "^1Teams are locked! You cannot switch teams.").await?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -769,6 +1099,12 @@ impl Plugin for PowerAdminUrtPlugin {
                         | "lms" | "jump" | "freeze" | "gungame"
                         | "skins" | "funstuff" | "goto" | "instagib" | "hardcore"
                         | "randomorder" | "stamina" | "setnextmap" | "maplist"
+                        | "poke" | "veto" | "cyclemap" | "mapreload" | "maprestart"
+                        | "swapteams" | "shuffleteams" | "muteall" | "moon" | "public"
+                        | "waverespawns" | "respawngod" | "respawndelay"
+                        | "caplimit" | "fraglimit" | "timelimit" | "hotpotato"
+                        | "set" | "get" | "exec"
+                        | "lock" | "unlock" | "matchon" | "matchoff"
                     );
                 if is_pa {
                     self.handle_command(cmd, event, ctx).await?;
@@ -796,6 +1132,8 @@ impl Plugin for PowerAdminUrtPlugin {
             "EVT_CLIENT_SAY".to_string(),
             "EVT_CLIENT_TEAM_SAY".to_string(),
             "EVT_CLIENT_RADIO".to_string(),
+            "EVT_CLIENT_TEAM_CHANGE".to_string(),
+            "EVT_CLIENT_TEAM_CHANGE2".to_string(),
         ])
     }
 }

@@ -53,6 +53,18 @@ impl Plugin for TkPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("max_team_kills").and_then(|v| v.as_integer()) {
+                self.max_team_kills = v as u32;
+            }
+            if let Some(v) = s.get("max_team_damage").and_then(|v| v.as_float()) {
+                self.max_team_damage = v as f32;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             max_tk = self.max_team_kills,

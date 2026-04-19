@@ -89,6 +89,24 @@ impl Plugin for CountryFilterPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("mode").and_then(|v| v.as_str()) {
+                self.mode = match v {
+                    "allowlist" => FilterMode::Allowlist,
+                    _ => FilterMode::Blocklist,
+                };
+            }
+            if let Some(v) = s.get("kick_message").and_then(|v| v.as_str()) {
+                self.kick_message = v.to_string();
+            }
+            if let Some(arr) = s.get("countries").and_then(|v| v.as_array()) {
+                self.countries = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_uppercase())).collect();
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             mode = ?self.mode,

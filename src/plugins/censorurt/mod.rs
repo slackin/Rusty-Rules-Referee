@@ -82,6 +82,18 @@ impl Plugin for CensorurtPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(arr) = s.get("banned_names").and_then(|v| v.as_array()) {
+                self.banned_names = arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| regex::Regex::new(&format!("(?i){}", s)).ok())
+                    .collect();
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             banned_patterns = self.banned_names.len(),

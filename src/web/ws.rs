@@ -50,12 +50,40 @@ async fn handle_socket(
                         let evt_key = state.ctx.event_registry.get_key(event.event_type)
                             .unwrap_or("UNKNOWN");
 
+                        // Serialize EventData as structured JSON
+                        let data = match &event.data {
+                            crate::events::EventData::Empty => serde_json::json!(null),
+                            crate::events::EventData::Text(t) => serde_json::json!({"text": t}),
+                            crate::events::EventData::Kill { weapon, damage, damage_type, hit_location } => {
+                                serde_json::json!({
+                                    "weapon": weapon,
+                                    "damage": damage,
+                                    "damage_type": damage_type,
+                                    "hit_location": hit_location,
+                                })
+                            }
+                            crate::events::EventData::MapChange { old, new } => {
+                                serde_json::json!({ "old_map": old, "new_map": new })
+                            }
+                            crate::events::EventData::Custom(v) => v.clone(),
+                        };
+
+                        // Resolve client/target names for richer display
+                        let client_name = if let Some(cid) = event.client_id {
+                            state.ctx.clients.get_by_id(cid).await.map(|c| c.name.clone())
+                        } else { None };
+                        let target_name = if let Some(tid) = event.target_id {
+                            state.ctx.clients.get_by_id(tid).await.map(|c| c.name.clone())
+                        } else { None };
+
                         let payload = serde_json::json!({
                             "type": evt_key,
                             "time": event.time,
                             "client_id": event.client_id,
                             "target_id": event.target_id,
-                            "data": format!("{:?}", event.data),
+                            "client_name": client_name,
+                            "target_name": target_name,
+                            "data": data,
                         });
 
                         if socket.send(Message::Text(payload.to_string().into())).await.is_err() {

@@ -71,3 +71,43 @@ pub struct AuditEntry {
     pub ip_address: Option<String>,
     pub created_at: DateTime<Utc>,
 }
+
+/// A persisted chat message.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub client_id: i64,
+    pub client_name: String,
+    pub channel: String,
+    pub message: String,
+    pub time_add: DateTime<Utc>,
+}
+
+/// A persisted vote history entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct VoteRecord {
+    pub id: i64,
+    pub client_id: i64,
+    pub client_name: String,
+    pub vote_type: String,
+    pub vote_data: String,
+    pub time_add: DateTime<Utc>,
+}
+
+/// A personal admin note (dashboard scratchpad).
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminNote {
+    pub id: i64,
+    pub admin_user_id: i64,
+    pub content: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Dashboard summary statistics.
+#[derive(Debug, Clone, Serialize)]
+pub struct DashboardSummary {
+    pub total_clients: u64,
+    pub total_warnings: u64,
+    pub total_tempbans: u64,
+    pub total_bans: u64,
+}

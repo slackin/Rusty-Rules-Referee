@@ -58,6 +58,8 @@ pub struct PluginConfig {
     pub config_file: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub settings: Option<toml::Table>,
 }
 
 fn default_enabled() -> bool {

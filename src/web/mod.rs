@@ -43,15 +43,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/plugins", get(api::plugins::list_plugins))
         // Players
         .route("/players", get(api::players::list_players))
-        .route("/players/{id}", get(api::players::get_player))
-        .route("/players/{cid}/kick", post(api::players::kick_player))
-        .route("/players/{cid}/ban", post(api::players::ban_player))
-        .route("/players/{cid}/message", post(api::players::message_player))
+        .route("/players/:id", get(api::players::get_player))
+        .route("/players/:cid/kick", post(api::players::kick_player))
+        .route("/players/:cid/ban", post(api::players::ban_player))
+        .route("/players/:cid/message", post(api::players::message_player))
+        .route("/players/:id/group", put(api::players::update_player_group))
         // Client search
         .route("/clients/search", get(api::players::search_clients))
         // Penalties
         .route("/penalties", get(api::penalties::list_penalties))
-        .route("/penalties/{id}/disable", post(api::penalties::disable_penalty))
+        .route("/penalties/:id/disable", post(api::penalties::disable_penalty))
         // Groups
         .route("/groups", get(api::groups::list_groups))
         // Aliases
@@ -62,15 +63,25 @@ pub fn build_router(state: AppState) -> Router {
         .route("/server/say", post(api::server::server_say))
         // Stats
         .route("/stats/leaderboard", get(api::stats::leaderboard))
-        .route("/stats/player/{id}", get(api::stats::player_stats))
+        .route("/stats/player/:id", get(api::stats::player_stats))
         .route("/stats/weapons", get(api::stats::weapon_stats))
         .route("/stats/maps", get(api::stats::map_stats))
+        .route("/stats/summary", get(api::stats::summary))
+        // Chat
+        .route("/chat", get(api::chat::list_chat))
+        // Votes
+        .route("/votes", get(api::votes::list_votes))
+        // Notes
+        .route("/notes", get(api::notes::get_note))
+        .route("/notes", put(api::notes::save_note))
+        // Audit log
+        .route("/audit-log", get(api::audit::list_audit_log))
         // Admin users
         .route("/users", get(api::users::list_users))
         .route("/users", post(api::users::create_user))
         .route("/users/me/password", put(api::users::change_password))
-        .route("/users/{id}", put(api::users::update_user))
-        .route("/users/{id}", delete(api::users::delete_user));
+        .route("/users/:id", put(api::users::update_user))
+        .route("/users/:id", delete(api::users::delete_user));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -93,10 +104,16 @@ async fn static_handler(req: Request<Body>) -> impl IntoResponse {
     // Try to serve the exact file
     if let Some(content) = UiAssets::get(path) {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
+        // Only immutable assets (content-hashed filenames) get long cache; everything else no-cache
+        let cache = if path.contains("/immutable/") {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache, no-store, must-revalidate"
+        };
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime.as_ref())
-            .header(header::CACHE_CONTROL, "public, max-age=3600")
+            .header(header::CACHE_CONTROL, cache)
             .body(Body::from(content.data.to_vec()))
             .unwrap();
     }
@@ -106,6 +123,7 @@ async fn static_handler(req: Request<Body>) -> impl IntoResponse {
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(header::CACHE_CONTROL, "no-cache")
             .body(Body::from(content.data.to_vec()))
             .unwrap();
     }

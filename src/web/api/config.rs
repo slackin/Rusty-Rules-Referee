@@ -79,6 +79,13 @@ pub async fn update_config(
         }
     }
 
+    // Merge plugins array
+    if let Some(plugins) = body.get("plugins").and_then(|v| v.as_array()) {
+        if let Some(tv) = json_to_toml(&serde_json::Value::Array(plugins.clone())) {
+            doc.insert("plugins".to_string(), tv);
+        }
+    }
+
     let output = toml::to_string_pretty(&doc).unwrap_or_default();
     if let Err(e) = std::fs::write(path, &output) {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Cannot write config: {}", e)}))).into_response();
@@ -110,6 +117,19 @@ fn json_to_toml(v: &serde_json::Value) -> Option<toml::Value> {
             }
         }
         serde_json::Value::Bool(b) => Some(toml::Value::Boolean(*b)),
-        _ => None,
+        serde_json::Value::Array(arr) => {
+            let items: Vec<toml::Value> = arr.iter().filter_map(json_to_toml).collect();
+            Some(toml::Value::Array(items))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut table = toml::Table::new();
+            for (k, v) in obj {
+                if let Some(tv) = json_to_toml(v) {
+                    table.insert(k.clone(), tv);
+                }
+            }
+            Some(toml::Value::Table(table))
+        }
+        serde_json::Value::Null => None,
     }
 }

@@ -1,23 +1,14 @@
 <script>
-	import { onMount } from 'svelte';
 	import { api } from '$lib/api.svelte.js';
+	import { getOnlinePlayers, isInitialized } from '$lib/live.svelte.js';
 	import { stripColors, timeAgo } from '$lib/utils.js';
-	import { Search, Ban, MessageSquare, ExternalLink } from 'lucide-svelte';
+	import { Search, Ban, MessageSquare, ExternalLink, RefreshCw } from 'lucide-svelte';
 
-	let players = $state([]);
+	let players = $derived(getOnlinePlayers());
 	let searchQuery = $state('');
 	let searchResults = $state([]);
-	let loading = $state(true);
+	let loading = $derived(!isInitialized());
 	let searching = $state(false);
-
-	onMount(async () => {
-		try {
-			players = await api.players();
-		} catch (e) {
-			console.error(e);
-		}
-		loading = false;
-	});
 
 	async function search() {
 		if (searchQuery.length < 2) { searchResults = []; return; }
@@ -38,7 +29,13 @@
 	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-2xl font-semibold">Players</h1>
-			<p class="mt-1 text-sm text-surface-500">{players.length} currently online</p>
+			<p class="mt-1 text-sm text-surface-500">
+				<span class="inline-flex items-center gap-1.5">
+					<span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+					{players.length} currently online
+				</span>
+				<span class="text-surface-600 ml-1">· auto-updating</span>
+			</p>
 		</div>
 	</div>
 

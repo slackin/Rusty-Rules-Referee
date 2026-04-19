@@ -146,6 +146,39 @@ impl Plugin for AdminPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("warn_reason").and_then(|v| v.as_str()) {
+                self.warn_reason = v.to_string();
+            }
+            if let Some(v) = s.get("max_warnings").and_then(|v| v.as_integer()) {
+                self.max_warnings = v as u32;
+            }
+            if let Some(t) = s.get("warn_reasons").and_then(|v| v.as_table()) {
+                self.warn_reasons.clear();
+                for (key, val) in t {
+                    if let Some(inner) = val.as_table() {
+                        let duration = inner.get("duration").and_then(|v| v.as_integer()).unwrap_or(5) as u32;
+                        let reason = inner.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        self.warn_reasons.insert(key.clone(), (duration, reason));
+                    }
+                }
+            }
+            if let Some(t) = s.get("spam_messages").and_then(|v| v.as_table()) {
+                self.spam_messages.clear();
+                for (key, val) in t {
+                    if let Some(v) = val.as_str() {
+                        self.spam_messages.insert(key.clone(), v.to_string());
+                    }
+                }
+            }
+            if let Some(arr) = s.get("rules").and_then(|v| v.as_array()) {
+                self.rules = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!("Admin plugin started — commands registered");
         Ok(())

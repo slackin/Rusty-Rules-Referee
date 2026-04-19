@@ -4,7 +4,7 @@ use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, AdminUser, AuditEntry, Client, Group, Penalty, PenaltyType};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, Group, Penalty, PenaltyType, VoteRecord};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct MysqlStorage {
@@ -224,6 +224,37 @@ fn row_to_audit_entry(row: &MySqlRow) -> AuditEntry {
         detail: row.get("detail"),
         ip_address: row.get("ip_address"),
         created_at: parse_dt(row.get("created_at")),
+    }
+}
+
+fn row_to_chat_message(row: &MySqlRow) -> ChatMessage {
+    ChatMessage {
+        id: row.get("id"),
+        client_id: row.get("client_id"),
+        client_name: row.get("client_name"),
+        channel: row.get("channel"),
+        message: row.get("message"),
+        time_add: parse_dt(row.get("time_add")),
+    }
+}
+
+fn row_to_vote_record(row: &MySqlRow) -> VoteRecord {
+    VoteRecord {
+        id: row.get("id"),
+        client_id: row.get("client_id"),
+        client_name: row.get("client_name"),
+        vote_type: row.get("vote_type"),
+        vote_data: row.get("vote_data"),
+        time_add: parse_dt(row.get("time_add")),
+    }
+}
+
+fn row_to_admin_note(row: &MySqlRow) -> AdminNote {
+    AdminNote {
+        id: row.get("id"),
+        admin_user_id: row.get("admin_user_id"),
+        content: row.get("content"),
+        updated_at: parse_dt(row.get("updated_at")),
     }
 }
 
@@ -719,5 +750,119 @@ impl Storage for MysqlStorage {
                 "rounds": row.get::<i64, _>("rounds"),
             })
         }).collect())
+    }
+
+    // ---- Chat messages ----
+
+    async fn save_chat_message(&self, msg: &ChatMessage) -> Result<i64, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO chat_messages (client_id, client_name, channel, message) VALUES (?, ?, ?, ?)"
+        )
+        .bind(msg.client_id)
+        .bind(&msg.client_name)
+        .bind(&msg.channel)
+        .bind(&msg.message)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_id() as i64)
+    }
+
+    async fn get_chat_messages(&self, limit: u32, before_id: Option<i64>) -> Result<Vec<ChatMessage>, StorageError> {
+        let rows = if let Some(bid) = before_id {
+            sqlx::query("SELECT * FROM chat_messages WHERE id < ? ORDER BY id DESC LIMIT ?")
+                .bind(bid)
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await
+        } else {
+            sqlx::query("SELECT * FROM chat_messages ORDER BY id DESC LIMIT ?")
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await
+        }
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_chat_message).collect())
+    }
+
+    // ---- Vote history ----
+
+    async fn save_vote(&self, vote: &VoteRecord) -> Result<i64, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO vote_history (client_id, client_name, vote_type, vote_data) VALUES (?, ?, ?, ?)"
+        )
+        .bind(vote.client_id)
+        .bind(&vote.client_name)
+        .bind(&vote.vote_type)
+        .bind(&vote.vote_data)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_id() as i64)
+    }
+
+    async fn get_recent_votes(&self, limit: u32) -> Result<Vec<VoteRecord>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM vote_history ORDER BY id DESC LIMIT ?")
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_vote_record).collect())
+    }
+
+    // ---- Admin notes ----
+
+    async fn get_admin_note(&self, admin_user_id: i64) -> Result<Option<AdminNote>, StorageError> {
+        let row = sqlx::query("SELECT * FROM admin_notes WHERE admin_user_id = ?")
+            .bind(admin_user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.map(|r| row_to_admin_note(&r)))
+    }
+
+    async fn save_admin_note(&self, admin_user_id: i64, content: &str) -> Result<(), StorageError> {
+        let result = sqlx::query(
+            "UPDATE admin_notes SET content = ? WHERE admin_user_id = ?"
+        )
+        .bind(content)
+        .bind(admin_user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            sqlx::query(
+                "INSERT INTO admin_notes (admin_user_id, content) VALUES (?, ?)"
+            )
+            .bind(admin_user_id)
+            .bind(content)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    // ---- Dashboard summary ----
+
+    async fn get_dashboard_summary(&self) -> Result<DashboardSummary, StorageError> {
+        let row = sqlx::query(
+            "SELECT \
+             (SELECT COUNT(*) FROM clients) as total_clients, \
+             (SELECT COUNT(*) FROM penalties WHERE type = 'Warning' AND inactive = 0) as total_warnings, \
+             (SELECT COUNT(*) FROM penalties WHERE type = 'TempBan' AND inactive = 0) as total_tempbans, \
+             (SELECT COUNT(*) FROM penalties WHERE type = 'Ban' AND inactive = 0) as total_bans"
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(DashboardSummary {
+            total_clients: row.get::<i64, _>("total_clients") as u64,
+            total_warnings: row.get::<i64, _>("total_warnings") as u64,
+            total_tempbans: row.get::<i64, _>("total_tempbans") as u64,
+            total_bans: row.get::<i64, _>("total_bans") as u64,
+        })
     }
 }

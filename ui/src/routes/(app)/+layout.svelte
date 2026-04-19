@@ -3,9 +3,10 @@
 	import { checkAuth, getAuth, logout } from '$lib/auth.svelte.js';
 	import { api } from '$lib/api.svelte.js';
 	import { connectWs, disconnectWs } from '$lib/ws.js';
+	import { initLiveStore } from '$lib/live.svelte.js';
 	import {
 		LayoutDashboard, Users, Shield, Gavel, Terminal, BarChart3, Settings,
-		UserCog, LogOut, Menu, X, ChevronDown, KeyRound
+		UserCog, LogOut, Menu, X, ChevronDown, KeyRound, ScrollText
 	} from 'lucide-svelte';
 
 	let { children } = $props();
@@ -26,6 +27,7 @@
 		{ href: '/penalties', label: 'Penalties', icon: Gavel },
 		{ href: '/stats', label: 'Statistics', icon: BarChart3 },
 		{ href: '/console', label: 'Console', icon: Terminal },
+		{ href: '/audit-log', label: 'Audit Log', icon: ScrollText },
 		{ href: '/config', label: 'Configuration', icon: Settings },
 		{ href: '/admin-users', label: 'Admin Users', icon: UserCog }
 	];
@@ -38,7 +40,8 @@
 			return;
 		}
 		connectWs();
-		return () => disconnectWs();
+		const cleanupLive = initLiveStore();
+		return () => { cleanupLive(); disconnectWs(); };
 	});
 
 	function isActive(href) {

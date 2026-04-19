@@ -58,6 +58,24 @@ impl Plugin for SpawnkillPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("grace_period_secs").and_then(|v| v.as_integer()) {
+                self.grace_period_secs = v as u64;
+            }
+            if let Some(v) = s.get("max_spawnkills").and_then(|v| v.as_integer()) {
+                self.max_spawnkills = v as u32;
+            }
+            if let Some(v) = s.get("action").and_then(|v| v.as_str()) {
+                self.action = v.to_string();
+            }
+            if let Some(v) = s.get("tempban_duration").and_then(|v| v.as_integer()) {
+                self.tempban_duration = v as u32;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             grace_period = self.grace_period_secs,

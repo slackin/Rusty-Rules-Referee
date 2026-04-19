@@ -4,7 +4,7 @@ pub mod sqlite;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::core::{Alias, AdminUser, AuditEntry, Client, Group, Penalty, PenaltyType};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, Group, Penalty, PenaltyType, VoteRecord};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -96,6 +96,21 @@ pub trait Storage: Send + Sync {
     async fn get_xlr_player_stats(&self, client_id: i64) -> Result<Option<serde_json::Value>, StorageError>;
     async fn get_xlr_weapon_stats(&self, client_id: Option<i64>) -> Result<Vec<serde_json::Value>, StorageError>;
     async fn get_xlr_map_stats(&self) -> Result<Vec<serde_json::Value>, StorageError>;
+
+    // ---- Chat message operations ----
+    async fn save_chat_message(&self, msg: &ChatMessage) -> Result<i64, StorageError>;
+    async fn get_chat_messages(&self, limit: u32, before_id: Option<i64>) -> Result<Vec<ChatMessage>, StorageError>;
+
+    // ---- Vote history operations ----
+    async fn save_vote(&self, vote: &VoteRecord) -> Result<i64, StorageError>;
+    async fn get_recent_votes(&self, limit: u32) -> Result<Vec<VoteRecord>, StorageError>;
+
+    // ---- Admin notes operations ----
+    async fn get_admin_note(&self, admin_user_id: i64) -> Result<Option<AdminNote>, StorageError>;
+    async fn save_admin_note(&self, admin_user_id: i64, content: &str) -> Result<(), StorageError>;
+
+    // ---- Dashboard summary ----
+    async fn get_dashboard_summary(&self) -> Result<DashboardSummary, StorageError>;
 }
 
 /// Parse a DSN string like "mysql://user:pass@host:port/db" into components.

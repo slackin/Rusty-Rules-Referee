@@ -37,7 +37,8 @@ pub trait Plugin: Send + Sync {
     fn info(&self) -> PluginInfo;
 
     /// Called when the plugin configuration should be loaded.
-    async fn on_load_config(&mut self) -> anyhow::Result<()> {
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        let _ = settings;
         Ok(())
     }
 

@@ -76,6 +76,27 @@ impl Plugin for SchedulerPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(arr) = s.get("tasks").and_then(|v| v.as_array()) {
+                self.tasks.clear();
+                for item in arr {
+                    if let Some(t) = item.as_table() {
+                        let event_trigger = t.get("event_trigger").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                        let action_type = t.get("action_type").and_then(|v| v.as_str()).unwrap_or("say");
+                        let action_value = t.get("action_value").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                        let action = match action_type {
+                            "rcon" => TaskAction::Rcon(action_value),
+                            _ => TaskAction::Say(action_value),
+                        };
+                        self.tasks.push(ScheduledTask { event_trigger, action });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(tasks = self.tasks.len(), "Scheduler plugin started");
         Ok(())

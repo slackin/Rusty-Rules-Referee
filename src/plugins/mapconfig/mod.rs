@@ -47,6 +47,21 @@ impl Plugin for MapconfigPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(t) = s.get("map_configs").and_then(|v| v.as_table()) {
+                self.map_configs.clear();
+                for (map_name, val) in t {
+                    if let Some(arr) = val.as_array() {
+                        let cmds: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                        self.map_configs.insert(map_name.clone(), cmds);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             maps = self.map_configs.len(),

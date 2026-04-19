@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
 /// RCON client for Quake 3 engine based games (UDP protocol).
@@ -12,7 +11,6 @@ use tracing::{debug, error, warn};
 pub struct RconClient {
     host: SocketAddr,
     password: String,
-    socket: Mutex<Option<UdpSocket>>,
     socket_timeout: Duration,
 }
 
@@ -24,8 +22,7 @@ impl RconClient {
         Self {
             host,
             password: password.to_string(),
-            socket: Mutex::new(None),
-            socket_timeout: Duration::from_millis(800),
+            socket_timeout: Duration::from_millis(400),
         }
     }
 
@@ -34,15 +31,11 @@ impl RconClient {
         self
     }
 
-    /// Ensure we have a connected UDP socket.
-    async fn ensure_socket(&self) -> anyhow::Result<()> {
-        let mut guard = self.socket.lock().await;
-        if guard.is_none() {
-            let socket = UdpSocket::bind("0.0.0.0:0").await?;
-            socket.connect(self.host).await?;
-            *guard = Some(socket);
-        }
-        Ok(())
+    /// Create a fresh connected UDP socket for this request.
+    async fn new_socket(&self) -> anyhow::Result<UdpSocket> {
+        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        socket.connect(self.host).await?;
+        Ok(socket)
     }
 
     /// Build an RCON packet: \xFF\xFF\xFF\xFF + rcon "password" command\n
@@ -68,21 +61,8 @@ impl RconClient {
 
     /// Send an RCON command and return the response.
     pub async fn send(&self, command: &str) -> anyhow::Result<String> {
-        self.ensure_socket().await?;
-
+        let socket = self.new_socket().await?;
         let packet = self.build_rcon_packet(command);
-
-        let guard = self.socket.lock().await;
-        let socket = guard.as_ref().unwrap();
-
-        // Drain any stale packets from previous commands
-        let mut drain_buf = vec![0u8; 4096];
-        loop {
-            match socket.try_recv(&mut drain_buf) {
-                Ok(_) => continue,
-                Err(_) => break,
-            }
-        }
 
         // Send the command
         socket.send(&packet).await?;
@@ -111,8 +91,8 @@ impl RconClient {
                     } else {
                         response = String::from_utf8_lossy(data).to_string();
                     }
-                    // Short wait to see if more packets follow
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    // Brief wait for continuation packets (15ms is enough for LAN)
+                    tokio::time::sleep(Duration::from_millis(15)).await;
                 }
                 Ok(Err(e)) => {
                     error!(error = %e, "RCON recv error");
@@ -135,12 +115,8 @@ impl RconClient {
 
     /// Send an RCON command without waiting for a response.
     pub async fn write(&self, command: &str) -> anyhow::Result<()> {
-        self.ensure_socket().await?;
-
+        let socket = self.new_socket().await?;
         let packet = self.build_rcon_packet(command);
-
-        let guard = self.socket.lock().await;
-        let socket = guard.as_ref().unwrap();
         socket.send(&packet).await?;
         debug!(command = command, "RCON command sent (no-wait)");
         Ok(())
@@ -148,12 +124,8 @@ impl RconClient {
 
     /// Query the server (non-RCON query, e.g., getstatus).
     pub async fn query(&self, command: &str) -> anyhow::Result<String> {
-        self.ensure_socket().await?;
-
+        let socket = self.new_socket().await?;
         let packet = Self::build_query_packet(command);
-
-        let guard = self.socket.lock().await;
-        let socket = guard.as_ref().unwrap();
         socket.send(&packet).await?;
 
         let mut buf = vec![0u8; 4096];

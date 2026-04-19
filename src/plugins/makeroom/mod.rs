@@ -45,6 +45,18 @@ impl Plugin for MakeroomPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("min_admin_level").and_then(|v| v.as_integer()) {
+                self.min_admin_level = v as u32;
+            }
+            if let Some(v) = s.get("max_players").and_then(|v| v.as_integer()) {
+                self.max_players = v as usize;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             min_admin_level = self.min_admin_level,

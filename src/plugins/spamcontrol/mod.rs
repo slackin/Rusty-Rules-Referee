@@ -56,6 +56,21 @@ impl Plugin for SpamControlPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("max_messages").and_then(|v| v.as_integer()) {
+                self.max_messages = v as u32;
+            }
+            if let Some(v) = s.get("time_window_secs").and_then(|v| v.as_integer()) {
+                self.time_window_secs = v as u64;
+            }
+            if let Some(v) = s.get("max_repeats").and_then(|v| v.as_integer()) {
+                self.max_repeats = v as u32;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             max_messages = self.max_messages,

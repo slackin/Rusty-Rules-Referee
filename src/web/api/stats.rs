@@ -57,3 +57,19 @@ pub async fn map_stats(
     let data = state.storage.get_xlr_map_stats().await.unwrap_or_default();
     Json(serde_json::json!({"maps": data}))
 }
+
+/// GET /api/v1/stats/summary — dashboard summary counts.
+pub async fn summary(
+    AuthUser(_claims): AuthUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let summary = state.storage.get_dashboard_summary().await.unwrap_or(
+        crate::core::DashboardSummary {
+            total_clients: 0,
+            total_warnings: 0,
+            total_tempbans: 0,
+            total_bans: 0,
+        }
+    );
+    Json(serde_json::json!(summary))
+}

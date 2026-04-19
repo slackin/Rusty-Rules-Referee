@@ -74,6 +74,30 @@ impl Plugin for CensorPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("warn_message").and_then(|v| v.as_str()) {
+                self.warn_message = v.to_string();
+            }
+            if let Some(v) = s.get("max_warnings").and_then(|v| v.as_integer()) {
+                self.max_warnings = v as u32;
+            }
+            if let Some(arr) = s.get("bad_words").and_then(|v| v.as_array()) {
+                self.bad_words = arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| regex::Regex::new(&format!("(?i){}", s)).ok())
+                    .collect();
+            }
+            if let Some(arr) = s.get("bad_names").and_then(|v| v.as_array()) {
+                self.bad_names = arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| regex::Regex::new(&format!("(?i){}", s)).ok())
+                    .collect();
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             bad_words = self.bad_words.len(),

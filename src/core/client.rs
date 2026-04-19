@@ -58,6 +58,12 @@ pub struct Client {
     pub hide: bool,
     pub mask_level: u32,
 
+    // Live RCON data (updated by background poller)
+    pub score: i32,
+    pub ping: u32,
+    pub gear: Option<String>,
+    pub auth_name: Option<String>,
+
     // Timestamps
     pub time_add: DateTime<Utc>,
     pub time_edit: DateTime<Utc>,
@@ -90,6 +96,10 @@ impl Client {
             bot: false,
             hide: false,
             mask_level: 0,
+            score: 0,
+            ping: 0,
+            gear: None,
+            auth_name: None,
             time_add: now,
             time_edit: now,
             last_visit: None,

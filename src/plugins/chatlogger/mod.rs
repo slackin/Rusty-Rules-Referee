@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::core::context::BotContext;
+use crate::core::ChatMessage;
 use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
 
@@ -83,6 +84,15 @@ impl Plugin for ChatLogPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("log_dir").and_then(|v| v.as_str()) {
+                self.log_dir = std::path::PathBuf::from(v);
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         *self.current_date.write().await = Utc::now().format("%Y-%m-%d").to_string();
         info!(log_dir = %self.log_dir.display(), "ChatLogger plugin started");
@@ -107,7 +117,24 @@ impl Plugin for ChatLogPlugin {
                 _ => channel,
             };
 
+            // File-based logging (existing behavior)
             self.append_log(client_id, channel_label, text).await;
+
+            // DB-based logging for the web dashboard
+            let client_name = ctx.clients.get_by_id(client_id).await
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            let msg = ChatMessage {
+                id: 0,
+                client_id,
+                client_name,
+                channel: channel_label.to_string(),
+                message: text.clone(),
+                time_add: Utc::now(),
+            };
+            if let Err(e) = ctx.storage.save_chat_message(&msg).await {
+                tracing::warn!(error = %e, "Failed to persist chat message to DB");
+            }
         }
 
         Ok(())

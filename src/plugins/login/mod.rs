@@ -53,6 +53,15 @@ impl Plugin for LoginPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("min_level").and_then(|v| v.as_integer()) {
+                self.min_level = v as u32;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(min_level = self.min_level, "Login plugin started");
         Ok(())

@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 /// Represents the current game state on the server.
 /// Equivalent to the original Python bot's `Game` class.
@@ -17,6 +18,11 @@ pub struct Game {
     pub time_limit: Option<u32>,
 
     pub rounds: u32,
+
+    // Server info (updated by background poller)
+    pub hostname: Option<String>,
+    pub max_clients: Option<u32>,
+    pub server_info: HashMap<String, String>,
 }
 
 impl Game {
@@ -33,6 +39,9 @@ impl Game {
             frag_limit: None,
             time_limit: None,
             rounds: 0,
+            hostname: None,
+            max_clients: None,
+            server_info: HashMap::new(),
         }
     }
 

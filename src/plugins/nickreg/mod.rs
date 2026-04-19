@@ -95,6 +95,15 @@ impl Plugin for NickregPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("warn_before_kick").and_then(|v| v.as_bool()) {
+                self.warn_before_kick = v;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!("NickReg plugin started");
         Ok(())

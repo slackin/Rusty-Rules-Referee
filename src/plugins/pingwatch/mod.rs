@@ -103,6 +103,21 @@ impl Plugin for PingWatchPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("max_ping").and_then(|v| v.as_integer()) {
+                self.max_ping = v as u32;
+            }
+            if let Some(v) = s.get("warn_threshold").and_then(|v| v.as_integer()) {
+                self.warn_threshold = v as u32;
+            }
+            if let Some(v) = s.get("max_warnings").and_then(|v| v.as_integer()) {
+                self.max_warnings = v as u32;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(max_ping = self.max_ping, "PingWatch plugin started");
         Ok(())

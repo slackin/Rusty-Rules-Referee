@@ -1,57 +1,24 @@
-use std::collections::HashMap;
-
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 
 use crate::core::AuditEntry;
 use crate::web::auth::{AdminOnly, AuthUser};
 use crate::web::state::AppState;
 
-/// Parse RCON serverinfo output into key-value pairs.
-fn parse_serverinfo(raw: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("Server info") {
-            continue;
-        }
-        // Format: "key             value"
-        let mut parts = line.splitn(2, char::is_whitespace);
-        if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
-            map.insert(key.trim().to_string(), val.trim().to_string());
-        }
-    }
-    map
-}
-
-/// GET /api/v1/server/status
+/// GET /api/v1/server/status — reads from in-memory game state (updated by background poller).
 pub async fn server_status(
     AuthUser(_claims): AuthUser,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let game = state.ctx.game.read().await;
-    let connected = state.ctx.clients.get_all().await;
-
-    // Fetch live data from RCON serverinfo
-    let rcon_info = match state.ctx.rcon.send("serverinfo").await {
-        Ok(raw) => parse_serverinfo(&raw),
-        Err(_) => HashMap::new(),
-    };
-
-    let map_name = rcon_info.get("mapname").cloned()
-        .or_else(|| game.map_name.clone());
-    let game_type = rcon_info.get("g_gametype").cloned()
-        .or_else(|| game.game_type.clone());
-    let max_clients = rcon_info.get("sv_maxclients")
-        .and_then(|v| v.parse::<u32>().ok());
-    let hostname = rcon_info.get("sv_hostname").cloned();
+    let player_count = state.ctx.clients.count().await;
 
     Json(serde_json::json!({
         "game_name": game.game_name,
-        "map_name": map_name,
-        "game_type": game_type,
-        "player_count": connected.len(),
-        "max_clients": max_clients,
-        "hostname": hostname,
+        "map_name": game.map_name,
+        "game_type": game.game_type,
+        "player_count": player_count,
+        "max_clients": game.max_clients,
+        "hostname": game.hostname,
         "round_time_start": game.round_time_start,
         "map_time_start": game.map_time_start,
     }))

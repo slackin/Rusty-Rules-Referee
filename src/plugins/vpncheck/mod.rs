@@ -74,6 +74,28 @@ impl Plugin for VpncheckPlugin {
         }
     }
 
+    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
+        if let Some(s) = settings {
+            if let Some(v) = s.get("kick_reason").and_then(|v| v.as_str()) {
+                self.kick_reason = v.to_string();
+            }
+            if let Some(arr) = s.get("blocked_ranges").and_then(|v| v.as_array()) {
+                self.blocked_ranges.clear();
+                for item in arr {
+                    if let Some(range_str) = item.as_str() {
+                        // Support "start-end" format with dotted-quad IPs
+                        if let Some((start_str, end_str)) = range_str.split_once('-') {
+                            if let (Some(start), Some(end)) = (Self::ip_to_u32(start_str.trim()), Self::ip_to_u32(end_str.trim())) {
+                                self.blocked_ranges.push((start, end));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             blocked_ranges = self.blocked_ranges.len(),
