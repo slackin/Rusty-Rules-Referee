@@ -4,3 +4,6 @@ referee.toml
 ui/node_modules/
 ui/build/
 ui/.svelte-kit/
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
