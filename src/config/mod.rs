@@ -1,6 +1,41 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
+
+/// Run mode for the R3 binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunMode {
+    /// Single-server, self-contained mode (current behavior).
+    #[default]
+    Standalone,
+    /// Central server: hosts database, web UI, manages game server bots.
+    Master,
+    /// Game server bot: runs plugins locally, syncs with a master server.
+    Client,
+}
+
+impl fmt::Display for RunMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RunMode::Standalone => write!(f, "standalone"),
+            RunMode::Master => write!(f, "master"),
+            RunMode::Client => write!(f, "client"),
+        }
+    }
+}
+
+impl std::str::FromStr for RunMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "standalone" => Ok(RunMode::Standalone),
+            "master" => Ok(RunMode::Master),
+            "client" => Ok(RunMode::Client),
+            other => Err(format!("unknown run mode '{}': expected standalone, master, or client", other)),
+        }
+    }
+}
 
 /// Top-level Rusty Rules Referee configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -9,6 +44,10 @@ pub struct RefereeConfig {
     pub server: ServerSection,
     #[serde(default)]
     pub web: WebSection,
+    #[serde(default)]
+    pub master: Option<MasterSection>,
+    #[serde(default)]
+    pub client: Option<ClientSection>,
     #[serde(default)]
     pub plugins: Vec<PluginConfig>,
 }
@@ -98,6 +137,68 @@ fn default_web_port() -> u16 {
     8080
 }
 
+/// Master server configuration (used when running in master mode).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MasterSection {
+    /// Address to bind the internal sync API on.
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+    /// Port for the internal mTLS sync API.
+    #[serde(default = "default_master_port")]
+    pub port: u16,
+    /// Path to the server TLS certificate (PEM).
+    pub tls_cert: String,
+    /// Path to the server TLS private key (PEM).
+    pub tls_key: String,
+    /// Path to the CA certificate for verifying client certs (PEM).
+    pub ca_cert: String,
+    /// Path to the CA private key (used to sign client certs during pairing).
+    #[serde(default)]
+    pub ca_key: String,
+    /// Whether the quick-connect pairing endpoint is currently enabled.
+    #[serde(default)]
+    pub quick_connect_enabled: bool,
+    /// The active quick-connect token (set via web UI).
+    #[serde(default)]
+    pub quick_connect_token: Option<String>,
+    /// Expiry timestamp for the quick-connect token (ISO 8601).
+    #[serde(default)]
+    pub quick_connect_expiry: Option<String>,
+}
+
+fn default_master_port() -> u16 {
+    9443
+}
+
+/// Client bot configuration (used when running in client mode).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClientSection {
+    /// URL of the master server, e.g. "https://master.example.com:9443".
+    pub master_url: String,
+    /// Human-readable name for this game server.
+    pub server_name: String,
+    /// Path to the client TLS certificate (PEM).
+    pub tls_cert: String,
+    /// Path to the client TLS private key (PEM).
+    pub tls_key: String,
+    /// Path to the CA certificate for verifying the master (PEM).
+    pub ca_cert: String,
+    /// How often (seconds) to batch-sync data with master.
+    #[serde(default = "default_sync_interval")]
+    pub sync_interval: u64,
+    /// How often (seconds) to send heartbeat to master.
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval: u64,
+}
+
+fn default_sync_interval() -> u64 {
+    30
+}
+
+fn default_heartbeat_interval() -> u64 {
+    15
+}
+
 impl RefereeConfig {
     /// Load configuration from a TOML file.
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
@@ -117,6 +218,39 @@ impl RefereeConfig {
     /// Get the effective RCON port (falls back to game port).
     pub fn rcon_port(&self) -> u16 {
         self.server.rcon_port.unwrap_or(self.server.port)
+    }
+
+    /// Validate the config for the given run mode.
+    pub fn validate_for_mode(&self, mode: RunMode) -> anyhow::Result<()> {
+        match mode {
+            RunMode::Standalone => {
+                // Standalone requires server + database — already enforced by TOML parsing
+                Ok(())
+            }
+            RunMode::Master => {
+                if self.master.is_none() {
+                    anyhow::bail!("Master mode requires a [master] config section");
+                }
+                // TLS cert/key/ca paths can be empty — they'll be auto-generated on first startup
+                Ok(())
+            }
+            RunMode::Client => {
+                if self.client.is_none() {
+                    anyhow::bail!("Client mode requires a [client] config section with master_url and TLS paths");
+                }
+                let c = self.client.as_ref().unwrap();
+                if c.master_url.is_empty() {
+                    anyhow::bail!("Client mode requires master_url in [client]");
+                }
+                if c.tls_cert.is_empty() || c.tls_key.is_empty() || c.ca_cert.is_empty() {
+                    anyhow::bail!("Client mode requires tls_cert, tls_key, and ca_cert paths in [client]");
+                }
+                if c.server_name.is_empty() {
+                    anyhow::bail!("Client mode requires server_name in [client]");
+                }
+                Ok(())
+            }
+        }
     }
 }
 

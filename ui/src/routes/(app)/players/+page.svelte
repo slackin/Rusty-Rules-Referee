@@ -86,6 +86,12 @@
 								<a href="/players/{p.id}" class="font-medium text-surface-200 hover:text-accent transition-colors">
 									{stripColors(p.name)}
 								</a>
+								{#if p.current_name && stripColors(p.current_name) !== stripColors(p.name)}
+									<p class="text-xs text-surface-500 mt-0.5">Nick: {stripColors(p.current_name)}</p>
+								{/if}
+								{#if p.auth}
+									<p class="text-xs text-purple-400 mt-0.5">Auth: {p.auth}</p>
+								{/if}
 							</td>
 							<td class="px-5 py-3 font-mono text-xs text-surface-500">{p.ip ?? '—'}</td>
 							<td class="px-5 py-3">

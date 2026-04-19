@@ -4,7 +4,7 @@
 	import { api } from '$lib/api.svelte.js';
 	import { onEvent } from '$lib/ws.js';
 	import { stripColors, timeAgo, formatDuration, colorize, getGearStyle, pingColor, teamInfo } from '$lib/utils.js';
-	import { ArrowLeft, Ban, MessageSquare, Shield, Clock, Globe, ShieldCheck, UserCog, Wifi, Crosshair, Swords, Activity } from 'lucide-svelte';
+	import { ArrowLeft, Ban, MessageSquare, Shield, Clock, Globe, ShieldCheck, UserCog, Wifi, Crosshair, Swords, Activity, VolumeX } from 'lucide-svelte';
 
 	let playerId = $derived(Number($page.params.id));
 	let player = $state(null);
@@ -16,11 +16,13 @@
 	let showKick = $state(false);
 	let showBan = $state(false);
 	let showMsg = $state(false);
+	let showMute = $state(false);
 	let showGroup = $state(false);
 	let showSettings = $state(false);
 	let actionReason = $state('');
 	let actionMsg = $state('');
 	let actionDuration = $state(60);
+	let muteDuration = $state(600);
 	let actionLoading = $state(false);
 	let selectedGroupId = $state(null);
 
@@ -118,6 +120,26 @@
 		actionLoading = false;
 	}
 
+	async function mute() {
+		actionLoading = true;
+		try {
+			await api.mutePlayer(player.client.cid ?? playerId, muteDuration, actionReason);
+			showMute = false;
+			actionReason = '';
+			setTimeout(refreshPlayer, 1000);
+		} catch (e) { error = e.message; }
+		actionLoading = false;
+	}
+
+	async function unmute() {
+		actionLoading = true;
+		try {
+			await api.unmutePlayer(player.client.cid ?? playerId);
+			setTimeout(refreshPlayer, 1000);
+		} catch (e) { error = e.message; }
+		actionLoading = false;
+	}
+
 	async function changeGroup() {
 		if (!selectedGroupId) return;
 		actionLoading = true;
@@ -170,6 +192,9 @@
 							</span>
 						{/if}
 					</div>
+					{#if isOnline && live?.current_name && stripColors(live.current_name) !== stripColors(player.client.name)}
+						<p class="mt-1 text-sm text-surface-400">Current Nick: <span class="text-surface-200">{stripColors(live.current_name)}</span></p>
+					{/if}
 					<p class="mt-1 text-sm text-surface-500">Database ID: {player.client.id} · GUID: <span class="font-mono">{player.client.guid ?? '—'}</span></p>
 					<div class="mt-3 flex flex-wrap gap-2">
 						<span class="badge-blue">{player.client.group_name ?? 'Guest'}</span>
@@ -181,8 +206,16 @@
 						{#if player.client.ip}
 							<span class="badge-gray font-mono">{player.client.ip}</span>
 						{/if}
-						{#if live?.auth}
-							<span class="badge-gray">Auth: {live.auth}</span>
+						{#if live?.auth || player.client.auth}
+							<span class="inline-flex items-center gap-1.5 rounded border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-400">
+								<ShieldCheck class="h-3 w-3" /> {live?.auth ?? player.client.auth}
+							</span>
+						{/if}
+						{#if live?.armband}
+							<span class="inline-flex items-center gap-1.5 rounded border border-surface-700 bg-surface-800/50 px-2 py-0.5 text-xs font-medium text-surface-300">
+								<span class="h-3 w-3 rounded-full border border-surface-600" style="background-color: rgb({live.armband})"></span>
+								Armband
+							</span>
 						{/if}
 					</div>
 				</div>
@@ -193,6 +226,12 @@
 						</button>
 						<button class="btn-secondary btn-sm" onclick={() => showMsg = true}>
 							<MessageSquare class="h-3.5 w-3.5" /> Message
+						</button>
+						<button class="btn-secondary btn-sm" onclick={() => showMute = true}>
+							<VolumeX class="h-3.5 w-3.5" /> Mute
+						</button>
+						<button class="btn-secondary btn-sm text-yellow-400 hover:text-yellow-300" onclick={unmute} disabled={actionLoading}>
+							<VolumeX class="h-3.5 w-3.5" /> Unmute
 						</button>
 						<button class="btn-secondary btn-sm" onclick={() => showKick = true}>
 							<Shield class="h-3.5 w-3.5" /> Kick
@@ -408,6 +447,25 @@
 			<div class="mt-4 flex justify-end gap-2">
 				<button class="btn-secondary btn-sm" onclick={() => showMsg = false}>Cancel</button>
 				<button class="btn-primary btn-sm" onclick={sendMessage} disabled={actionLoading || !actionMsg}>Send</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Mute Modal -->
+{#if showMute}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onclick={() => showMute = false}>
+		<div class="card w-full max-w-md p-6 animate-slide-up" onclick={(e) => e.stopPropagation()}>
+			<h3 class="text-lg font-semibold">Mute Player</h3>
+			<p class="mt-1 text-sm text-surface-500">Mute {stripColors(player.client.name)}</p>
+			<input class="input mt-4" bind:value={actionReason} placeholder="Reason (optional)" />
+			<div class="mt-3">
+				<label class="mb-1 block text-xs text-surface-500">Duration (seconds)</label>
+				<input type="number" class="input" bind:value={muteDuration} min="1" />
+			</div>
+			<div class="mt-4 flex justify-end gap-2">
+				<button class="btn-secondary btn-sm" onclick={() => showMute = false}>Cancel</button>
+				<button class="btn-primary btn-sm" onclick={mute} disabled={actionLoading}>Mute</button>
 			</div>
 		</div>
 	</div>

@@ -9,6 +9,12 @@ static NEXT_EVENT_ID: AtomicU32 = AtomicU32::new(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventId(pub u32);
 
+impl fmt::Display for EventId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// The event registry — maps event keys to IDs and names.
 pub struct EventRegistry {
     events: HashMap<String, EventId>,
@@ -145,7 +151,7 @@ pub struct Event {
 }
 
 /// Flexible event payload — different events carry different data shapes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum EventData {
     Empty,
     Text(String),

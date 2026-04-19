@@ -29,6 +29,8 @@ pub async fn list_players(
             "id": c.id,
             "cid": c.cid,
             "name": c.name,
+            "current_name": c.current_name,
+            "auth": if c.auth.is_empty() { None } else { Some(&c.auth) },
             "guid": c.guid,
             "ip": c.ip.map(|ip| ip.to_string()),
             "team": format!("{:?}", c.team),
@@ -92,6 +94,12 @@ pub async fn get_player(
         if let Some(ref auth) = c.auth_name {
             live["auth"] = serde_json::json!(auth);
         }
+        if let Some(ref cn) = c.current_name {
+            live["current_name"] = serde_json::json!(cn);
+        }
+        if let Some(ref armband) = c.armband {
+            live["armband"] = serde_json::json!(armband);
+        }
         live
     });
 
@@ -101,6 +109,7 @@ pub async fn get_player(
             "cid": cid,
             "guid": client.guid,
             "name": client.name,
+            "auth": if client.auth.is_empty() { None } else { Some(&client.auth) },
             "ip": client.ip.map(|ip| ip.to_string()),
             "group_bits": client.group_bits,
             "group_name": group_name,
@@ -288,6 +297,57 @@ pub async fn message_player(
     let msg = body.get("message").and_then(|v| v.as_str()).unwrap_or("");
     match state.ctx.message(&cid, msg).await {
         Ok(_) => Json(serde_json::json!({"status": "ok"})).into_response(),
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// POST /api/v1/players/:cid/mute — mute a player.
+pub async fn mute_player(
+    AdminOnly(claims): AdminOnly,
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+    Json(body): Json<PlayerActionBody>,
+) -> impl IntoResponse {
+    let duration = body.duration.unwrap_or(600); // default 10 minutes
+    let reason = body.reason.as_deref().unwrap_or("Muted by admin");
+    match state.ctx.write(&format!("mute {} {}", cid, duration)).await {
+        Ok(_) => {
+            let _ = state.storage.save_audit_entry(&AuditEntry {
+                id: 0,
+                admin_user_id: Some(claims.user_id),
+                action: "mute".to_string(),
+                detail: format!("Muted player cid={} duration={}s reason={}", cid, duration, reason),
+                ip_address: None,
+                created_at: chrono::Utc::now(),
+            }).await;
+            Json(serde_json::json!({"status": "ok", "duration": duration})).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// POST /api/v1/players/:cid/unmute — unmute a player.
+pub async fn unmute_player(
+    AdminOnly(claims): AdminOnly,
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+) -> impl IntoResponse {
+    match state.ctx.write(&format!("unmute {}", cid)).await {
+        Ok(_) => {
+            let _ = state.storage.save_audit_entry(&AuditEntry {
+                id: 0,
+                admin_user_id: Some(claims.user_id),
+                action: "unmute".to_string(),
+                detail: format!("Unmuted player cid={}", cid),
+                ip_address: None,
+                created_at: chrono::Utc::now(),
+            }).await;
+            Json(serde_json::json!({"status": "ok"})).into_response()
+        }
         Err(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }

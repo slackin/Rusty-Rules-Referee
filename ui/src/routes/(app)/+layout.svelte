@@ -6,7 +6,8 @@
 	import { initLiveStore } from '$lib/live.svelte.js';
 	import {
 		LayoutDashboard, Users, Shield, Gavel, Terminal, BarChart3, Settings,
-		UserCog, LogOut, Menu, X, ChevronDown, KeyRound, ScrollText
+		UserCog, LogOut, Menu, X, ChevronDown, KeyRound, ScrollText, MessageSquare,
+		Map, BookOpen, Sliders
 	} from 'lucide-svelte';
 
 	let { children } = $props();
@@ -25,8 +26,12 @@
 		{ href: '/', label: 'Dashboard', icon: LayoutDashboard },
 		{ href: '/players', label: 'Players', icon: Users },
 		{ href: '/penalties', label: 'Penalties', icon: Gavel },
+		{ href: '/chat', label: 'Chat Logs', icon: MessageSquare },
 		{ href: '/stats', label: 'Statistics', icon: BarChart3 },
 		{ href: '/console', label: 'Console', icon: Terminal },
+		{ href: '/mapcycle', label: 'Mapcycle', icon: Map },
+		{ href: '/map-config', label: 'Map Config', icon: Sliders },
+		{ href: '/commands', label: 'Commands', icon: BookOpen },
 		{ href: '/audit-log', label: 'Audit Log', icon: ScrollText },
 		{ href: '/config', label: 'Configuration', icon: Settings },
 		{ href: '/admin-users', label: 'Admin Users', icon: UserCog }

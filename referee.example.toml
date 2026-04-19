@@ -189,3 +189,28 @@ enabled = false
 [[plugins]]
 name = "follow"
 enabled = false
+
+# =============================================================================
+# Multi-server mode (optional — choose one or neither)
+# =============================================================================
+
+# ---- Master mode ----
+# Uncomment to run as a master hub managing multiple client bots.
+# [master]
+# bind_address = "0.0.0.0"
+# port = 9443
+# tls_cert = "certs/server.crt"
+# tls_key = "certs/server.key"
+# ca_cert = "certs/ca.crt"
+# ca_key = "certs/ca.key"
+
+# ---- Client mode ----
+# Uncomment to run as a client bot managed by a remote master.
+# [client]
+# master_url = "https://master.example.com:9443"
+# server_name = "my-server"
+# tls_cert = "certs/client.crt"
+# tls_key = "certs/client.key"
+# ca_cert = "certs/ca.crt"
+# sync_interval = 30
+# heartbeat_interval = 15

@@ -39,6 +39,10 @@ pub fn build_router(state: AppState) -> Router {
         // Config
         .route("/config", get(api::config::get_config))
         .route("/config", put(api::config::update_config))
+        .route("/config/migrate-to-mysql", post(api::config::migrate_to_mysql))
+        .route("/config/server-cfg", post(api::config::analyze_server_cfg))
+        .route("/config/server-cfg/save", post(api::config::save_server_cfg))
+        .route("/config/browse", post(api::config::browse_files))
         // Plugins
         .route("/plugins", get(api::plugins::list_plugins))
         // Players
@@ -47,6 +51,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/players/:cid/kick", post(api::players::kick_player))
         .route("/players/:cid/ban", post(api::players::ban_player))
         .route("/players/:cid/message", post(api::players::message_player))
+        .route("/players/:cid/mute", post(api::players::mute_player))
+        .route("/players/:cid/unmute", post(api::players::unmute_player))
         .route("/players/:id/group", put(api::players::update_player_group))
         // Client search
         .route("/clients/search", get(api::players::search_clients))
@@ -61,6 +67,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/server/status", get(api::server::server_status))
         .route("/server/rcon", post(api::server::rcon_command))
         .route("/server/say", post(api::server::server_say))
+        .route("/server/maps", get(api::server::list_maps))
+        .route("/server/map", post(api::server::change_map))
+        .route("/server/mapcycle", get(api::mapcycle::get_mapcycle))
+        .route("/server/mapcycle", put(api::mapcycle::update_mapcycle))
+        .route("/server/restart", post(api::server::restart_bot))
         // Stats
         .route("/stats/leaderboard", get(api::stats::leaderboard))
         .route("/stats/player/:id", get(api::stats::player_stats))
@@ -69,6 +80,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/stats/summary", get(api::stats::summary))
         // Chat
         .route("/chat", get(api::chat::list_chat))
+        // Commands documentation
+        .route("/commands", get(api::commands::list_commands))
         // Votes
         .route("/votes", get(api::votes::list_votes))
         // Notes
@@ -76,12 +89,25 @@ pub fn build_router(state: AppState) -> Router {
         .route("/notes", put(api::notes::save_note))
         // Audit log
         .route("/audit-log", get(api::audit::list_audit_log))
+        // Map configs (per-map settings)
+        .route("/map-configs", get(api::mapconfigs::list_map_configs))
+        .route("/map-configs", post(api::mapconfigs::create_map_config))
+        .route("/map-configs/:id", get(api::mapconfigs::get_map_config))
+        .route("/map-configs/:id", put(api::mapconfigs::update_map_config))
+        .route("/map-configs/:id", delete(api::mapconfigs::delete_map_config))
         // Admin users
         .route("/users", get(api::users::list_users))
         .route("/users", post(api::users::create_user))
         .route("/users/me/password", put(api::users::change_password))
         .route("/users/:id", put(api::users::update_user))
-        .route("/users/:id", delete(api::users::delete_user));
+        .route("/users/:id", delete(api::users::delete_user))
+        // Quick-connect pairing (master mode)
+        .route("/pairing/enable", post(api::pairing::enable_pairing))
+        .route("/pairing/disable", post(api::pairing::disable_pairing))
+        .route("/pairing/pair", post(api::pairing::pair_client))
+        // First-run setup wizard
+        .route("/setup/status", get(api::setup::setup_status))
+        .route("/setup/complete", post(api::setup::complete_setup));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

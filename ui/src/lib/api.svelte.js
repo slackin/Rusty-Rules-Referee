@@ -60,6 +60,24 @@ export const api = {
 		request('/server/rcon', { method: 'POST', body: JSON.stringify({ command }) }),
 	say: (message) =>
 		request('/server/say', { method: 'POST', body: JSON.stringify({ message }) }),
+	mapList: () => request('/server/maps'),
+	changeMap: (map, action) =>
+		request('/server/map', { method: 'POST', body: JSON.stringify({ map, action }) }),
+	restartBot: () =>
+		request('/server/restart', { method: 'POST' }),
+	mapcycle: () => request('/server/mapcycle'),
+	updateMapcycle: (maps) =>
+		request('/server/mapcycle', { method: 'PUT', body: JSON.stringify({ maps }) }),
+
+	// Map configs (per-map settings)
+	mapConfigs: () => request('/map-configs').then(r => r.configs),
+	mapConfig: (id) => request(`/map-configs/${id}`),
+	createMapConfig: (config) =>
+		request('/map-configs', { method: 'POST', body: JSON.stringify(config) }),
+	updateMapConfig: (id, config) =>
+		request(`/map-configs/${id}`, { method: 'PUT', body: JSON.stringify(config) }),
+	deleteMapConfig: (id) =>
+		request(`/map-configs/${id}`, { method: 'DELETE' }),
 
 	// Players
 	players: () => request('/players').then(r => r.players),
@@ -70,6 +88,10 @@ export const api = {
 		request(`/players/${cid}/ban`, { method: 'POST', body: JSON.stringify({ reason, duration }) }),
 	messagePlayer: (cid, message) =>
 		request(`/players/${cid}/message`, { method: 'POST', body: JSON.stringify({ message }) }),
+	mutePlayer: (cid, duration, reason) =>
+		request(`/players/${cid}/mute`, { method: 'POST', body: JSON.stringify({ reason, duration }) }),
+	unmutePlayer: (cid) =>
+		request(`/players/${cid}/unmute`, { method: 'POST' }),
 	searchClients: (query) => request(`/clients/search?q=${encodeURIComponent(query)}`).then(r => r.clients),
 	updatePlayerGroup: (id, groupId) =>
 		request(`/players/${id}/group`, { method: 'PUT', body: JSON.stringify({ group_id: groupId }) }),
@@ -88,6 +110,14 @@ export const api = {
 	getConfig: () => request('/config'),
 	updateConfig: (config) =>
 		request('/config', { method: 'PUT', body: JSON.stringify(config) }),
+	migrateToMysql: (params) =>
+		request('/config/migrate-to-mysql', { method: 'POST', body: JSON.stringify(params) }),
+	analyzeServerCfg: (path) =>
+		request('/config/server-cfg', { method: 'POST', body: JSON.stringify({ path }) }),
+	saveServerCfg: (path, content) =>
+		request('/config/server-cfg/save', { method: 'POST', body: JSON.stringify({ path, content }) }),
+	browseFiles: (path) =>
+		request('/config/browse', { method: 'POST', body: JSON.stringify({ path }) }),
 
 	// Plugins
 	plugins: () => request('/plugins'),
@@ -103,10 +133,20 @@ export const api = {
 	// Chat
 	chat: (limit = 50, beforeId = null) =>
 		request(`/chat?limit=${limit}${beforeId ? '&before_id=' + beforeId : ''}`).then(r => r.messages),
+	searchChat: ({ limit = 100, beforeId = null, query = '', clientId = null } = {}) => {
+		let url = `/chat?limit=${limit}`;
+		if (beforeId) url += `&before_id=${beforeId}`;
+		if (query) url += `&query=${encodeURIComponent(query)}`;
+		if (clientId) url += `&client_id=${clientId}`;
+		return request(url).then(r => r.messages);
+	},
 
 	// Votes
 	votes: (limit = 20) =>
 		request(`/votes?limit=${limit}`).then(r => r.votes),
+
+	// Commands documentation
+	commands: () => request('/commands').then(r => r.commands),
 
 	// Notes
 	notes: () => request('/notes').then(r => r.content),

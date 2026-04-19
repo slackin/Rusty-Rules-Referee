@@ -1,29 +1,89 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
 use tracing::info;
 
 use crate::core::context::BotContext;
+use crate::core::MapConfig;
 use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
 
-/// Per-map configuration plugin — executes map-specific RCON commands on map change.
+/// Per-map configuration plugin — applies map-specific server settings on map change.
+///
+/// Settings are stored in the database (map_configs table) and managed via the web UI.
+/// On map change, the plugin reads the config for the new map and issues RCON commands
+/// to set the appropriate cvars.
 pub struct MapconfigPlugin {
     enabled: bool,
-    /// Map name -> list of RCON commands to execute.
-    map_configs: HashMap<String, Vec<String>>,
 }
 
 impl MapconfigPlugin {
     pub fn new() -> Self {
         Self {
             enabled: true,
-            map_configs: HashMap::new(),
         }
     }
 
-    /// Add a map configuration with a list of RCON commands.
-    pub fn add_map_config(&mut self, map_name: &str, commands: Vec<String>) {
-        self.map_configs.insert(map_name.to_string(), commands);
+    /// Build a list of RCON commands from a MapConfig.
+    fn build_commands(config: &MapConfig) -> Vec<String> {
+        let mut cmds = Vec::new();
+
+        if !config.gametype.is_empty() {
+            cmds.push(format!("g_gametype {}", config.gametype));
+        }
+        if let Some(v) = config.capturelimit {
+            cmds.push(format!("capturelimit {}", v));
+        }
+        if let Some(v) = config.timelimit {
+            cmds.push(format!("timelimit {}", v));
+        }
+        if let Some(v) = config.fraglimit {
+            cmds.push(format!("fraglimit {}", v));
+        }
+        if !config.g_gear.is_empty() {
+            cmds.push(format!("g_gear {}", config.g_gear));
+        }
+        if let Some(v) = config.g_gravity {
+            cmds.push(format!("g_gravity {}", v));
+        }
+        if let Some(v) = config.g_friendlyfire {
+            cmds.push(format!("g_friendlyfire {}", v));
+        }
+        if let Some(v) = config.g_followstrict {
+            cmds.push(format!("g_followstrict {}", v));
+        }
+        if let Some(v) = config.g_waverespawns {
+            cmds.push(format!("g_waverespawns {}", v));
+        }
+        if let Some(v) = config.g_bombdefusetime {
+            cmds.push(format!("g_bombdefusetime {}", v));
+        }
+        if let Some(v) = config.g_bombexplodetime {
+            cmds.push(format!("g_bombexplodetime {}", v));
+        }
+        if let Some(v) = config.g_swaproles {
+            cmds.push(format!("g_swaproles {}", v));
+        }
+        if let Some(v) = config.g_maxrounds {
+            cmds.push(format!("g_maxrounds {}", v));
+        }
+        if let Some(v) = config.g_matchmode {
+            cmds.push(format!("g_matchmode {}", v));
+        }
+        if let Some(v) = config.g_respawndelay {
+            cmds.push(format!("g_respawndelay {}", v));
+        }
+        if config.bot > 0 {
+            cmds.push(format!("bot_minplayers {}", config.bot));
+        }
+
+        // Custom RCON commands (one per line)
+        for line in config.custom_commands.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                cmds.push(trimmed.to_string());
+            }
+        }
+
+        cmds
     }
 }
 
@@ -38,8 +98,8 @@ impl Plugin for MapconfigPlugin {
     fn info(&self) -> PluginInfo {
         PluginInfo {
             name: "mapconfig",
-            description: "Executes map-specific RCON commands on map change",
-            requires_config: true,
+            description: "Applies per-map server settings on map change",
+            requires_config: false,
             requires_plugins: &[],
             requires_parsers: &[],
             requires_storage: &[],
@@ -47,26 +107,12 @@ impl Plugin for MapconfigPlugin {
         }
     }
 
-    async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
-        if let Some(s) = settings {
-            if let Some(t) = s.get("map_configs").and_then(|v| v.as_table()) {
-                self.map_configs.clear();
-                for (map_name, val) in t {
-                    if let Some(arr) = val.as_array() {
-                        let cmds: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
-                        self.map_configs.insert(map_name.clone(), cmds);
-                    }
-                }
-            }
-        }
+    async fn on_load_config(&mut self, _settings: Option<&toml::Table>) -> anyhow::Result<()> {
         Ok(())
     }
 
     async fn on_startup(&mut self) -> anyhow::Result<()> {
-        info!(
-            maps = self.map_configs.len(),
-            "Mapconfig plugin started"
-        );
+        info!("Mapconfig plugin started (database-backed)");
         Ok(())
     }
 
@@ -83,20 +129,32 @@ impl Plugin for MapconfigPlugin {
                     _ => return Ok(()),
                 };
 
-                if let Some(commands) = self.map_configs.get(&map_name) {
-                    info!(map = %map_name, commands = commands.len(), "Applying map configuration");
-                    for cmd in commands {
-                        match ctx.write(cmd).await {
-                            Ok(_) => {
-                                info!(map = %map_name, cmd = %cmd, "Executed map config command");
-                            }
-                            Err(e) => {
-                                info!(map = %map_name, cmd = %cmd, error = %e, "Failed to execute map config command");
+                match ctx.storage.get_map_config(&map_name).await {
+                    Ok(Some(config)) => {
+                        let commands = Self::build_commands(&config);
+                        info!(map = %map_name, commands = commands.len(), "Applying per-map configuration");
+
+                        if !config.startmessage.is_empty() {
+                            let _ = ctx.say(&config.startmessage).await;
+                        }
+
+                        for cmd in &commands {
+                            match ctx.write(cmd).await {
+                                Ok(_) => {
+                                    info!(map = %map_name, cmd = %cmd, "Executed map config command");
+                                }
+                                Err(e) => {
+                                    info!(map = %map_name, cmd = %cmd, error = %e, "Failed to execute map config command");
+                                }
                             }
                         }
                     }
-                } else {
-                    info!(map = %map_name, "No map configuration found");
+                    Ok(None) => {
+                        info!(map = %map_name, "No per-map configuration found");
+                    }
+                    Err(e) => {
+                        info!(map = %map_name, error = %e, "Failed to load map configuration");
+                    }
                 }
             }
             _ => {}

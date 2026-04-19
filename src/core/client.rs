@@ -47,6 +47,7 @@ pub struct Client {
     pub password: String,
     pub group_bits: u64,
     pub auto_login: bool,
+    pub auth: String,
 
     // Session state
     pub cid: Option<String>,
@@ -63,6 +64,8 @@ pub struct Client {
     pub ping: u32,
     pub gear: Option<String>,
     pub auth_name: Option<String>,
+    pub current_name: Option<String>,
+    pub armband: Option<String>,
 
     // Timestamps
     pub time_add: DateTime<Utc>,
@@ -88,6 +91,7 @@ impl Client {
             password: String::new(),
             group_bits: 0,
             auto_login: true,
+            auth: String::new(),
             cid: None,
             team: Team::Unknown,
             connected: true,
@@ -100,6 +104,8 @@ impl Client {
             ping: 0,
             gear: None,
             auth_name: None,
+            current_name: None,
+            armband: None,
             time_add: now,
             time_edit: now,
             last_visit: None,

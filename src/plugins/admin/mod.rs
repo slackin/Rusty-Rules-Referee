@@ -87,10 +87,12 @@ impl AdminPlugin {
             "warn" | "kick" | "find" | "seen" | "aliases" | "poke" => LEVEL_MOD,
             "warntest" | "warnremove" | "warninfo" | "warns" => LEVEL_MOD,
             "spank" | "notice" | "clear" => LEVEL_MOD,
+            "mute" | "unmute" => LEVEL_ADMIN,
             "tempban" | "lastbans" | "baninfo" | "spam" | "spams" | "clientinfo" => LEVEL_ADMIN,
             "ban" | "unban" | "permban" | "say" | "longlist" => LEVEL_SENIOR_ADMIN,
             "warnclear" | "kickall" | "banall" | "spankall" => LEVEL_SENIOR_ADMIN,
             "scream" | "mask" | "unmask" | "makereg" | "unreg" => LEVEL_SENIOR_ADMIN,
+            "setnextmap" => LEVEL_SENIOR_ADMIN,
             "putgroup" | "ungroup" | "maprotate" | "maps" | "nextmap" | "map" => LEVEL_SUPER_ADMIN,
             "die" | "restart" | "reconfig" | "pause" | "rebuild" => LEVEL_SUPER_ADMIN,
             "runas" | "iamgod" => LEVEL_SUPER_ADMIN,
@@ -334,11 +336,11 @@ impl AdminPlugin {
                         "!seen", "!aliases", "!poke", "!warns", "!list", "!admins"]);
                 }
                 if issuer_level >= LEVEL_ADMIN {
-                    cmds.extend(["!tempban", "!spam", "!lastbans", "!baninfo"]);
+                    cmds.extend(["!mute", "!unmute", "!tempban", "!spam", "!lastbans", "!baninfo"]);
                 }
                 if issuer_level >= LEVEL_SENIOR_ADMIN {
                     cmds.extend(["!ban", "!unban", "!permban", "!say", "!scream",
-                        "!mask", "!unmask", "!makereg", "!unreg"]);
+                        "!mask", "!unmask", "!makereg", "!unreg", "!setnextmap"]);
                 }
                 if issuer_level >= LEVEL_SUPER_ADMIN {
                     cmds.extend(["!putgroup", "!maprotate", "!maps", "!nextmap", "!map",
@@ -1290,6 +1292,15 @@ impl AdminPlugin {
                 }
             }
 
+            "setnextmap" => {
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !setnextmap <mapname>").await?;
+                } else {
+                    ctx.set_cvar("g_nextmap", args).await?;
+                    ctx.say(&format!("^7Next map set to ^2{}", args)).await?;
+                }
+            }
+
             // ---- Bot management ----
 
             "die" => {
@@ -1342,6 +1353,61 @@ impl AdminPlugin {
                 }
             }
 
+            "mute" => {
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !mute <player> [duration_seconds]").await?;
+                    return Ok(());
+                }
+                let (target_q, dur_str) = split_target_reason(args);
+                let duration: u32 = dur_str.parse().unwrap_or(600);
+
+                if let Some(target) = self.find_target(target_q, ctx).await {
+                    if target.max_level() >= issuer_level {
+                        ctx.message(&issuer_cid_str, "^1Cannot mute a player with equal or higher level").await?;
+                        return Ok(());
+                    }
+                    if let Some(ref cid) = target.cid {
+                        ctx.write(&format!("mute {} {}", cid, duration)).await?;
+                        mode.respond(ctx, &issuer_cid_str, &format!("^2{} ^7was muted for {} seconds", target.name, duration)).await?;
+                        // Record the mute as a penalty
+                        let penalty = Penalty {
+                            id: 0,
+                            penalty_type: PenaltyType::Mute,
+                            client_id: target.id,
+                            admin_id: issuer.as_ref().map(|c| c.id),
+                            duration: Some(duration as i64),
+                            reason: format!("Muted for {} seconds", duration),
+                            keyword: "mute".to_string(),
+                            inactive: false,
+                            time_add: Utc::now(),
+                            time_edit: Utc::now(),
+                            time_expire: Some(Utc::now() + chrono::Duration::seconds(duration as i64)),
+                        };
+                        let _ = ctx.storage.save_penalty(&penalty).await;
+                        info!(admin = issuer_cid, target = %target.name, duration = duration, "!mute");
+                    }
+                } else {
+                    ctx.message(&issuer_cid_str, &format!("No player found matching '{}'", target_q)).await?;
+                }
+            }
+
+            "unmute" => {
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !unmute <player>").await?;
+                    return Ok(());
+                }
+                if let Some(target) = self.find_target(args, ctx).await {
+                    if let Some(ref cid) = target.cid {
+                        ctx.write(&format!("unmute {}", cid)).await?;
+                        mode.respond(ctx, &issuer_cid_str, &format!("^2{} ^7was unmuted", target.name)).await?;
+                        let _ = ctx.storage.disable_all_penalties_of_type(target.id, PenaltyType::Mute).await;
+                        info!(admin = issuer_cid, target = %target.name, "!unmute");
+                    }
+                } else {
+                    ctx.message(&issuer_cid_str, &format!("No player found matching '{}'", args)).await?;
+                }
+            }
+
             _ => {
                 // Spell-check: suggest closest command
                 let known = [
@@ -1349,9 +1415,10 @@ impl AdminPlugin {
                     "list", "longlist", "status", "find", "seen", "aliases", "clientinfo",
                     "lookup", "poke", "warn", "warntest", "warns", "warnremove", "warnclear",
                     "warninfo", "notice", "clear", "kick", "spank", "kickall", "spankall",
+                    "mute", "unmute",
                     "tempban", "ban", "permban", "banall", "unban", "lastbans", "baninfo",
                     "putgroup", "ungroup", "makereg", "unreg", "mask", "unmask", "iamgod",
-                    "say", "scream", "spam", "spams", "maps", "nextmap", "maprotate", "map",
+                    "say", "scream", "spam", "spams", "maps", "nextmap", "maprotate", "map", "setnextmap",
                     "die", "restart", "reconfig", "pause", "rebuild", "runas", "r3",
                 ];
                 if let Some(suggestion) = find_closest(&command, &known) {

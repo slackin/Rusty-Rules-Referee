@@ -1,0 +1,27 @@
+-- Map-specific server configurations (per-map settings applied on map change)
+CREATE TABLE IF NOT EXISTS map_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    map_name VARCHAR(128) NOT NULL,
+    gametype VARCHAR(16) NOT NULL DEFAULT '',
+    capturelimit INTEGER,
+    timelimit INTEGER,
+    fraglimit INTEGER,
+    g_gear VARCHAR(64) NOT NULL DEFAULT '',
+    g_gravity INTEGER,
+    g_friendlyfire INTEGER,
+    g_followstrict INTEGER,
+    g_waverespawns INTEGER,
+    g_bombdefusetime INTEGER,
+    g_bombexplodetime INTEGER,
+    g_swaproles INTEGER,
+    g_maxrounds INTEGER,
+    g_matchmode INTEGER,
+    g_respawndelay INTEGER,
+    startmessage VARCHAR(255) NOT NULL DEFAULT '',
+    skiprandom INTEGER NOT NULL DEFAULT 0,
+    bot INTEGER NOT NULL DEFAULT 0,
+    custom_commands TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(map_name)
+);

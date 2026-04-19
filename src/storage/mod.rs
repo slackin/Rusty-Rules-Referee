@@ -4,7 +4,7 @@ pub mod sqlite;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, Group, Penalty, PenaltyType, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -100,6 +100,7 @@ pub trait Storage: Send + Sync {
     // ---- Chat message operations ----
     async fn save_chat_message(&self, msg: &ChatMessage) -> Result<i64, StorageError>;
     async fn get_chat_messages(&self, limit: u32, before_id: Option<i64>) -> Result<Vec<ChatMessage>, StorageError>;
+    async fn search_chat_messages(&self, query: Option<&str>, client_id: Option<i64>, limit: u32, before_id: Option<i64>) -> Result<Vec<ChatMessage>, StorageError>;
 
     // ---- Vote history operations ----
     async fn save_vote(&self, vote: &VoteRecord) -> Result<i64, StorageError>;
@@ -109,8 +110,30 @@ pub trait Storage: Send + Sync {
     async fn get_admin_note(&self, admin_user_id: i64) -> Result<Option<AdminNote>, StorageError>;
     async fn save_admin_note(&self, admin_user_id: i64, content: &str) -> Result<(), StorageError>;
 
+    // ---- Map configuration ----
+    async fn get_map_configs(&self) -> Result<Vec<MapConfig>, StorageError>;
+    async fn get_map_config(&self, map_name: &str) -> Result<Option<MapConfig>, StorageError>;
+    async fn get_map_config_by_id(&self, id: i64) -> Result<MapConfig, StorageError>;
+    async fn save_map_config(&self, config: &MapConfig) -> Result<i64, StorageError>;
+    async fn delete_map_config(&self, id: i64) -> Result<(), StorageError>;
+
     // ---- Dashboard summary ----
     async fn get_dashboard_summary(&self) -> Result<DashboardSummary, StorageError>;
+
+    // ---- Server management (master/client mode) ----
+    async fn get_servers(&self) -> Result<Vec<GameServer>, StorageError>;
+    async fn get_server(&self, server_id: i64) -> Result<GameServer, StorageError>;
+    async fn get_server_by_fingerprint(&self, fingerprint: &str) -> Result<Option<GameServer>, StorageError>;
+    async fn save_server(&self, server: &GameServer) -> Result<i64, StorageError>;
+    async fn update_server_status(&self, server_id: i64, status: &str, map: Option<&str>, players: u32, max_clients: u32) -> Result<(), StorageError>;
+    async fn delete_server(&self, server_id: i64) -> Result<(), StorageError>;
+
+    // ---- Sync queue (client-side offline queue) ----
+    async fn enqueue_sync(&self, entity_type: &str, entity_id: Option<i64>, action: &str, payload: &str, server_id: Option<i64>) -> Result<i64, StorageError>;
+    async fn dequeue_sync(&self, limit: u32) -> Result<Vec<SyncQueueEntry>, StorageError>;
+    async fn mark_synced(&self, ids: &[i64]) -> Result<(), StorageError>;
+    async fn retry_sync(&self, id: i64) -> Result<(), StorageError>;
+    async fn prune_synced(&self, older_than_days: u32) -> Result<u64, StorageError>;
 }
 
 /// Parse a DSN string like "mysql://user:pass@host:port/db" into components.

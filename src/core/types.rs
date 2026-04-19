@@ -20,6 +20,7 @@ pub enum PenaltyType {
     Kick,
     Ban,
     TempBan,
+    Mute,
 }
 
 /// A penalty record (ban, kick, warning, etc.).
@@ -110,4 +111,65 @@ pub struct DashboardSummary {
     pub total_warnings: u64,
     pub total_tempbans: u64,
     pub total_bans: u64,
+}
+
+/// A registered game server (used in master/client mode).
+#[derive(Debug, Clone, Serialize)]
+pub struct GameServer {
+    pub id: i64,
+    pub name: String,
+    pub address: String,
+    pub port: u16,
+    pub status: String,
+    pub current_map: Option<String>,
+    pub player_count: u32,
+    pub max_clients: u32,
+    pub last_seen: Option<DateTime<Utc>>,
+    pub config_json: Option<String>,
+    pub config_version: i64,
+    pub cert_fingerprint: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// An entry in the offline sync queue (used by client bots).
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncQueueEntry {
+    pub id: i64,
+    pub entity_type: String,
+    pub entity_id: Option<i64>,
+    pub action: String,
+    pub payload: String,
+    pub server_id: Option<i64>,
+    pub retry_count: i32,
+    pub created_at: DateTime<Utc>,
+    pub synced_at: Option<DateTime<Utc>>,
+}
+
+/// Per-map server configuration applied on map change.
+#[derive(Debug, Clone, Serialize)]
+pub struct MapConfig {
+    pub id: i64,
+    pub map_name: String,
+    pub gametype: String,
+    pub capturelimit: Option<i32>,
+    pub timelimit: Option<i32>,
+    pub fraglimit: Option<i32>,
+    pub g_gear: String,
+    pub g_gravity: Option<i32>,
+    pub g_friendlyfire: Option<i32>,
+    pub g_followstrict: Option<i32>,
+    pub g_waverespawns: Option<i32>,
+    pub g_bombdefusetime: Option<i32>,
+    pub g_bombexplodetime: Option<i32>,
+    pub g_swaproles: Option<i32>,
+    pub g_maxrounds: Option<i32>,
+    pub g_matchmode: Option<i32>,
+    pub g_respawndelay: Option<i32>,
+    pub startmessage: String,
+    pub skiprandom: i32,
+    pub bot: i32,
+    pub custom_commands: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }

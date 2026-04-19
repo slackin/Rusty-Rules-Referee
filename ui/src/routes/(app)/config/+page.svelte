@@ -1,7 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api.svelte.js';
-	import { Save, RotateCcw, ChevronDown, ChevronRight, Eye, EyeOff, Bot, Server, Globe, Puzzle, Info, Plus, Trash2 } from 'lucide-svelte';
+	import { Save, RotateCcw, ChevronDown, ChevronRight, Eye, EyeOff, Bot, Server, Globe, Puzzle, Info, Plus, Trash2, Database, ArrowRightLeft, FileSearch, CircleCheck, CircleAlert, TriangleAlert, CircleHelp, Wrench, FileText, Power, Folder, File, ChevronUp } from 'lucide-svelte';
 
 	let loading = $state(true);
 	let saving = $state(false);
@@ -23,6 +23,113 @@
 
 	// Expanded plugin panels
 	let expandedPlugins = $state({});
+
+	// Database migration state
+	let mysqlHost = $state('');
+	let mysqlPort = $state(3306);
+	let mysqlUser = $state('');
+	let mysqlPass = $state('');
+	let mysqlDb = $state('');
+	let showMysqlPass = $state(false);
+	let migrating = $state(false);
+	let migrateMsg = $state('');
+	let migrateMsgType = $state('');
+
+	// Server config analyzer state
+	let cfgPath = $state('');
+	let cfgLoading = $state(false);
+	let cfgData = $state(null);
+	let cfgMsg = $state('');
+	let cfgMsgType = $state('');
+	let cfgEditing = $state(false);
+	let cfgRawContent = $state('');
+	let cfgSaving = $state(false);
+
+	// Restart bot state
+	let restartArmed = $state(false);
+	let restarting = $state(false);
+	let restartMsg = $state('');
+
+	// File browser state
+	let browsing = $state(false);
+	let browseLoading = $state(false);
+	let browsePath = $state('/');
+	let browseEntries = $state([]);
+	let browseError = $state('');
+
+	async function browseDir(path) {
+		browseLoading = true;
+		browseError = '';
+		try {
+			const res = await api.browseFiles(path);
+			browsePath = res.path;
+			browseEntries = res.entries;
+		} catch (err) {
+			try {
+				const parsed = JSON.parse(err.message);
+				browseError = parsed.error || err.message;
+			} catch {
+				browseError = err.message;
+			}
+		} finally {
+			browseLoading = false;
+		}
+	}
+
+	function selectCfgFile(name) {
+		const sep = browsePath.endsWith('/') ? '' : '/';
+		cfgPath = browsePath + sep + name;
+		browsing = false;
+	}
+
+	async function restartBot() {
+		restarting = true;
+		restartMsg = '';
+		try {
+			await api.restartBot();
+			restartMsg = 'Bot is restarting...';
+			// Poll until the bot comes back online
+			let attempts = 0;
+			const poll = setInterval(async () => {
+				attempts++;
+				try {
+					await api.serverStatus();
+					clearInterval(poll);
+					restartMsg = 'Bot restarted successfully.';
+					restarting = false;
+					restartArmed = false;
+				} catch {
+					if (attempts > 30) {
+						clearInterval(poll);
+						restartMsg = 'Bot may not have restarted. Check server logs.';
+						restarting = false;
+						restartArmed = false;
+					}
+				}
+			}, 2000);
+		} catch (err) {
+			// The request may fail because the server is shutting down — that's expected
+			restartMsg = 'Bot is restarting...';
+			let attempts = 0;
+			const poll = setInterval(async () => {
+				attempts++;
+				try {
+					await api.serverStatus();
+					clearInterval(poll);
+					restartMsg = 'Bot restarted successfully.';
+					restarting = false;
+					restartArmed = false;
+				} catch {
+					if (attempts > 30) {
+						clearInterval(poll);
+						restartMsg = 'Bot may not have restarted. Check server logs.';
+						restarting = false;
+						restartArmed = false;
+					}
+				}
+			}, 2000);
+		}
+	}
 
 	// Plugin metadata: name -> { label, description, settings: [{ key, type, label, description, default, options? }] }
 	// Field types: text, textarea, number, boolean, select, string_list, key_value, task_list
@@ -275,6 +382,32 @@
 				{ key: 'announce_interval', type: 'number', label: 'Announce Interval', description: 'Announce headshot streaks every N headshots', default: 10 },
 			]
 		},
+		discord: {
+			label: 'Discord',
+			description: 'Relay game events (chat, kills, bans, map changes) to Discord via webhooks',
+			settings: [
+				{ key: 'webhook_url', type: 'text', label: 'Webhook URL', description: 'Default Discord webhook URL for all events', default: '' },
+				{ key: 'chat_webhook_url', type: 'text', label: 'Chat Webhook URL', description: 'Dedicated webhook for chat messages (overrides default)', default: '' },
+				{ key: 'admin_webhook_url', type: 'text', label: 'Admin Webhook URL', description: 'Dedicated webhook for admin actions (kicks, bans, warns)', default: '' },
+				{ key: 'events_webhook_url', type: 'text', label: 'Events Webhook URL', description: 'Dedicated webhook for game events (connections, map changes)', default: '' },
+				{ key: 'bot_name', type: 'text', label: 'Bot Display Name', description: 'Name shown in Discord for webhook messages', default: 'R3 Bot' },
+				{ key: 'relay_chat', type: 'boolean', label: 'Relay Chat', description: 'Send player chat messages to Discord', default: true },
+				{ key: 'relay_kills', type: 'boolean', label: 'Relay Kills', description: 'Send kill events to Discord', default: false },
+				{ key: 'relay_connections', type: 'boolean', label: 'Relay Connections', description: 'Send player join/leave events to Discord', default: true },
+				{ key: 'relay_admin_actions', type: 'boolean', label: 'Relay Admin Actions', description: 'Send kicks, bans, and warnings to Discord', default: true },
+				{ key: 'relay_map_changes', type: 'boolean', label: 'Relay Map Changes', description: 'Send map change and round start events to Discord', default: true },
+				{ key: 'rate_limit_ms', type: 'number', label: 'Rate Limit (ms)', description: 'Minimum milliseconds between webhook messages', default: 1000 },
+			]
+		},
+		geowelcome: {
+			label: 'Geo Welcome',
+			description: 'Greet players with their country when they connect (GeoIP lookup)',
+			settings: [
+				{ key: 'welcome_message', type: 'textarea', label: 'Welcome Message', description: 'Message template. Variables: $name, $country, $country_code', default: '^7Player ^2$name ^7connected from ^3$country' },
+				{ key: 'announce_public', type: 'boolean', label: 'Announce Public', description: 'Announce to the whole server (true) or just the player (false)', default: true },
+				{ key: 'geoip_api_url', type: 'text', label: 'GeoIP API URL', description: 'GeoIP lookup URL template. $ip will be replaced with the player IP', default: 'http://ip-api.com/json/$ip?fields=status,country,countryCode' },
+			]
+		},
 	};
 
 	// Event types for scheduler task_list
@@ -493,6 +626,43 @@
 		</div>
 	{:else}
 
+		<!-- Restart Bot -->
+		<section class="card">
+			<div class="flex items-center justify-between border-b border-surface-800 px-6 py-4">
+				<div class="flex items-center gap-3">
+					<div class="flex h-9 w-9 items-center justify-center rounded-lg bg-red-500/10">
+						<Power class="h-4.5 w-4.5 text-red-400" />
+					</div>
+					<div>
+						<h2 class="text-sm font-semibold text-surface-100">Bot Process</h2>
+						<p class="text-xs text-surface-500">Restart the bot to apply configuration changes</p>
+					</div>
+				</div>
+				<div class="flex items-center gap-3">
+					{#if restartMsg}
+						<span class="text-xs {restartMsg.includes('successfully') ? 'text-emerald-400' : restartMsg.includes('may not') ? 'text-red-400' : 'text-amber-400'}">{restartMsg}</span>
+					{/if}
+					{#if restarting}
+						<button class="btn-sm bg-red-500/20 text-red-300 cursor-not-allowed" disabled>
+							<div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-red-300/30 border-t-red-300"></div>
+							Restarting...
+						</button>
+					{:else if restartArmed}
+						<button class="btn-sm bg-red-600 text-white hover:bg-red-500" onclick={restartBot}>
+							<Power class="h-3.5 w-3.5" /> Confirm Restart
+						</button>
+						<button class="btn-sm bg-surface-700 text-surface-300 hover:bg-surface-600" onclick={() => restartArmed = false}>
+							Cancel
+						</button>
+					{:else}
+						<button class="btn-sm bg-red-500/10 text-red-400 ring-1 ring-red-500/20 hover:bg-red-500/20" onclick={() => restartArmed = true}>
+							<Power class="h-3.5 w-3.5" /> Restart Bot
+						</button>
+					{/if}
+				</div>
+			</div>
+		</section>
+
 		<!-- Referee Section -->
 		<section class="card">
 			<div class="flex items-center gap-3 border-b border-surface-800 px-6 py-4">
@@ -639,6 +809,381 @@
 					</div>
 					<p class="mt-1 text-xs text-surface-600">Leave as ******** to keep current secret</p>
 				</div>
+			</div>
+		</section>
+
+		<!-- Database Migration -->
+		{#if referee.database?.startsWith('sqlite')}
+		<section class="card">
+			<div class="flex items-center gap-3 border-b border-surface-800 px-6 py-4">
+				<div class="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-500/10">
+					<Database class="h-4.5 w-4.5 text-orange-400" />
+				</div>
+				<div>
+					<h2 class="text-sm font-semibold text-surface-100">Migrate to MySQL</h2>
+					<p class="text-xs text-surface-500">Transfer all data from the current SQLite database to a MySQL server</p>
+				</div>
+			</div>
+			<div class="p-6 space-y-5">
+				{#if migrateMsg}
+					<div class="rounded-lg px-4 py-3 text-sm {migrateMsgType === 'error' ? 'bg-red-500/10 text-red-400 ring-1 ring-red-500/20' : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20'}">
+						{migrateMsg}
+					</div>
+				{/if}
+				<div class="grid gap-5 sm:grid-cols-2">
+					<div>
+						<label for="mysql_host" class="mb-1.5 block text-xs font-medium text-surface-400">MySQL Host</label>
+						<input id="mysql_host" type="text" class="input font-mono" bind:value={mysqlHost} placeholder="localhost" />
+					</div>
+					<div>
+						<label for="mysql_port" class="mb-1.5 block text-xs font-medium text-surface-400">Port</label>
+						<input id="mysql_port" type="number" class="input font-mono" bind:value={mysqlPort} placeholder="3306" />
+					</div>
+					<div>
+						<label for="mysql_user" class="mb-1.5 block text-xs font-medium text-surface-400">Username</label>
+						<input id="mysql_user" type="text" class="input font-mono" bind:value={mysqlUser} placeholder="root" />
+					</div>
+					<div>
+						<label for="mysql_pass" class="mb-1.5 block text-xs font-medium text-surface-400">Password</label>
+						<div class="relative">
+							<input id="mysql_pass" type={showMysqlPass ? 'text' : 'password'} class="input font-mono pr-10" bind:value={mysqlPass} placeholder="••••••••" />
+							<button type="button" class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-surface-500 hover:text-surface-300" onclick={() => showMysqlPass = !showMysqlPass}>
+								{#if showMysqlPass}<EyeOff class="h-4 w-4" />{:else}<Eye class="h-4 w-4" />{/if}
+							</button>
+						</div>
+					</div>
+					<div class="sm:col-span-2">
+						<label for="mysql_db" class="mb-1.5 block text-xs font-medium text-surface-400">Database Name <span class="text-surface-600 font-normal">(optional)</span></label>
+						<input id="mysql_db" type="text" class="input font-mono" bind:value={mysqlDb} placeholder="b3 (auto-created if blank)" />
+						<p class="mt-1 text-xs text-surface-600">Leave blank to auto-create a database named "b3"</p>
+					</div>
+				</div>
+				<div class="flex items-center gap-4 pt-2">
+					<button
+						class="btn-primary btn-sm"
+						disabled={migrating || !mysqlHost || !mysqlUser || !mysqlPass}
+						onclick={async () => {
+							migrating = true;
+							migrateMsg = '';
+							try {
+								const res = await api.migrateToMysql({
+									host: mysqlHost,
+									port: mysqlPort || 3306,
+									username: mysqlUser,
+									password: mysqlPass,
+									database: mysqlDb || undefined,
+								});
+								migrateMsg = (res.message || 'Migration completed successfully.') + ' Click "Restart Bot" above to activate.';
+								migrateMsgType = 'success';
+								// Reload config to reflect the new database setting
+								try {
+									const data = await api.getConfig();
+									const cfg = data.config || data;
+									referee = cfg.referee || {};
+									server = cfg.server || {};
+									web = cfg.web || {};
+									plugins = (cfg.plugins || []).map(p => ({ ...p, settings: p.settings || {} }));
+									originalJson = JSON.stringify({ referee, server, web, plugins });
+								} catch { /* config reload is best-effort */ }
+							} catch (err) {
+								try {
+									const parsed = JSON.parse(err.message);
+									migrateMsg = parsed.error || err.message;
+								} catch {
+									migrateMsg = err.message;
+								}
+								migrateMsgType = 'error';
+							} finally {
+								migrating = false;
+							}
+						}}
+					>
+						{#if migrating}
+							<div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white"></div>
+							Migrating...
+						{:else}
+							<ArrowRightLeft class="h-3.5 w-3.5" />
+							Migrate to MySQL
+						{/if}
+					</button>
+					<p class="text-xs text-surface-500">This will copy all data and update the config. A restart is required after migration.</p>
+				</div>
+			</div>
+		</section>
+		{/if}
+
+		<!-- Server Config Analyzer -->
+		<section class="card">
+			<div class="flex items-center gap-3 border-b border-surface-800 px-6 py-4">
+				<div class="flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-500/10">
+					<FileSearch class="h-4.5 w-4.5 text-cyan-400" />
+				</div>
+				<div>
+					<h2 class="text-sm font-semibold text-surface-100">Server Config Analyzer</h2>
+					<p class="text-xs text-surface-500">Load and verify your Urban Terror server.cfg for bot compatibility</p>
+				</div>
+			</div>
+			<div class="p-6 space-y-5">
+				{#if cfgMsg}
+					<div class="rounded-lg px-4 py-3 text-sm {cfgMsgType === 'error' ? 'bg-red-500/10 text-red-400 ring-1 ring-red-500/20' : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20'}">
+						{cfgMsg}
+					</div>
+				{/if}
+
+				<!-- Path input + browse + load button -->
+				<div class="flex gap-3 items-end">
+					<div class="flex-1">
+						<label for="cfg_path" class="mb-1.5 block text-xs font-medium text-surface-400">Server Config File Path</label>
+						<input id="cfg_path" type="text" class="input font-mono" bind:value={cfgPath} placeholder="/home/rusty/urbanterror/UrbanTerror43/q3ut4/server.cfg" />
+					</div>
+					<button
+						class="btn-sm bg-surface-700 text-surface-300 hover:bg-surface-600 whitespace-nowrap"
+						disabled={browseLoading}
+						onclick={async () => {
+							if (browsing) {
+								browsing = false;
+							} else {
+								browsing = true;
+								await browseDir(cfgPath && cfgPath.includes('/') ? cfgPath.substring(0, cfgPath.lastIndexOf('/')) || '/' : '/');
+							}
+						}}
+					>
+						<Folder class="h-3.5 w-3.5" />
+						Browse
+					</button>
+					<button
+						class="btn-primary btn-sm whitespace-nowrap"
+						disabled={cfgLoading || !cfgPath}
+						onclick={async () => {
+							cfgLoading = true;
+							cfgMsg = '';
+							cfgData = null;
+							cfgEditing = false;
+							try {
+								cfgData = await api.analyzeServerCfg(cfgPath);
+								cfgRawContent = cfgData.raw || '';
+							} catch (err) {
+								try {
+									const parsed = JSON.parse(err.message);
+									cfgMsg = parsed.error || err.message;
+								} catch {
+									cfgMsg = err.message;
+								}
+								cfgMsgType = 'error';
+							} finally {
+								cfgLoading = false;
+							}
+						}}
+					>
+						{#if cfgLoading}
+							<div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white"></div>
+						{:else}
+							<FileSearch class="h-3.5 w-3.5" />
+						{/if}
+						Load & Analyze
+					</button>
+				</div>
+
+				<!-- File Browser -->
+				{#if browsing}
+					<div class="rounded-lg ring-1 ring-surface-700 bg-surface-900 overflow-hidden">
+						<!-- Breadcrumb / current path -->
+						<div class="flex items-center gap-2 border-b border-surface-700 px-4 py-2.5 bg-surface-800/50">
+							{#if browseLoading}
+								<div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent/30 border-t-accent"></div>
+							{/if}
+							<span class="text-xs font-mono text-surface-300 truncate flex-1">{browsePath}</span>
+							{#if browsePath !== '/'}
+								<button class="text-xs text-accent hover:text-accent/80 flex items-center gap-1" onclick={() => browseDir(browsePath.substring(0, browsePath.lastIndexOf('/')) || '/')}>
+									<ChevronUp class="h-3 w-3" /> Up
+								</button>
+							{/if}
+						</div>
+						{#if browseError}
+							<div class="px-4 py-3 text-xs text-red-400">{browseError}</div>
+						{/if}
+						<div class="max-h-64 overflow-y-auto">
+							{#if browseEntries.length === 0 && !browseLoading && !browseError}
+								<div class="px-4 py-6 text-center text-xs text-surface-500">No directories or .cfg files found</div>
+							{/if}
+							{#each browseEntries as entry}
+								{#if entry.is_dir}
+									<button
+										class="flex w-full items-center gap-2.5 px-4 py-2 text-left hover:bg-surface-800 transition-colors"
+										onclick={() => browseDir(browsePath + (browsePath.endsWith('/') ? '' : '/') + entry.name)}
+									>
+										<Folder class="h-4 w-4 text-amber-400 shrink-0" />
+										<span class="text-sm text-surface-200 truncate">{entry.name}</span>
+									</button>
+								{:else}
+									<button
+										class="flex w-full items-center gap-2.5 px-4 py-2 text-left hover:bg-surface-800 transition-colors"
+										onclick={() => selectCfgFile(entry.name)}
+									>
+										<File class="h-4 w-4 text-cyan-400 shrink-0" />
+										<span class="text-sm text-surface-200 truncate">{entry.name}</span>
+										<span class="ml-auto text-xs text-surface-500">{(entry.size / 1024).toFixed(1)} KB</span>
+									</button>
+								{/if}
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				{#if cfgData}
+					<!-- Health Checks -->
+					<div>
+						<h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-surface-400">Compatibility Checks</h3>
+						<div class="space-y-2">
+							{#each cfgData.checks as check}
+								<div class="flex items-start gap-3 rounded-lg px-4 py-3 {
+									check.status === 'ok' ? 'bg-emerald-500/5 ring-1 ring-emerald-500/15' :
+									check.status === 'error' ? 'bg-red-500/5 ring-1 ring-red-500/15' :
+									check.status === 'warning' ? 'bg-amber-500/5 ring-1 ring-amber-500/15' :
+									'bg-blue-500/5 ring-1 ring-blue-500/15'
+								}">
+									<div class="mt-0.5">
+										{#if check.status === 'ok'}
+											<CircleCheck class="h-4 w-4 text-emerald-400" />
+										{:else if check.status === 'error'}
+											<CircleAlert class="h-4 w-4 text-red-400" />
+										{:else if check.status === 'warning'}
+											<TriangleAlert class="h-4 w-4 text-amber-400" />
+										{:else}
+											<CircleHelp class="h-4 w-4 text-blue-400" />
+										{/if}
+									</div>
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-2">
+											<span class="font-mono text-xs text-surface-300">{check.key}</span>
+											<span class="text-xs {
+												check.status === 'ok' ? 'text-emerald-400' :
+												check.status === 'error' ? 'text-red-400' :
+												check.status === 'warning' ? 'text-amber-400' :
+												'text-blue-400'
+											}">{check.status === 'ok' ? 'Pass' : check.status === 'error' ? 'Fail' : check.status === 'warning' ? 'Warning' : 'Info'}</span>
+										</div>
+										<p class="text-sm text-surface-300 mt-0.5">{check.message}</p>
+									</div>
+									{#if check.fix_key && check.fix_value !== undefined}
+										<button
+											class="btn-sm text-xs bg-surface-800 hover:bg-surface-700 text-surface-300 whitespace-nowrap"
+											onclick={() => {
+												// Apply fix to raw content
+												const regex = new RegExp(`^(\\s*set[a]?\\s+${check.fix_key}\\s+).*$`, 'm');
+												const newLine = `set ${check.fix_key} "${check.fix_value}"`;
+												if (regex.test(cfgRawContent)) {
+													cfgRawContent = cfgRawContent.replace(regex, newLine);
+												} else {
+													cfgRawContent = cfgRawContent.trimEnd() + '\n' + newLine + '\n';
+												}
+												cfgEditing = true;
+											}}
+										>
+											<Wrench class="h-3 w-3" /> Fix
+										</button>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</div>
+
+					<!-- Settings Table -->
+					<div>
+						<h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-surface-400">All Settings ({cfgData.settings.length})</h3>
+						<div class="overflow-hidden rounded-lg ring-1 ring-surface-800">
+							<table class="w-full text-sm">
+								<thead>
+									<tr class="bg-surface-900/50">
+										<th class="px-4 py-2 text-left text-xs font-medium text-surface-400">Key</th>
+										<th class="px-4 py-2 text-left text-xs font-medium text-surface-400">Value</th>
+									</tr>
+								</thead>
+								<tbody class="divide-y divide-surface-800/50">
+									{#each cfgData.settings as s}
+										<tr class="hover:bg-surface-800/30">
+											<td class="px-4 py-2 font-mono text-xs text-surface-300">{s.key}</td>
+											<td class="px-4 py-2 font-mono text-xs text-surface-200">{s.value}</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					</div>
+
+					<!-- Map Rotation -->
+					{#if cfgData.map_rotation.length > 0}
+						<div>
+							<h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-surface-400">Map Rotation ({cfgData.map_rotation.length} maps)</h3>
+							<div class="flex flex-wrap gap-2">
+								{#each cfgData.map_rotation as map}
+									<span class="rounded-md bg-surface-800 px-3 py-1.5 text-xs font-mono text-surface-200">{map}</span>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Raw Editor -->
+					<div>
+						<div class="flex items-center justify-between mb-3">
+							<h3 class="text-xs font-semibold uppercase tracking-wider text-surface-400">Raw Config</h3>
+							<div class="flex gap-2">
+								{#if !cfgEditing}
+									<button class="btn-sm text-xs bg-surface-800 hover:bg-surface-700 text-surface-300" onclick={() => cfgEditing = true}>
+										<FileText class="h-3 w-3" /> Edit
+									</button>
+								{:else}
+									<button class="btn-sm text-xs bg-surface-800 hover:bg-surface-700 text-surface-300" onclick={() => { cfgEditing = false; cfgRawContent = cfgData.raw; }}>
+										Cancel
+									</button>
+									<button
+										class="btn-primary btn-sm text-xs"
+										disabled={cfgSaving}
+										onclick={async () => {
+											cfgSaving = true;
+											cfgMsg = '';
+											try {
+												const res = await api.saveServerCfg(cfgPath, cfgRawContent);
+												cfgMsg = res.message || 'Server config saved.';
+												cfgMsgType = 'success';
+												cfgEditing = false;
+												// Reload
+												cfgData = await api.analyzeServerCfg(cfgPath);
+												cfgRawContent = cfgData.raw || '';
+											} catch (err) {
+												try {
+													const parsed = JSON.parse(err.message);
+													cfgMsg = parsed.error || err.message;
+												} catch {
+													cfgMsg = err.message;
+												}
+												cfgMsgType = 'error';
+											} finally {
+												cfgSaving = false;
+											}
+										}}
+									>
+										{#if cfgSaving}
+											<div class="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white"></div>
+										{:else}
+											<Save class="h-3 w-3" />
+										{/if}
+										Save Config
+									</button>
+								{/if}
+							</div>
+						</div>
+						{#if cfgEditing}
+							<textarea
+								class="input w-full font-mono text-xs leading-relaxed"
+								rows="20"
+								bind:value={cfgRawContent}
+							></textarea>
+						{:else}
+							<pre class="overflow-auto rounded-lg bg-surface-900/50 p-4 text-xs font-mono text-surface-300 ring-1 ring-surface-800 max-h-80">{cfgData.raw}</pre>
+						{/if}
+					</div>
+				{/if}
 			</div>
 		</section>
 

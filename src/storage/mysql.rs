@@ -4,11 +4,18 @@ use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, Group, Penalty, PenaltyType, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct MysqlStorage {
     pool: MySqlPool,
+}
+
+impl MysqlStorage {
+    /// Return a reference to the underlying connection pool (used for bulk migration).
+    pub fn pool(&self) -> &MySqlPool {
+        &self.pool
+    }
 }
 
 impl MysqlStorage {
@@ -112,6 +119,187 @@ impl MysqlStorage {
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         }
 
+        // XLR stats tables
+        let xlr_statements = [
+            "CREATE TABLE IF NOT EXISTS xlr_playerstats (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                client_id BIGINT NOT NULL UNIQUE,
+                kills INT NOT NULL DEFAULT 0,
+                deaths INT NOT NULL DEFAULT 0,
+                teamkills INT NOT NULL DEFAULT 0,
+                teamdeaths INT NOT NULL DEFAULT 0,
+                suicides INT NOT NULL DEFAULT 0,
+                ratio DOUBLE NOT NULL DEFAULT 0.0,
+                skill DOUBLE NOT NULL DEFAULT 1000.0,
+                assists INT NOT NULL DEFAULT 0,
+                assistskill DOUBLE NOT NULL DEFAULT 0.0,
+                curstreak INT NOT NULL DEFAULT 0,
+                winstreak INT NOT NULL DEFAULT 0,
+                losestreak INT NOT NULL DEFAULT 0,
+                rounds INT NOT NULL DEFAULT 0,
+                smallestratio DOUBLE NOT NULL DEFAULT 0.0,
+                biggestratio DOUBLE NOT NULL DEFAULT 0.0,
+                smalleststreak INT NOT NULL DEFAULT 0,
+                biggeststreak INT NOT NULL DEFAULT 0,
+                INDEX idx_xlr_ps_client (client_id),
+                INDEX idx_xlr_ps_skill (skill),
+                FOREIGN KEY (client_id) REFERENCES clients(id)
+            )",
+            "CREATE TABLE IF NOT EXISTS xlr_weaponstats (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                client_id BIGINT NOT NULL,
+                name VARCHAR(64) NOT NULL,
+                kills INT NOT NULL DEFAULT 0,
+                deaths INT NOT NULL DEFAULT 0,
+                teamkills INT NOT NULL DEFAULT 0,
+                teamdeaths INT NOT NULL DEFAULT 0,
+                suicides INT NOT NULL DEFAULT 0,
+                headshots INT NOT NULL DEFAULT 0,
+                UNIQUE KEY uq_ws_client_name (client_id, name),
+                FOREIGN KEY (client_id) REFERENCES clients(id)
+            )",
+            "CREATE TABLE IF NOT EXISTS xlr_weaponusage (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                name VARCHAR(64) NOT NULL UNIQUE,
+                kills INT NOT NULL DEFAULT 0,
+                deaths INT NOT NULL DEFAULT 0,
+                teamkills INT NOT NULL DEFAULT 0,
+                teamdeaths INT NOT NULL DEFAULT 0,
+                suicides INT NOT NULL DEFAULT 0,
+                headshots INT NOT NULL DEFAULT 0
+            )",
+            "CREATE TABLE IF NOT EXISTS xlr_bodyparts (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                client_id BIGINT NOT NULL,
+                name VARCHAR(64) NOT NULL,
+                kills INT NOT NULL DEFAULT 0,
+                deaths INT NOT NULL DEFAULT 0,
+                teamkills INT NOT NULL DEFAULT 0,
+                teamdeaths INT NOT NULL DEFAULT 0,
+                suicides INT NOT NULL DEFAULT 0,
+                UNIQUE KEY uq_bp_client_name (client_id, name),
+                FOREIGN KEY (client_id) REFERENCES clients(id)
+            )",
+            "CREATE TABLE IF NOT EXISTS xlr_opponents (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                client_id BIGINT NOT NULL,
+                target_id BIGINT NOT NULL,
+                kills INT NOT NULL DEFAULT 0,
+                deaths INT NOT NULL DEFAULT 0,
+                retals INT NOT NULL DEFAULT 0,
+                UNIQUE KEY uq_opp_client_target (client_id, target_id),
+                FOREIGN KEY (client_id) REFERENCES clients(id),
+                FOREIGN KEY (target_id) REFERENCES clients(id)
+            )",
+            "CREATE TABLE IF NOT EXISTS xlr_mapstats (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                name VARCHAR(64) NOT NULL UNIQUE,
+                kills INT NOT NULL DEFAULT 0,
+                suicides INT NOT NULL DEFAULT 0,
+                teamkills INT NOT NULL DEFAULT 0,
+                rounds INT NOT NULL DEFAULT 0
+            )",
+            "CREATE TABLE IF NOT EXISTS xlr_history (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                client_id BIGINT NOT NULL,
+                kills INT NOT NULL DEFAULT 0,
+                deaths INT NOT NULL DEFAULT 0,
+                skill DOUBLE NOT NULL DEFAULT 0.0,
+                time_add DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_xlr_hist_client (client_id),
+                FOREIGN KEY (client_id) REFERENCES clients(id)
+            )",
+            // Dashboard / admin tables
+            "CREATE TABLE IF NOT EXISTS admin_users (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                username VARCHAR(255) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(50) NOT NULL DEFAULT 'admin',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )",
+            "CREATE TABLE IF NOT EXISTS audit_log (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                admin_user_id BIGINT,
+                action VARCHAR(255) NOT NULL,
+                detail TEXT NOT NULL,
+                ip_address VARCHAR(45),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (admin_user_id) REFERENCES admin_users(id)
+            )",
+            "CREATE TABLE IF NOT EXISTS chat_messages (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                client_id BIGINT NOT NULL,
+                client_name VARCHAR(255) NOT NULL DEFAULT '',
+                channel VARCHAR(50) NOT NULL DEFAULT '',
+                message TEXT NOT NULL,
+                time_add DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_chat_client (client_id),
+                FOREIGN KEY (client_id) REFERENCES clients(id)
+            )",
+            "CREATE TABLE IF NOT EXISTS vote_history (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                client_id BIGINT NOT NULL,
+                client_name VARCHAR(255) NOT NULL DEFAULT '',
+                vote_type VARCHAR(50) NOT NULL DEFAULT '',
+                vote_data TEXT NOT NULL,
+                time_add DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_vote_client (client_id),
+                FOREIGN KEY (client_id) REFERENCES clients(id)
+            )",
+            "CREATE TABLE IF NOT EXISTS admin_notes (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                admin_user_id BIGINT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (admin_user_id) REFERENCES admin_users(id)
+            )",
+        ];
+
+        for stmt in &xlr_statements {
+            sqlx::query(stmt)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+        }
+
+        // Add auth column if not present
+        let _ = sqlx::query("ALTER TABLE clients ADD COLUMN auth VARCHAR(255) NOT NULL DEFAULT ''")
+            .execute(&self.pool)
+            .await;
+
+        // Map configs table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS map_configs (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                map_name VARCHAR(128) NOT NULL UNIQUE,
+                gametype VARCHAR(16) NOT NULL DEFAULT '',
+                capturelimit INT,
+                timelimit INT,
+                fraglimit INT,
+                g_gear VARCHAR(64) NOT NULL DEFAULT '',
+                g_gravity INT,
+                g_friendlyfire INT,
+                g_followstrict INT,
+                g_waverespawns INT,
+                g_bombdefusetime INT,
+                g_bombexplodetime INT,
+                g_swaproles INT,
+                g_maxrounds INT,
+                g_matchmode INT,
+                g_respawndelay INT,
+                startmessage VARCHAR(255) NOT NULL DEFAULT '',
+                skiprandom INT NOT NULL DEFAULT 0,
+                bot INT NOT NULL DEFAULT 0,
+                custom_commands TEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )"
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
         info!("MySQL migrations complete");
         Ok(())
     }
@@ -124,6 +312,7 @@ fn penalty_type_to_str(pt: PenaltyType) -> &'static str {
         PenaltyType::Kick => "Kick",
         PenaltyType::Ban => "Ban",
         PenaltyType::TempBan => "TempBan",
+        PenaltyType::Mute => "Mute",
     }
 }
 
@@ -134,6 +323,7 @@ fn str_to_penalty_type(s: &str) -> PenaltyType {
         "Kick" => PenaltyType::Kick,
         "Ban" => PenaltyType::Ban,
         "TempBan" => PenaltyType::TempBan,
+        "Mute" => PenaltyType::Mute,
         _ => PenaltyType::Warning,
     }
 }
@@ -154,6 +344,7 @@ fn row_to_client(row: &MySqlRow) -> Client {
     client.password = row.get("password");
     client.group_bits = row.get::<i64, _>("group_bits") as u64;
     client.auto_login = row.get::<i8, _>("auto_login") != 0;
+    client.auth = row.get::<Option<String>, _>("auth").unwrap_or_default();
     client.time_add = parse_dt(row.get("time_add"));
     client.time_edit = parse_dt(row.get("time_edit"));
 
@@ -258,6 +449,34 @@ fn row_to_admin_note(row: &MySqlRow) -> AdminNote {
     }
 }
 
+fn row_to_map_config(row: &MySqlRow) -> MapConfig {
+    MapConfig {
+        id: row.get("id"),
+        map_name: row.get("map_name"),
+        gametype: row.get("gametype"),
+        capturelimit: row.get("capturelimit"),
+        timelimit: row.get("timelimit"),
+        fraglimit: row.get("fraglimit"),
+        g_gear: row.get("g_gear"),
+        g_gravity: row.get("g_gravity"),
+        g_friendlyfire: row.get("g_friendlyfire"),
+        g_followstrict: row.get("g_followstrict"),
+        g_waverespawns: row.get("g_waverespawns"),
+        g_bombdefusetime: row.get("g_bombdefusetime"),
+        g_bombexplodetime: row.get("g_bombexplodetime"),
+        g_swaproles: row.get("g_swaproles"),
+        g_maxrounds: row.get("g_maxrounds"),
+        g_matchmode: row.get("g_matchmode"),
+        g_respawndelay: row.get("g_respawndelay"),
+        startmessage: row.get("startmessage"),
+        skiprandom: row.get("skiprandom"),
+        bot: row.get("bot"),
+        custom_commands: row.get("custom_commands"),
+        created_at: parse_dt(row.get("created_at")),
+        updated_at: parse_dt(row.get("updated_at")),
+    }
+}
+
 #[async_trait]
 impl Storage for MysqlStorage {
     fn protocol(&self) -> StorageProtocol {
@@ -311,7 +530,7 @@ impl Storage for MysqlStorage {
         if client.id > 0 {
             sqlx::query(
                 "UPDATE clients SET name = ?, ip = ?, greeting = ?, login = ?, password = ?, \
-                 group_bits = ?, auto_login = ?, last_visit = ?, pbid = ? WHERE id = ?"
+                 group_bits = ?, auto_login = ?, last_visit = ?, pbid = ?, auth = ? WHERE id = ?"
             )
             .bind(&client.name)
             .bind(&ip_str)
@@ -322,6 +541,7 @@ impl Storage for MysqlStorage {
             .bind(client.auto_login as i8)
             .bind(last_visit_ndt)
             .bind(&client.pbid)
+            .bind(&client.auth)
             .bind(client.id)
             .execute(&self.pool)
             .await
@@ -330,7 +550,7 @@ impl Storage for MysqlStorage {
         } else {
             let result = sqlx::query(
                 "INSERT INTO clients (guid, pbid, name, ip, greeting, login, password, \
-                 group_bits, auto_login, last_visit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 group_bits, auto_login, last_visit, auth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&client.guid)
             .bind(&client.pbid)
@@ -342,6 +562,7 @@ impl Storage for MysqlStorage {
             .bind(client.group_bits as i64)
             .bind(client.auto_login as i8)
             .bind(last_visit_ndt)
+            .bind(&client.auth)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -769,19 +990,36 @@ impl Storage for MysqlStorage {
     }
 
     async fn get_chat_messages(&self, limit: u32, before_id: Option<i64>) -> Result<Vec<ChatMessage>, StorageError> {
-        let rows = if let Some(bid) = before_id {
-            sqlx::query("SELECT * FROM chat_messages WHERE id < ? ORDER BY id DESC LIMIT ?")
-                .bind(bid)
-                .bind(limit as i64)
-                .fetch_all(&self.pool)
-                .await
-        } else {
-            sqlx::query("SELECT * FROM chat_messages ORDER BY id DESC LIMIT ?")
-                .bind(limit as i64)
-                .fetch_all(&self.pool)
-                .await
+        self.search_chat_messages(None, None, limit, before_id).await
+    }
+
+    async fn search_chat_messages(&self, query: Option<&str>, client_id: Option<i64>, limit: u32, before_id: Option<i64>) -> Result<Vec<ChatMessage>, StorageError> {
+        let mut sql = String::from("SELECT * FROM chat_messages WHERE 1=1");
+        if before_id.is_some() {
+            sql.push_str(" AND id < ?");
         }
-        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        if client_id.is_some() {
+            sql.push_str(" AND client_id = ?");
+        }
+        if query.is_some() {
+            sql.push_str(" AND message LIKE ?");
+        }
+        sql.push_str(" ORDER BY id DESC LIMIT ?");
+
+        let mut q = sqlx::query(&sql);
+        if let Some(bid) = before_id {
+            q = q.bind(bid);
+        }
+        if let Some(cid) = client_id {
+            q = q.bind(cid);
+        }
+        if let Some(search) = query {
+            q = q.bind(format!("%{}%", search));
+        }
+        q = q.bind(limit as i64);
+
+        let rows = q.fetch_all(&self.pool).await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(rows.iter().map(row_to_chat_message).collect())
     }
 
@@ -844,6 +1082,114 @@ impl Storage for MysqlStorage {
         Ok(())
     }
 
+    // ---- Map configuration ----
+
+    async fn get_map_configs(&self) -> Result<Vec<MapConfig>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM map_configs ORDER BY map_name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_map_config).collect())
+    }
+
+    async fn get_map_config(&self, map_name: &str) -> Result<Option<MapConfig>, StorageError> {
+        let row = sqlx::query("SELECT * FROM map_configs WHERE map_name = ?")
+            .bind(map_name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.as_ref().map(row_to_map_config))
+    }
+
+    async fn get_map_config_by_id(&self, id: i64) -> Result<MapConfig, StorageError> {
+        sqlx::query("SELECT * FROM map_configs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?
+            .as_ref()
+            .map(row_to_map_config)
+            .ok_or(StorageError::NotFound)
+    }
+
+    async fn save_map_config(&self, config: &MapConfig) -> Result<i64, StorageError> {
+        if config.id > 0 {
+            sqlx::query(
+                "UPDATE map_configs SET map_name=?, gametype=?, capturelimit=?, timelimit=?, fraglimit=?, \
+                 g_gear=?, g_gravity=?, g_friendlyfire=?, g_followstrict=?, g_waverespawns=?, \
+                 g_bombdefusetime=?, g_bombexplodetime=?, g_swaproles=?, g_maxrounds=?, g_matchmode=?, \
+                 g_respawndelay=?, startmessage=?, skiprandom=?, bot=?, custom_commands=? \
+                 WHERE id=?"
+            )
+            .bind(&config.map_name)
+            .bind(&config.gametype)
+            .bind(config.capturelimit)
+            .bind(config.timelimit)
+            .bind(config.fraglimit)
+            .bind(&config.g_gear)
+            .bind(config.g_gravity)
+            .bind(config.g_friendlyfire)
+            .bind(config.g_followstrict)
+            .bind(config.g_waverespawns)
+            .bind(config.g_bombdefusetime)
+            .bind(config.g_bombexplodetime)
+            .bind(config.g_swaproles)
+            .bind(config.g_maxrounds)
+            .bind(config.g_matchmode)
+            .bind(config.g_respawndelay)
+            .bind(&config.startmessage)
+            .bind(config.skiprandom)
+            .bind(config.bot)
+            .bind(&config.custom_commands)
+            .bind(config.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(config.id)
+        } else {
+            let result = sqlx::query(
+                "INSERT INTO map_configs (map_name, gametype, capturelimit, timelimit, fraglimit, \
+                 g_gear, g_gravity, g_friendlyfire, g_followstrict, g_waverespawns, \
+                 g_bombdefusetime, g_bombexplodetime, g_swaproles, g_maxrounds, g_matchmode, \
+                 g_respawndelay, startmessage, skiprandom, bot, custom_commands) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&config.map_name)
+            .bind(&config.gametype)
+            .bind(config.capturelimit)
+            .bind(config.timelimit)
+            .bind(config.fraglimit)
+            .bind(&config.g_gear)
+            .bind(config.g_gravity)
+            .bind(config.g_friendlyfire)
+            .bind(config.g_followstrict)
+            .bind(config.g_waverespawns)
+            .bind(config.g_bombdefusetime)
+            .bind(config.g_bombexplodetime)
+            .bind(config.g_swaproles)
+            .bind(config.g_maxrounds)
+            .bind(config.g_matchmode)
+            .bind(config.g_respawndelay)
+            .bind(&config.startmessage)
+            .bind(config.skiprandom)
+            .bind(config.bot)
+            .bind(&config.custom_commands)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(result.last_insert_id() as i64)
+        }
+    }
+
+    async fn delete_map_config(&self, id: i64) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM map_configs WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
     // ---- Dashboard summary ----
 
     async fn get_dashboard_summary(&self) -> Result<DashboardSummary, StorageError> {
@@ -864,5 +1210,250 @@ impl Storage for MysqlStorage {
             total_tempbans: row.get::<i64, _>("total_tempbans") as u64,
             total_bans: row.get::<i64, _>("total_bans") as u64,
         })
+    }
+
+    // ---- Server management (master/client mode) ----
+
+    async fn get_servers(&self) -> Result<Vec<GameServer>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM servers ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(rows.iter().map(|r| GameServer {
+            id: r.get("id"),
+            name: r.get("name"),
+            address: r.get("address"),
+            port: r.get::<i32, _>("port") as u16,
+            status: r.get("status"),
+            current_map: r.get("current_map"),
+            player_count: r.get::<i32, _>("player_count") as u32,
+            max_clients: r.get::<i32, _>("max_clients") as u32,
+            last_seen: r.get("last_seen"),
+            config_json: r.get("config_json"),
+            config_version: r.get("config_version"),
+            cert_fingerprint: r.get("cert_fingerprint"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        }).collect())
+    }
+
+    async fn get_server(&self, server_id: i64) -> Result<GameServer, StorageError> {
+        let row = sqlx::query("SELECT * FROM servers WHERE id = ?")
+            .bind(server_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(GameServer {
+            id: row.get("id"),
+            name: row.get("name"),
+            address: row.get("address"),
+            port: row.get::<i32, _>("port") as u16,
+            status: row.get("status"),
+            current_map: row.get("current_map"),
+            player_count: row.get::<i32, _>("player_count") as u32,
+            max_clients: row.get::<i32, _>("max_clients") as u32,
+            last_seen: row.get("last_seen"),
+            config_json: row.get("config_json"),
+            config_version: row.get("config_version"),
+            cert_fingerprint: row.get("cert_fingerprint"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        })
+    }
+
+    async fn get_server_by_fingerprint(&self, fingerprint: &str) -> Result<Option<GameServer>, StorageError> {
+        let row = sqlx::query("SELECT * FROM servers WHERE cert_fingerprint = ?")
+            .bind(fingerprint)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(row.map(|r| GameServer {
+            id: r.get("id"),
+            name: r.get("name"),
+            address: r.get("address"),
+            port: r.get::<i32, _>("port") as u16,
+            status: r.get("status"),
+            current_map: r.get("current_map"),
+            player_count: r.get::<i32, _>("player_count") as u32,
+            max_clients: r.get::<i32, _>("max_clients") as u32,
+            last_seen: r.get("last_seen"),
+            config_json: r.get("config_json"),
+            config_version: r.get("config_version"),
+            cert_fingerprint: r.get("cert_fingerprint"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        }))
+    }
+
+    async fn save_server(&self, server: &GameServer) -> Result<i64, StorageError> {
+        if server.id > 0 {
+            sqlx::query(
+                "UPDATE servers SET name = ?, address = ?, port = ?, status = ?, \
+                 current_map = ?, player_count = ?, max_clients = ?, last_seen = ?, \
+                 config_json = ?, config_version = ?, cert_fingerprint = ?, \
+                 updated_at = NOW() WHERE id = ?"
+            )
+            .bind(&server.name)
+            .bind(&server.address)
+            .bind(server.port as i32)
+            .bind(&server.status)
+            .bind(&server.current_map)
+            .bind(server.player_count as i32)
+            .bind(server.max_clients as i32)
+            .bind(&server.last_seen)
+            .bind(&server.config_json)
+            .bind(server.config_version)
+            .bind(&server.cert_fingerprint)
+            .bind(server.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(server.id)
+        } else {
+            let result = sqlx::query(
+                "INSERT INTO servers (name, address, port, status, current_map, player_count, \
+                 max_clients, last_seen, config_json, config_version, cert_fingerprint) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&server.name)
+            .bind(&server.address)
+            .bind(server.port as i32)
+            .bind(&server.status)
+            .bind(&server.current_map)
+            .bind(server.player_count as i32)
+            .bind(server.max_clients as i32)
+            .bind(&server.last_seen)
+            .bind(&server.config_json)
+            .bind(server.config_version)
+            .bind(&server.cert_fingerprint)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(result.last_insert_id() as i64)
+        }
+    }
+
+    async fn update_server_status(
+        &self,
+        server_id: i64,
+        status: &str,
+        map: Option<&str>,
+        players: u32,
+        max_clients: u32,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE servers SET status = ?, current_map = ?, player_count = ?, \
+             max_clients = ?, last_seen = NOW(), updated_at = NOW() \
+             WHERE id = ?"
+        )
+        .bind(status)
+        .bind(map)
+        .bind(players as i32)
+        .bind(max_clients as i32)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_server(&self, server_id: i64) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM servers WHERE id = ?")
+            .bind(server_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    // ---- Sync queue (client-side offline queue) ----
+
+    async fn enqueue_sync(
+        &self,
+        entity_type: &str,
+        entity_id: Option<i64>,
+        action: &str,
+        payload: &str,
+        server_id: Option<i64>,
+    ) -> Result<i64, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO sync_queue (entity_type, entity_id, action, payload, server_id) \
+             VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(entity_type)
+        .bind(entity_id)
+        .bind(action)
+        .bind(payload)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_id() as i64)
+    }
+
+    async fn dequeue_sync(&self, limit: u32) -> Result<Vec<SyncQueueEntry>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT * FROM sync_queue WHERE synced_at IS NULL \
+             ORDER BY created_at ASC LIMIT ?"
+        )
+        .bind(limit as i32)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(rows.iter().map(|r| SyncQueueEntry {
+            id: r.get("id"),
+            entity_type: r.get("entity_type"),
+            entity_id: r.get("entity_id"),
+            action: r.get("action"),
+            payload: r.get("payload"),
+            server_id: r.get("server_id"),
+            retry_count: r.get("retry_count"),
+            created_at: r.get("created_at"),
+            synced_at: r.get("synced_at"),
+        }).collect())
+    }
+
+    async fn mark_synced(&self, ids: &[i64]) -> Result<(), StorageError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "UPDATE sync_queue SET synced_at = NOW() WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut query = sqlx::query(&sql);
+        for id in ids {
+            query = query.bind(id);
+        }
+        query.execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn retry_sync(&self, id: i64) -> Result<(), StorageError> {
+        sqlx::query("UPDATE sync_queue SET retry_count = retry_count + 1 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn prune_synced(&self, older_than_days: u32) -> Result<u64, StorageError> {
+        let result = sqlx::query(
+            "DELETE FROM sync_queue WHERE synced_at IS NOT NULL \
+             AND synced_at < DATE_SUB(NOW(), INTERVAL ? DAY)"
+        )
+        .bind(older_than_days as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.rows_affected())
     }
 }

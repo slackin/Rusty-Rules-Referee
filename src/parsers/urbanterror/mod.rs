@@ -79,6 +79,7 @@ pub struct PlayerInfo {
     pub ip: String,
     pub team: String,
     pub auth: String,
+    pub cg_rgb: String,
 }
 
 /// Player info returned from RCON `status` command.
@@ -233,6 +234,7 @@ impl UrbanTerrorParser {
                     }
                     "team" | "t" => info.team = val.to_string(),
                     "auth" => info.auth = val.to_string(),
+                    "cg_rgb" => info.cg_rgb = val.to_string(),
                     _ => {}
                 }
             }

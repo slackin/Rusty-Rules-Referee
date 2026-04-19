@@ -1,8 +1,9 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
 	import { getServerStatus, getOnlinePlayers, getRecentEvents, getRecentChat, getRecentVotes, isInitialized } from '$lib/live.svelte.js';
+	import { getAuth } from '$lib/auth.svelte.js';
 	import { stripColors, timeAgo } from '$lib/utils.js';
-	import { Users, Map, Clock, Activity, Zap, Shield, Ban, AlertTriangle, MessageSquare, Vote, StickyNote, ExternalLink } from 'lucide-svelte';
+	import { Users, Map, Clock, Activity, Zap, Shield, Ban, AlertTriangle, MessageSquare, Vote, StickyNote, ExternalLink, Search, ArrowRight, SkipForward, X, ChevronDown, ChevronUp, UserX, ShieldBan, Eye, Send } from 'lucide-svelte';
 
 	let status = $derived(getServerStatus());
 	let players = $derived(getOnlinePlayers());
@@ -10,11 +11,59 @@
 	let recentChat = $derived(getRecentChat());
 	let recentVotes = $derived(getRecentVotes());
 	let loading = $derived(!isInitialized());
+	let auth = $derived(getAuth());
+	let isAdmin = $derived(auth?.user?.role === 'admin');
 
 	let summary = $state(null);
 	let notes = $state('');
 	let notesSaving = $state(false);
 	let notesSaved = $state(false);
+
+	// Map modal state
+	let showMapModal = $state(false);
+	let mapList = $state([]);
+	let mapsLoading = $state(false);
+	let mapSearch = $state('');
+	let selectedMap = $state(null);
+	let mapActionLoading = $state(false);
+	let mapActionResult = $state(null);
+
+	let filteredMaps = $derived(
+		mapSearch
+			? mapList.filter(m => m.toLowerCase().includes(mapSearch.toLowerCase()))
+			: mapList
+	);
+
+	async function openMapModal() {
+		if (!isAdmin) return;
+		showMapModal = true;
+		mapsLoading = true;
+		mapSearch = '';
+		selectedMap = null;
+		mapActionResult = null;
+		try {
+			const res = await api.mapList();
+			mapList = res.maps ?? [];
+		} catch (e) {
+			mapList = [];
+			console.error('Failed to load maps:', e);
+		}
+		mapsLoading = false;
+	}
+
+	async function doMapAction(action) {
+		if (!selectedMap) return;
+		mapActionLoading = true;
+		mapActionResult = null;
+		try {
+			const res = await api.changeMap(selectedMap, action);
+			mapActionResult = { success: true, message: res.message };
+			setTimeout(() => { showMapModal = false; }, 1500);
+		} catch (e) {
+			mapActionResult = { success: false, message: e.message || 'Failed' };
+		}
+		mapActionLoading = false;
+	}
 
 	const gameTypes = { '0': 'FFA', '1': 'LMS', '3': 'TDM', '4': 'TS', '5': 'FTL', '6': 'C&H', '7': 'CTF', '8': 'Bomb', '9': 'Jump', '10': 'Freeze', '11': 'GunGame' };
 
@@ -48,6 +97,66 @@
 		} catch (e) { console.error('Failed to save notes:', e); }
 		notesSaving = false;
 	}
+
+	// Scoreboard player expansion & actions
+	let expandedPlayer = $state(null);
+	let actionLoading = $state(null); // 'kick' | 'ban' | 'tempban' | 'msg' | null
+	let actionResult = $state(null);
+	let kickReason = $state('');
+	let banReason = $state('');
+	let banDuration = $state('');
+	let pmMessage = $state('');
+
+	function togglePlayer(cid) {
+		if (expandedPlayer === cid) {
+			expandedPlayer = null;
+		} else {
+			expandedPlayer = cid;
+			actionResult = null;
+			kickReason = '';
+			banReason = '';
+			banDuration = '';
+			pmMessage = '';
+		}
+	}
+
+	async function doKick(cid, name) {
+		if (!confirm(`Kick ${stripColors(name)}?`)) return;
+		actionLoading = 'kick';
+		actionResult = null;
+		try {
+			await api.kickPlayer(cid, kickReason || 'Kicked by admin');
+			actionResult = { ok: true, msg: `${stripColors(name)} kicked` };
+			setTimeout(() => { expandedPlayer = null; actionResult = null; }, 2000);
+		} catch (e) { actionResult = { ok: false, msg: e.message }; }
+		actionLoading = null;
+	}
+
+	async function doBan(cid, name) {
+		const dur = banDuration ? parseInt(banDuration) : null;
+		const label = dur ? `Temp-ban ${stripColors(name)} for ${dur} minutes` : `Permanently ban ${stripColors(name)}`;
+		if (!confirm(`${label}?`)) return;
+		actionLoading = 'ban';
+		actionResult = null;
+		try {
+			await api.banPlayer(cid, banReason || 'Banned by admin', dur);
+			actionResult = { ok: true, msg: `${stripColors(name)} banned` };
+			setTimeout(() => { expandedPlayer = null; actionResult = null; }, 2000);
+		} catch (e) { actionResult = { ok: false, msg: e.message }; }
+		actionLoading = null;
+	}
+
+	async function doMessage(cid) {
+		if (!pmMessage.trim()) return;
+		actionLoading = 'msg';
+		try {
+			await api.messagePlayer(cid, pmMessage);
+			actionResult = { ok: true, msg: 'Message sent' };
+			pmMessage = '';
+			setTimeout(() => { actionResult = null; }, 2000);
+		} catch (e) { actionResult = { ok: false, msg: e.message }; }
+		actionLoading = null;
+	}
 </script>
 
 <div class="space-y-6 animate-fade-in">
@@ -64,19 +173,36 @@
 		<!-- Stat Cards -->
 		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
 			{#each statCards as card}
-				<div class="card p-5">
-					<div class="flex items-center justify-between">
-						<div>
-							<p class="text-xs font-medium uppercase tracking-wider text-surface-500">{card.label}</p>
-							<p class="mt-1 text-2xl font-semibold text-surface-100">
-								{card.value}{#if card.max}<span class="text-sm text-surface-500">/{card.max}</span>{/if}
-							</p>
+				{#if card.label === 'Current Map' && isAdmin}
+					<button class="card p-5 text-left cursor-pointer transition-all hover:ring-2 hover:ring-accent/50 hover:bg-surface-800/30" onclick={openMapModal}>
+						<div class="flex items-center justify-between">
+							<div>
+								<p class="text-xs font-medium uppercase tracking-wider text-surface-500">{card.label}</p>
+								<p class="mt-1 text-2xl font-semibold text-surface-100">
+									{card.value}
+								</p>
+							</div>
+							<div class="rounded-xl bg-surface-800/50 p-3 {card.color}">
+								<card.icon class="h-5 w-5" />
+							</div>
 						</div>
-						<div class="rounded-xl bg-surface-800/50 p-3 {card.color}">
-							<card.icon class="h-5 w-5" />
+						<p class="mt-2 text-[10px] uppercase tracking-wider text-accent/60">Click to change map</p>
+					</button>
+				{:else}
+					<div class="card p-5">
+						<div class="flex items-center justify-between">
+							<div>
+								<p class="text-xs font-medium uppercase tracking-wider text-surface-500">{card.label}</p>
+								<p class="mt-1 text-2xl font-semibold text-surface-100">
+									{card.value}{#if card.max}<span class="text-sm text-surface-500">/{card.max}</span>{/if}
+								</p>
+							</div>
+							<div class="rounded-xl bg-surface-800/50 p-3 {card.color}">
+								<card.icon class="h-5 w-5" />
+							</div>
 						</div>
 					</div>
-				</div>
+				{/if}
 			{/each}
 		</div>
 
@@ -112,54 +238,128 @@
 					<div class="px-5 py-10 text-center text-sm text-surface-500">No players online</div>
 				{:else}
 					<div class="p-4 space-y-4">
+						{#snippet playerRow(p, teamColor)}
+							<div class="rounded-lg transition-colors {expandedPlayer === p.cid ? 'bg-surface-800/50' : ''}">
+								<button class="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-surface-800/40 rounded-lg transition-colors text-left"
+									onclick={() => togglePlayer(p.cid)}>
+									<div class="flex-1 min-w-0 flex items-center gap-2">
+										<span class="text-surface-200 font-medium truncate">{stripColors(p.name)}</span>
+										{#if p.group_name && p.group_name !== 'Guest'}
+											<span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-accent/15 text-accent">{p.group_name}</span>
+										{/if}
+									</div>
+									<span class="text-surface-400 tabular-nums w-12 text-right">{p.score ?? 0}</span>
+									<span class="text-surface-500 tabular-nums w-16 text-right text-xs">{p.ping ?? '—'}ms</span>
+									{#if expandedPlayer === p.cid}
+										<ChevronUp class="h-3.5 w-3.5 text-surface-500 shrink-0" />
+									{:else}
+										<ChevronDown class="h-3.5 w-3.5 text-surface-500 shrink-0" />
+									{/if}
+								</button>
+								{#if expandedPlayer === p.cid}
+									<div class="px-3 pb-3 pt-1 space-y-3 animate-fade-in">
+										<!-- Player info row -->
+										<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-surface-500">
+											<span>Slot: <span class="text-surface-300">{p.cid}</span></span>
+											<span>ID: <a href="/players/{p.id}" class="text-accent hover:underline">{p.id}</a></span>
+											{#if p.connected}<span>Connected: <span class="text-surface-300">{timeAgo(p.connected)}</span></span>{/if}
+										</div>
+
+										{#if isAdmin}
+											<!-- Action result -->
+											{#if actionResult}
+												<div class="text-xs px-2 py-1.5 rounded {actionResult.ok ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}">
+													{actionResult.msg}
+												</div>
+											{/if}
+
+											<!-- Quick action buttons -->
+											<div class="flex flex-wrap gap-2">
+												<a href="/players/{p.id}" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-surface-700/50 text-xs text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors">
+													<Eye class="h-3 w-3" /> View Profile
+												</a>
+												<button onclick={() => doKick(p.cid, p.name)} disabled={actionLoading}
+													class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-amber-500/10 text-xs text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-40">
+													<UserX class="h-3 w-3" /> Kick
+												</button>
+												<button onclick={() => doBan(p.cid, p.name)} disabled={actionLoading}
+													class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-red-500/10 text-xs text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-40">
+													<ShieldBan class="h-3 w-3" /> Ban
+												</button>
+											</div>
+
+											<!-- Kick with reason -->
+											<div class="flex gap-2">
+												<input type="text" bind:value={kickReason} placeholder="Kick reason (optional)"
+													class="flex-1 px-2 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-amber-500 focus:outline-none" />
+												<button onclick={() => doKick(p.cid, p.name)} disabled={actionLoading}
+													class="px-2.5 py-1.5 rounded-md bg-amber-500/20 text-xs text-amber-400 hover:bg-amber-500/30 transition-colors disabled:opacity-40 whitespace-nowrap">
+													Kick
+												</button>
+											</div>
+
+											<!-- Ban with reason + duration -->
+											<div class="flex gap-2">
+												<input type="text" bind:value={banReason} placeholder="Ban reason (optional)"
+													class="flex-1 px-2 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-red-500 focus:outline-none" />
+												<input type="number" bind:value={banDuration} placeholder="Mins (perm if empty)" min="1"
+													class="w-28 px-2 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-red-500 focus:outline-none" />
+												<button onclick={() => doBan(p.cid, p.name)} disabled={actionLoading}
+													class="px-2.5 py-1.5 rounded-md bg-red-500/20 text-xs text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40 whitespace-nowrap">
+													Ban
+												</button>
+											</div>
+
+											<!-- Private message -->
+											<div class="flex gap-2">
+												<input type="text" bind:value={pmMessage} placeholder="Send private message..."
+													onkeydown={(e) => e.key === 'Enter' && doMessage(p.cid)}
+													class="flex-1 px-2 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-accent focus:outline-none" />
+												<button onclick={() => doMessage(p.cid)} disabled={actionLoading || !pmMessage.trim()}
+													class="px-2.5 py-1.5 rounded-md bg-accent/20 text-xs text-accent hover:bg-accent/30 transition-colors disabled:opacity-40">
+													<Send class="h-3 w-3" />
+												</button>
+											</div>
+										{:else}
+											<a href="/players/{p.id}" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-surface-700/50 text-xs text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors">
+												<Eye class="h-3 w-3" /> View Profile
+											</a>
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/snippet}
+
 						{#if redTeam.length > 0}
 							<div>
-								<div class="text-xs font-semibold uppercase text-red-400 mb-2">Red Team ({redTeam.length})</div>
-								<table class="w-full text-sm">
-									<thead>
-										<tr class="text-xs text-surface-500 border-b border-surface-800/50">
-											<th class="text-left py-1 px-2">Player</th>
-											<th class="text-right py-1 px-2">Score</th>
-											<th class="text-right py-1 px-2">Ping</th>
-										</tr>
-									</thead>
-									<tbody>
-										{#each redTeam as p}
-											<tr class="hover:bg-surface-800/30 transition-colors">
-												<td class="py-1.5 px-2">
-													<a href="/players/{p.id}" class="text-surface-200 hover:text-accent">{stripColors(p.name)}</a>
-												</td>
-												<td class="text-right py-1.5 px-2 text-surface-400">{p.score ?? 0}</td>
-												<td class="text-right py-1.5 px-2 text-surface-500">{p.ping ?? '—'}ms</td>
-											</tr>
-										{/each}
-									</tbody>
-								</table>
+								<div class="flex items-center justify-between mb-2">
+									<div class="text-xs font-semibold uppercase text-red-400">Red Team ({redTeam.length})</div>
+									<div class="flex gap-4 text-[10px] uppercase tracking-wider text-surface-600 pr-8">
+										<span class="w-12 text-right">Score</span>
+										<span class="w-16 text-right">Ping</span>
+									</div>
+								</div>
+								<div class="space-y-0.5">
+									{#each redTeam as p}
+										{@render playerRow(p, 'red')}
+									{/each}
+								</div>
 							</div>
 						{/if}
 						{#if blueTeam.length > 0}
 							<div>
-								<div class="text-xs font-semibold uppercase text-blue-400 mb-2">Blue Team ({blueTeam.length})</div>
-								<table class="w-full text-sm">
-									<thead>
-										<tr class="text-xs text-surface-500 border-b border-surface-800/50">
-											<th class="text-left py-1 px-2">Player</th>
-											<th class="text-right py-1 px-2">Score</th>
-											<th class="text-right py-1 px-2">Ping</th>
-										</tr>
-									</thead>
-									<tbody>
-										{#each blueTeam as p}
-											<tr class="hover:bg-surface-800/30 transition-colors">
-												<td class="py-1.5 px-2">
-													<a href="/players/{p.id}" class="text-surface-200 hover:text-accent">{stripColors(p.name)}</a>
-												</td>
-												<td class="text-right py-1.5 px-2 text-surface-400">{p.score ?? 0}</td>
-												<td class="text-right py-1.5 px-2 text-surface-500">{p.ping ?? '—'}ms</td>
-											</tr>
-										{/each}
-									</tbody>
-								</table>
+								<div class="flex items-center justify-between mb-2">
+									<div class="text-xs font-semibold uppercase text-blue-400">Blue Team ({blueTeam.length})</div>
+									<div class="flex gap-4 text-[10px] uppercase tracking-wider text-surface-600 pr-8">
+										<span class="w-12 text-right">Score</span>
+										<span class="w-16 text-right">Ping</span>
+									</div>
+								</div>
+								<div class="space-y-0.5">
+									{#each blueTeam as p}
+										{@render playerRow(p, 'blue')}
+									{/each}
+								</div>
 							</div>
 						{/if}
 						{#if specTeam.length > 0}
@@ -167,9 +367,47 @@
 								<div class="text-xs font-semibold uppercase text-surface-500 mb-2">Spectators ({specTeam.length})</div>
 								<div class="flex flex-wrap gap-2">
 									{#each specTeam as p}
-										<a href="/players/{p.id}" class="text-xs text-surface-400 bg-surface-800/40 rounded px-2 py-1 hover:text-accent">{stripColors(p.name)}</a>
+										<button onclick={() => togglePlayer(p.cid)}
+											class="text-xs bg-surface-800/40 rounded px-2 py-1 transition-colors
+												{expandedPlayer === p.cid ? 'text-accent bg-surface-800/80' : 'text-surface-400 hover:text-accent'}">
+											{stripColors(p.name)}
+										</button>
 									{/each}
 								</div>
+								{#each specTeam as p}
+									{#if expandedPlayer === p.cid}
+										<div class="mt-2 rounded-lg bg-surface-800/50 p-3 space-y-3 animate-fade-in">
+											<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-surface-500">
+												<span>Slot: <span class="text-surface-300">{p.cid}</span></span>
+												<span>ID: <a href="/players/{p.id}" class="text-accent hover:underline">{p.id}</a></span>
+											</div>
+											{#if isAdmin}
+												{#if actionResult}
+													<div class="text-xs px-2 py-1.5 rounded {actionResult.ok ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}">
+														{actionResult.msg}
+													</div>
+												{/if}
+												<div class="flex flex-wrap gap-2">
+													<a href="/players/{p.id}" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-surface-700/50 text-xs text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors">
+														<Eye class="h-3 w-3" /> View Profile
+													</a>
+													<button onclick={() => doKick(p.cid, p.name)} disabled={actionLoading}
+														class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-amber-500/10 text-xs text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-40">
+														<UserX class="h-3 w-3" /> Kick
+													</button>
+													<button onclick={() => doBan(p.cid, p.name)} disabled={actionLoading}
+														class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-red-500/10 text-xs text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-40">
+														<ShieldBan class="h-3 w-3" /> Ban
+													</button>
+												</div>
+											{:else}
+												<a href="/players/{p.id}" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-surface-700/50 text-xs text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors">
+													<Eye class="h-3 w-3" /> View Profile
+												</a>
+											{/if}
+										</div>
+									{/if}
+								{/each}
 							</div>
 						{/if}
 					</div>
@@ -313,3 +551,102 @@
 		</div>
 	{/if}
 </div>
+
+<!-- Map Selection Modal -->
+{#if showMapModal}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+		 onclick={() => showMapModal = false}
+		 onkeydown={(e) => e.key === 'Escape' && (showMapModal = false)}
+		 role="dialog"
+		 tabindex="-1">
+		<div class="card w-full max-w-lg p-0 animate-slide-up max-h-[80vh] flex flex-col" onclick={(e) => e.stopPropagation()}>
+			<!-- Header -->
+			<div class="flex items-center justify-between border-b border-surface-800 px-5 py-4">
+				<div>
+					<h2 class="text-base font-semibold text-surface-100">Change Map</h2>
+					<p class="text-xs text-surface-500 mt-0.5">Current: <span class="text-accent">{status?.map_name ?? '—'}</span></p>
+				</div>
+				<button class="rounded-lg p-1.5 text-surface-500 hover:bg-surface-800 hover:text-surface-300 transition-colors" onclick={() => showMapModal = false}>
+					<X class="h-4 w-4" />
+				</button>
+			</div>
+
+			<!-- Search -->
+			<div class="px-5 py-3 border-b border-surface-800/50">
+				<div class="relative">
+					<Search class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-500" />
+					<input
+						type="text"
+						class="input pl-9"
+						placeholder="Search maps…"
+						bind:value={mapSearch}
+					/>
+				</div>
+			</div>
+
+			<!-- Map List -->
+			<div class="flex-1 overflow-y-auto min-h-0" style="max-height: 45vh;">
+				{#if mapsLoading}
+					<div class="flex items-center justify-center py-12">
+						<div class="h-6 w-6 animate-spin rounded-full border-2 border-accent/20 border-t-accent"></div>
+					</div>
+				{:else if filteredMaps.length === 0}
+					<div class="px-5 py-10 text-center text-sm text-surface-500">
+						{mapList.length === 0 ? 'No maps found on server' : 'No maps match your search'}
+					</div>
+				{:else}
+					<div class="divide-y divide-surface-800/30">
+						{#each filteredMaps as map}
+							<button
+								class="w-full px-5 py-2.5 text-left text-sm transition-colors flex items-center justify-between
+									{map === selectedMap ? 'bg-accent/10 text-accent' : map === status?.map_name ? 'bg-surface-800/30 text-blue-400' : 'text-surface-300 hover:bg-surface-800/30 hover:text-surface-100'}"
+								onclick={() => selectedMap = (selectedMap === map ? null : map)}
+							>
+								<span class="font-medium">{map}</span>
+								{#if map === status?.map_name}
+									<span class="text-[10px] uppercase font-bold text-blue-400/70">current</span>
+								{:else if map === selectedMap}
+									<span class="text-[10px] uppercase font-bold text-accent">selected</span>
+								{/if}
+							</button>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
+			<!-- Actions -->
+			{#if selectedMap}
+				<div class="border-t border-surface-800 px-5 py-4 space-y-3">
+					<p class="text-xs text-surface-500">Selected: <span class="text-surface-200 font-medium">{selectedMap}</span></p>
+					<div class="flex gap-3">
+						<button
+							class="btn-primary flex-1 flex items-center justify-center gap-2 text-sm"
+							onclick={() => doMapAction('change')}
+							disabled={mapActionLoading}
+						>
+							<ArrowRight class="h-4 w-4" />
+							Change Map Now
+						</button>
+						<button
+							class="btn-secondary flex-1 flex items-center justify-center gap-2 text-sm"
+							onclick={() => doMapAction('setnext')}
+							disabled={mapActionLoading}
+						>
+							<SkipForward class="h-4 w-4" />
+							Set as Next Map
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			<!-- Result feedback -->
+			{#if mapActionResult}
+				<div class="border-t border-surface-800 px-5 py-3">
+					<p class="text-sm {mapActionResult.success ? 'text-emerald-400' : 'text-red-400'}">
+						{mapActionResult.message}
+					</p>
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}

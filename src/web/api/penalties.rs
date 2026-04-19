@@ -67,6 +67,7 @@ fn str_to_pt(s: &str) -> Option<PenaltyType> {
         "Kick" => Some(PenaltyType::Kick),
         "Ban" => Some(PenaltyType::Ban),
         "TempBan" => Some(PenaltyType::TempBan),
+        "Mute" => Some(PenaltyType::Mute),
         _ => None,
     }
 }
