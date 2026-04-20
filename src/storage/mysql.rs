@@ -37,6 +37,13 @@ impl MysqlStorage {
         let mut conn = self.pool.acquire().await
             .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
+        // Disable FK checks during migration so tables can be created in any order
+        // and avoid "Failed to open the referenced table" errors.
+        sqlx::query("SET FOREIGN_KEY_CHECKS=0")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
         // Ensure InnoDB is used for all tables (required for foreign keys)
         sqlx::query("SET default_storage_engine=InnoDB")
             .execute(&mut *conn)
@@ -52,7 +59,7 @@ impl MysqlStorage {
                 level INT NOT NULL DEFAULT 0,
                 time_add DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 time_edit DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS clients (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 guid VARCHAR(255) NOT NULL UNIQUE,
@@ -69,7 +76,7 @@ impl MysqlStorage {
                 last_visit DATETIME,
                 INDEX idx_clients_guid (guid),
                 INDEX idx_clients_name (name)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS aliases (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 client_id BIGINT NOT NULL,
@@ -79,7 +86,7 @@ impl MysqlStorage {
                 time_edit DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_aliases_client (client_id),
                 FOREIGN KEY (client_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS penalties (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 type VARCHAR(32) NOT NULL,
@@ -95,7 +102,7 @@ impl MysqlStorage {
                 INDEX idx_penalties_client (client_id),
                 INDEX idx_penalties_type (type),
                 FOREIGN KEY (client_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ];
 
         for stmt in &statements {
@@ -154,7 +161,7 @@ impl MysqlStorage {
                 INDEX idx_xlr_ps_client (client_id),
                 INDEX idx_xlr_ps_skill (skill),
                 FOREIGN KEY (client_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS xlr_weaponstats (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 client_id BIGINT NOT NULL,
@@ -167,7 +174,7 @@ impl MysqlStorage {
                 headshots INT NOT NULL DEFAULT 0,
                 UNIQUE KEY uq_ws_client_name (client_id, name),
                 FOREIGN KEY (client_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS xlr_weaponusage (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 name VARCHAR(64) NOT NULL UNIQUE,
@@ -177,7 +184,7 @@ impl MysqlStorage {
                 teamdeaths INT NOT NULL DEFAULT 0,
                 suicides INT NOT NULL DEFAULT 0,
                 headshots INT NOT NULL DEFAULT 0
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS xlr_bodyparts (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 client_id BIGINT NOT NULL,
@@ -189,7 +196,7 @@ impl MysqlStorage {
                 suicides INT NOT NULL DEFAULT 0,
                 UNIQUE KEY uq_bp_client_name (client_id, name),
                 FOREIGN KEY (client_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS xlr_opponents (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 client_id BIGINT NOT NULL,
@@ -200,7 +207,7 @@ impl MysqlStorage {
                 UNIQUE KEY uq_opp_client_target (client_id, target_id),
                 FOREIGN KEY (client_id) REFERENCES clients(id),
                 FOREIGN KEY (target_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS xlr_mapstats (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 name VARCHAR(64) NOT NULL UNIQUE,
@@ -208,7 +215,7 @@ impl MysqlStorage {
                 suicides INT NOT NULL DEFAULT 0,
                 teamkills INT NOT NULL DEFAULT 0,
                 rounds INT NOT NULL DEFAULT 0
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS xlr_history (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 client_id BIGINT NOT NULL,
@@ -218,7 +225,7 @@ impl MysqlStorage {
                 time_add DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_xlr_hist_client (client_id),
                 FOREIGN KEY (client_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             // Dashboard / admin tables
             "CREATE TABLE IF NOT EXISTS admin_users (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -227,7 +234,7 @@ impl MysqlStorage {
                 role VARCHAR(50) NOT NULL DEFAULT 'admin',
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS audit_log (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 admin_user_id BIGINT,
@@ -236,7 +243,7 @@ impl MysqlStorage {
                 ip_address VARCHAR(45),
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (admin_user_id) REFERENCES admin_users(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS chat_messages (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 client_id BIGINT NOT NULL,
@@ -246,7 +253,7 @@ impl MysqlStorage {
                 time_add DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_chat_client (client_id),
                 FOREIGN KEY (client_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS vote_history (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 client_id BIGINT NOT NULL,
@@ -256,14 +263,14 @@ impl MysqlStorage {
                 time_add DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_vote_client (client_id),
                 FOREIGN KEY (client_id) REFERENCES clients(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             "CREATE TABLE IF NOT EXISTS admin_notes (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
                 admin_user_id BIGINT NOT NULL UNIQUE,
                 content TEXT NOT NULL,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (admin_user_id) REFERENCES admin_users(id)
-            )",
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ];
 
         for stmt in &xlr_statements {
@@ -304,7 +311,7 @@ impl MysqlStorage {
                 custom_commands TEXT NOT NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )"
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         )
         .execute(&mut *conn)
         .await
@@ -328,7 +335,7 @@ impl MysqlStorage {
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_servers_status (status)
-            )"
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         )
         .execute(&mut *conn)
         .await
@@ -357,11 +364,17 @@ impl MysqlStorage {
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 synced_at DATETIME,
                 INDEX idx_sync_queue_entity (entity_type, action)
-            )"
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         )
         .execute(&mut *conn)
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
+        // Re-enable foreign key checks
+        sqlx::query("SET FOREIGN_KEY_CHECKS=1")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
         info!("MySQL migrations complete");
         Ok(())
