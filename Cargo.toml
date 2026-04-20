@@ -69,6 +69,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 rcgen = { version = "0.13", features = ["x509-parser"] }
 rand = "0.8"
 time = "0.3"
+socket2 = "0.5"
 
 [dev-dependencies]
 tokio-test = "0.4"

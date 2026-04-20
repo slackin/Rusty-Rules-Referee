@@ -235,7 +235,7 @@ pub async fn start_server(
 
     let app = build_router(state);
     let addr = format!("{}:{}", config.web.bind_address, config.web.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = crate::bind_reuse(&addr)?;
     info!(addr = %addr, "Web admin UI started");
     info!("Open http://{} in your browser", addr);
 

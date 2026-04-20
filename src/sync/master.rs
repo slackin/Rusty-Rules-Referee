@@ -440,7 +440,7 @@ pub async fn start_master_api(
 
     info!(addr = %addr, "Master internal API starting (mTLS)");
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = crate::bind_reuse(&addr.to_string())?;
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
