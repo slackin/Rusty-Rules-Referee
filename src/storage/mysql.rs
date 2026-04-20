@@ -300,6 +300,59 @@ impl MysqlStorage {
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
+        // Multi-server tables (006_multiserver)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS servers (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                name VARCHAR(255) NOT NULL,
+                address VARCHAR(255) NOT NULL,
+                port INT NOT NULL DEFAULT 27960,
+                status VARCHAR(32) NOT NULL DEFAULT 'offline',
+                current_map VARCHAR(128),
+                player_count INT NOT NULL DEFAULT 0,
+                max_clients INT NOT NULL DEFAULT 0,
+                last_seen DATETIME,
+                config_json TEXT,
+                config_version BIGINT NOT NULL DEFAULT 0,
+                cert_fingerprint VARCHAR(128),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_servers_status (status)
+            )"
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
+        // Add multi-server columns to penalties/chat_messages if not present
+        let _ = sqlx::query("ALTER TABLE penalties ADD COLUMN server_id BIGINT REFERENCES servers(id)")
+            .execute(&self.pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE penalties ADD COLUMN scope VARCHAR(32) NOT NULL DEFAULT 'local'")
+            .execute(&self.pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE chat_messages ADD COLUMN server_id BIGINT REFERENCES servers(id)")
+            .execute(&self.pool)
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS sync_queue (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                entity_type VARCHAR(64) NOT NULL,
+                entity_id BIGINT,
+                action VARCHAR(32) NOT NULL,
+                payload TEXT NOT NULL,
+                server_id BIGINT,
+                retry_count INT NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                synced_at DATETIME,
+                INDEX idx_sync_queue_entity (entity_type, action)
+            )"
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
         info!("MySQL migrations complete");
         Ok(())
     }

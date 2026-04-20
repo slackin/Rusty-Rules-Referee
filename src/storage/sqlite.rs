@@ -43,9 +43,11 @@ impl SqliteStorage {
     async fn run_migrations(&self) -> Result<(), StorageError> {
         let migrations = [
             include_str!("../../migrations/001_initial.sql"),
+            include_str!("../../migrations/002_xlrstats.sql"),
             include_str!("../../migrations/003_admin_users.sql"),
             include_str!("../../migrations/004_dashboard_features.sql"),
             include_str!("../../migrations/005_auth_column.sql"),
+            include_str!("../../migrations/006_multiserver.sql"),
             include_str!("../../migrations/007_map_configs.sql"),
         ];
         for schema in migrations {
