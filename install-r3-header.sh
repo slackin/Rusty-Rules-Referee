@@ -59,7 +59,6 @@ if [ -z "$REAL_USER" ] || [ "$REAL_USER" = "root" ]; then
 fi
 
 HOME_DIR=$(eval echo "~$REAL_USER")
-INSTALL_DIR="$HOME_DIR/r3"
 
 # ---- Mode Selection ----
 section "Installation Mode"
@@ -81,9 +80,9 @@ esac
 
 info "Mode: ${RUN_MODE}"
 
-echo -e "  Install path: ${BOLD}$INSTALL_DIR${NC}"
-echo -e "  Run as user:  ${BOLD}$REAL_USER${NC}"
-echo ""
+# Install dir and service name — set defaults, client overrides after collecting server name
+INSTALL_DIR="$HOME_DIR/r3"
+SERVICE_NAME="r3"
 
 DEFAULT_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
@@ -253,8 +252,17 @@ case "$RUN_MODE" in
         ask "Name for this server [$(hostname -s)]: "
         read -r CLIENT_SERVER_NAME
         CLIENT_SERVER_NAME="${CLIENT_SERVER_NAME:-$(hostname -s)}"
+
+        # Derive unique install dir and service name from server name
+        INSTANCE_SLUG=$(echo "$CLIENT_SERVER_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
+        INSTALL_DIR="$HOME_DIR/r3-${INSTANCE_SLUG}"
+        SERVICE_NAME="r3-${INSTANCE_SLUG}"
         ;;
 esac
+
+echo -e "  Install path: ${BOLD}$INSTALL_DIR${NC}"
+echo -e "  Run as user:  ${BOLD}$REAL_USER${NC}"
+echo ""
 
 # =============================================================================
 # Install
@@ -554,10 +562,10 @@ if [ -d "$CERTS_DIR" ]; then
 fi
 
 # ---- systemd service ----
-info "Creating systemd service..."
-cat > /etc/systemd/system/r3.service << SVCEOF
+info "Creating systemd service (${SERVICE_NAME})..."
+cat > /etc/systemd/system/${SERVICE_NAME}.service << SVCEOF
 [Unit]
-Description=Rusty Rules Referee — Urban Terror Admin Bot
+Description=Rusty Rules Referee (${SERVICE_NAME}) — Urban Terror Admin Bot
 After=network.target
 
 [Service]
@@ -582,7 +590,7 @@ WantedBy=multi-user.target
 SVCEOF
 
 systemctl daemon-reload
-systemctl enable r3.service >/dev/null 2>&1
+systemctl enable ${SERVICE_NAME}.service >/dev/null 2>&1
 
 # ---- Firewall ----
 if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -596,14 +604,14 @@ fi
 
 # ---- Start ----
 info "Starting R3 (${RUN_MODE} mode)..."
-systemctl start r3.service
+systemctl start ${SERVICE_NAME}.service
 sleep 2
 
-if systemctl is-active --quiet r3.service; then
+if systemctl is-active --quiet ${SERVICE_NAME}.service; then
     info "Bot is running!"
 else
     warn "Bot may not have started correctly"
-    echo -e "    ${DIM}Check logs: journalctl -u r3 -f${NC}"
+    echo -e "    ${DIM}Check logs: journalctl -u ${SERVICE_NAME} -f${NC}"
 fi
 
 section "Installation Complete"
@@ -616,8 +624,8 @@ case "$RUN_MODE" in
     standalone)
         echo -e "  ${BOLD}Setup Wizard${NC}   http://${SERVER_IP}:${WEB_PORT}/setup"
         echo -e "  ${BOLD}Config${NC}         $INSTALL_DIR/r3.toml"
-        echo -e "  ${BOLD}Service${NC}        systemctl {start|stop|restart|status} r3"
-        echo -e "  ${BOLD}Logs${NC}           journalctl -u r3 -f"
+        echo -e "  ${BOLD}Service${NC}        systemctl {start|stop|restart|status} ${SERVICE_NAME}"
+        echo -e "  ${BOLD}Logs${NC}           journalctl -u ${SERVICE_NAME} -f"
         echo ""
         echo -e "  ${YELLOW}⚠  Open the Setup Wizard URL to create your admin account.${NC}"
         ;;
@@ -626,8 +634,8 @@ case "$RUN_MODE" in
         echo -e "  ${BOLD}Sync API${NC}       https://${SERVER_IP}:${MASTER_SYNC_PORT}"
         echo -e "  ${BOLD}Config${NC}         $INSTALL_DIR/r3.toml"
         echo -e "  ${BOLD}Certificates${NC}   $CERTS_DIR/"
-        echo -e "  ${BOLD}Service${NC}        systemctl {start|stop|restart|status} r3"
-        echo -e "  ${BOLD}Logs${NC}           journalctl -u r3 -f"
+        echo -e "  ${BOLD}Service${NC}        systemctl {start|stop|restart|status} ${SERVICE_NAME}"
+        echo -e "  ${BOLD}Logs${NC}           journalctl -u ${SERVICE_NAME} -f"
         echo ""
         echo -e "  ${YELLOW}⚠  Open the Setup Wizard URL to create your admin account.${NC}"
         echo -e "  ${YELLOW}⚠  Then enable Quick-Connect in the web UI to pair client bots.${NC}"
@@ -636,8 +644,8 @@ case "$RUN_MODE" in
         echo -e "  ${BOLD}Master${NC}         ${PAIR_SYNC_URL}"
         echo -e "  ${BOLD}Server ID${NC}      ${PAIR_SERVER_ID}"
         echo -e "  ${BOLD}Config${NC}         $INSTALL_DIR/r3.toml"
-        echo -e "  ${BOLD}Service${NC}        systemctl {start|stop|restart|status} r3"
-        echo -e "  ${BOLD}Logs${NC}           journalctl -u r3 -f"
+        echo -e "  ${BOLD}Service${NC}        systemctl {start|stop|restart|status} ${SERVICE_NAME}"
+        echo -e "  ${BOLD}Logs${NC}           journalctl -u ${SERVICE_NAME} -f"
         echo ""
         echo -e "  ${GREEN}✓  Paired with master! This bot is managed from the master web UI.${NC}"
         echo -e "  ${YELLOW}⚠  Configure game server details (IP, port, RCON) from the master dashboard.${NC}"
