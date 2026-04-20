@@ -121,12 +121,14 @@ impl Plugin for ChatLogPlugin {
             self.append_log(client_id, channel_label, text).await;
 
             // DB-based logging for the web dashboard
-            let client_name = ctx.clients.get_by_id(client_id).await
-                .map(|c| c.name.clone())
-                .unwrap_or_default();
+            // client_id from the event is a game slot number, resolve to DB ID
+            let (db_id, client_name) = match ctx.clients.get_by_cid(&client_id.to_string()).await {
+                Some(c) => (c.id, c.name.clone()),
+                None => (client_id, String::new()),
+            };
             let msg = ChatMessage {
                 id: 0,
-                client_id,
+                client_id: db_id,
                 client_name,
                 channel: channel_label.to_string(),
                 message: text.clone(),

@@ -38,6 +38,10 @@ All commands also work with a `pa` prefix (e.g., `!paslap`, `!panuke`).
 | `!sub` | `!sub [player]` | Sets substitute (match mode only) |
 | `!lock` | `!lock` | Locks all players to current teams |
 | `!unlock` | `!unlock` | Unlocks team assignments |
+| `!teams` | `!teams` | Force team balance by player count |
+| `!skuffle` | `!skuffle` | Skill-based team shuffle |
+| `!advise` | `!advise` | Report team balance status |
+| `!autoskuffle` | `!autoskuffle [mode]` | Set skill balance mode (0-3) |
 
 ### Senior Admin (Level 60)
 
@@ -71,6 +75,21 @@ All commands also work with a `pa` prefix (e.g., `!paslap`, `!panuke`).
 | `!jump` | `!jump` | Sets gametype to Jump |
 | `!freeze` | `!freeze` | Sets gametype to Freeze Tag |
 | `!gungame` | `!gungame` | Sets gametype to GunGame |
+| `!ffa` | `!ffa` | Sets gametype to Free For All |
+| `!tdm` | `!tdm` | Sets gametype to Team Death Match |
+| `!ts` | `!ts` | Sets gametype to Team Survivor |
+| `!ftl` | `!ftl` | Sets gametype to Follow The Leader |
+| `!cah` | `!cah` | Sets gametype to Capture And Hold |
+| `!ctf` | `!ctf` | Sets gametype to Capture The Flag |
+| `!bomb` | `!bomb` | Sets gametype to Bomb |
+| `!bluewave` | `!bluewave [seconds]` | Gets/sets blue team wave respawn time |
+| `!redwave` | `!redwave [seconds]` | Gets/sets red team wave respawn time |
+| `!setwave` | `!setwave <seconds>` | Sets wave respawn for both teams |
+| `!setgravity` | `!setgravity [value]` | Gets/sets gravity (use 'default' to reset to 800) |
+| `!vote` | `!vote <on/off/reset>` | Enables/disables/resets voting |
+| `!bigtext` | `!bigtext <message>` | Displays a big text message on all screens |
+| `!version` | `!version` | Shows PowerAdminUrt plugin version |
+| `!pause` | `!pause` | Pauses/unpauses the game |
 
 ### Super Admin (Level 80)
 

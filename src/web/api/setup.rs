@@ -21,6 +21,7 @@ pub struct SetupStatusResponse {
     pub needs_setup: bool,
     pub mode: String,
     pub version: String,
+    pub build_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +85,7 @@ pub async fn setup_status(State(state): State<AppState>) -> impl IntoResponse {
         needs_setup,
         mode,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        build_hash: env!("BUILD_HASH").to_string(),
     })
 }
 

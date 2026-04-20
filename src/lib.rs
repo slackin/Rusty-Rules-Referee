@@ -15,4 +15,5 @@ pub mod plugins;
 pub mod rcon;
 pub mod storage;
 pub mod sync;
+pub mod update;
 pub mod web;

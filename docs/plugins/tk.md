@@ -6,11 +6,24 @@ Monitors team kills and team damage, automatically penalizing excessive team kil
 **Requires config:** Yes
 **Requires:** admin plugin
 
+## Commands
+
+| Command | Alias | Level | Description |
+|---------|-------|-------|-------------|
+| `!forgive` | `!f` | 0 | Forgive the last person who team killed you |
+| `!forgivelist` | `!fl` | 0 | List all unforgiven TKs against you |
+| `!forgiveall` | `!fa` | 0 | Forgive all TKs against you |
+| `!forgiveinfo` | `!fi` | 0 | Show your unforgiven TK count and kicks remaining |
+| `!forgiveprev` | `!fp` | 0 | Show who last team killed you |
+| `!forgiveclear` | `!fc` | 20 | Admin: clear TK records for a player |
+
 ## Behavior
 
 - Tracks team kills and team damage per player per round
 - Resets counters at round start
-- Auto-kicks when thresholds are exceeded
+- Auto-kicks when unforgiven TK threshold is exceeded
+- Victims are notified and can `!forgive` to prevent penalties
+- Forgiven TKs do not count toward the kick threshold
 
 ## Settings
 
@@ -31,4 +44,4 @@ max_team_damage = 300.0
 
 ## Events
 
-`EVT_CLIENT_KILL_TEAM`, `EVT_CLIENT_DAMAGE_TEAM`, `EVT_GAME_ROUND_START`
+`EVT_CLIENT_KILL_TEAM`, `EVT_CLIENT_DAMAGE_TEAM`, `EVT_CLIENT_SAY`, `EVT_CLIENT_TEAM_SAY`, `EVT_GAME_ROUND_START`

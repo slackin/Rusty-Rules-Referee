@@ -55,7 +55,9 @@ if [ -f "$HEADER_FILE" ]; then
         echo "ERROR: No __ARCHIVE_MARKER__ found in install-r3.sh"
         exit 1
     fi
-    head -n "$MARKER_LINE" "$HEADER_FILE" > "$OUTPUT"
+    # Write to temp file first since HEADER_FILE and OUTPUT are the same file
+    head -n "$MARKER_LINE" "$HEADER_FILE" > "$STAGE/header.sh"
+    cat "$STAGE/header.sh" > "$OUTPUT"
 else
     echo "ERROR: install-r3.sh not found at $HEADER_FILE"
     exit 1

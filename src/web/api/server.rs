@@ -11,8 +11,12 @@ pub async fn server_status(
     AuthUser(_claims): AuthUser,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let game = state.ctx.game.read().await;
-    let player_count = state.ctx.clients.count().await;
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(_) => return Json(serde_json::json!({"error": "Not available in master mode"})).into_response(),
+    };
+    let game = ctx.game.read().await;
+    let player_count = ctx.clients.count().await;
 
     Json(serde_json::json!({
         "game_name": game.game_name,
@@ -23,7 +27,7 @@ pub async fn server_status(
         "hostname": game.hostname,
         "round_time_start": game.round_time_start,
         "map_time_start": game.map_time_start,
-    }))
+    })).into_response()
 }
 
 /// POST /api/v1/server/rcon — execute raw RCON command (admin only).
@@ -49,13 +53,16 @@ pub async fn rcon_command(
         created_at: chrono::Utc::now(),
     }).await;
 
-    match state.ctx.write(cmd).await {
-        Ok(response) => {
-            Json(serde_json::json!({"response": response})).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
-        }
+    match state.require_ctx() {
+        Ok(ctx) => match ctx.write(cmd).await {
+            Ok(response) => {
+                Json(serde_json::json!({"response": response})).into_response()
+            }
+            Err(e) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            }
+        },
+        Err(status) => (status, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
     }
 }
 
@@ -66,7 +73,11 @@ pub async fn server_say(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let msg = body.get("message").and_then(|v| v.as_str()).unwrap_or("");
-    match state.ctx.say(msg).await {
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(status) => return (status, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+    match ctx.say(msg).await {
         Ok(_) => Json(serde_json::json!({"status": "ok"})).into_response(),
         Err(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
@@ -79,7 +90,11 @@ pub async fn list_maps(
     AuthUser(_claims): AuthUser,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let response = match state.ctx.rcon.send("fdir *.bsp").await {
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+    let response = match ctx.rcon.send("fdir *.bsp").await {
         Ok(r) => r,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
@@ -106,7 +121,7 @@ pub async fn list_maps(
         })
         .collect();
 
-    let current_map = state.ctx.game.read().await.map_name.clone();
+    let current_map = ctx.game.read().await.map_name.clone();
 
     Json(serde_json::json!({
         "maps": maps,
@@ -140,6 +155,11 @@ pub async fn change_map(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid map name"}))).into_response();
     }
 
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(status) => return (status, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+
     match action {
         "change" => {
             // Audit log
@@ -152,8 +172,8 @@ pub async fn change_map(
                 created_at: chrono::Utc::now(),
             }).await;
 
-            let _ = state.ctx.say(&format!("^7Changing map to ^2{}^7...", map_name)).await;
-            match state.ctx.rcon.send(&format!("map {}", map_name)).await {
+            let _ = ctx.say(&format!("^7Changing map to ^2{}^7...", map_name)).await;
+            match ctx.rcon.send(&format!("map {}", map_name)).await {
                 Ok(_) => Json(serde_json::json!({"status": "ok", "message": format!("Changing map to {}", map_name)})).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
             }
@@ -169,9 +189,9 @@ pub async fn change_map(
                 created_at: chrono::Utc::now(),
             }).await;
 
-            match state.ctx.set_cvar("g_nextmap", map_name).await {
+            match ctx.set_cvar("g_nextmap", map_name).await {
                 Ok(_) => {
-                    let _ = state.ctx.say(&format!("^7Next map set to ^2{}", map_name)).await;
+                    let _ = ctx.say(&format!("^7Next map set to ^2{}", map_name)).await;
                     Json(serde_json::json!({"status": "ok", "message": format!("Next map set to {}", map_name)})).into_response()
                 }
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),

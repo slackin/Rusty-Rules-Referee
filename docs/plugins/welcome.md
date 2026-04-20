@@ -11,6 +11,13 @@ Greets new and returning players with customizable messages.
 - Sends different messages to new vs. returning players
 - Supports template variables in messages
 
+## Commands
+
+| Command | Level | Usage | Description |
+|---------|-------|-------|-------------|
+| `!greeting` | 0 | `!greeting` | Show your current custom greeting |
+| `!setgreeting` | 0 | `!setgreeting <message>` | Set a custom greeting shown when you join. Use `$name` for your name. Use `none` to clear. |
+
 ## Template Variables
 
 | Variable | Description |
@@ -37,4 +44,4 @@ returning_player_message = "^7Welcome back, ^2$name^7! You were last seen ^3$las
 
 ## Events
 
-`EVT_CLIENT_AUTH`
+`EVT_CLIENT_AUTH`, `EVT_CLIENT_SAY`, `EVT_CLIENT_TEAM_SAY`

@@ -31,9 +31,12 @@ pub async fn get_mapcycle(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     // Read g_mapcycle cvar to find the cycle file name
-    let cycle_name = match state.ctx.get_cvar("g_mapcycle").await {
-        Ok(v) => get_mapcycle_filename(&v),
-        Err(_) => "mapcycle.txt".to_string(),
+    let cycle_name = match state.ctx.as_ref() {
+        Some(ctx) => match ctx.get_cvar("g_mapcycle").await {
+            Ok(v) => get_mapcycle_filename(&v),
+            Err(_) => "mapcycle.txt".to_string(),
+        },
+        None => "mapcycle.txt".to_string(),
     };
 
     // Use RCON to read the mapcycle by dumping it
@@ -99,9 +102,12 @@ pub async fn update_mapcycle(
     }
 
     // Get mapcycle file path
-    let cycle_name = match state.ctx.get_cvar("g_mapcycle").await {
-        Ok(v) => get_mapcycle_filename(&v),
-        Err(_) => "mapcycle.txt".to_string(),
+    let cycle_name = match state.ctx.as_ref() {
+        Some(ctx) => match ctx.get_cvar("g_mapcycle").await {
+            Ok(v) => get_mapcycle_filename(&v),
+            Err(_) => "mapcycle.txt".to_string(),
+        },
+        None => "mapcycle.txt".to_string(),
     };
 
     let game_dir = state.config.server.game_log.as_ref()

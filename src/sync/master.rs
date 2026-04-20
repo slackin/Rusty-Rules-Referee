@@ -416,10 +416,12 @@ async fn handle_ws_connection(mut socket: ws::WebSocket, state: MasterState) {
 }
 
 /// Start the master internal API server with mTLS.
+/// Returns the shared `connected_clients` map so the web API can also use it.
 pub async fn start_master_api(
     config: &MasterSection,
     storage: Arc<dyn Storage>,
     event_tx: broadcast::Sender<EventPayload>,
+    connected_clients: Arc<RwLock<HashMap<i64, ConnectedClient>>>,
 ) -> anyhow::Result<()> {
     let tls_acceptor = tls::build_master_tls_acceptor(
         Path::new(&config.tls_cert),
@@ -429,7 +431,7 @@ pub async fn start_master_api(
 
     let state = MasterState {
         storage,
-        connected_clients: Arc::new(RwLock::new(HashMap::new())),
+        connected_clients,
         event_tx,
     };
 

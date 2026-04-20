@@ -301,6 +301,50 @@ impl Storage for SqliteStorage {
         Ok(rows.iter().map(row_to_client).collect())
     }
 
+    async fn list_clients(&self, limit: u32, offset: u32, search: Option<&str>, sort_by: &str, order: &str) -> Result<(Vec<Client>, u64), StorageError> {
+        let sort_col = match sort_by {
+            "name" => "name",
+            "time_add" => "time_add",
+            "id" => "id",
+            _ => "COALESCE(last_visit, '1970-01-01')",
+        };
+        let sort_dir = if order.eq_ignore_ascii_case("asc") { "ASC" } else { "DESC" };
+
+        let (rows, total) = if let Some(q) = search.filter(|s| !s.is_empty()) {
+            let pattern = format!("%{}%", q);
+            let count_sql = "SELECT COUNT(*) as cnt FROM clients WHERE name LIKE ? OR guid LIKE ? OR ip LIKE ?";
+            let total: i64 = sqlx::query_scalar(count_sql)
+                .bind(&pattern).bind(&pattern).bind(&pattern)
+                .fetch_one(&self.pool).await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            let query_sql = format!(
+                "SELECT * FROM clients WHERE name LIKE ? OR guid LIKE ? OR ip LIKE ? ORDER BY {} {} LIMIT ? OFFSET ?",
+                sort_col, sort_dir
+            );
+            let rows = sqlx::query(&query_sql)
+                .bind(&pattern).bind(&pattern).bind(&pattern)
+                .bind(limit as i64).bind(offset as i64)
+                .fetch_all(&self.pool).await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            (rows, total as u64)
+        } else {
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) as cnt FROM clients")
+                .fetch_one(&self.pool).await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            let query_sql = format!(
+                "SELECT * FROM clients ORDER BY {} {} LIMIT ? OFFSET ?",
+                sort_col, sort_dir
+            );
+            let rows = sqlx::query(&query_sql)
+                .bind(limit as i64).bind(offset as i64)
+                .fetch_all(&self.pool).await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            (rows, total as u64)
+        };
+
+        Ok((rows.iter().map(row_to_client).collect(), total))
+    }
+
     async fn save_client(&self, client: &Client) -> Result<i64, StorageError> {
         let ip_str = client.ip.map(|ip| ip.to_string());
         let last_visit_str = client.last_visit.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string());

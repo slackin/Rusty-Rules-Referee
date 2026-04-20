@@ -47,7 +47,8 @@ async fn handle_socket(
             result = rx.recv() => {
                 match result {
                     Ok(event) => {
-                        let evt_key = state.ctx.event_registry.get_key(event.event_type)
+                        let evt_key = state.ctx.as_ref()
+                            .and_then(|ctx| ctx.event_registry.get_key(event.event_type))
                             .unwrap_or("UNKNOWN");
 
                         // Serialize EventData as structured JSON
@@ -68,19 +69,31 @@ async fn handle_socket(
                             crate::events::EventData::Custom(v) => v.clone(),
                         };
 
-                        // Resolve client/target names for richer display
-                        let client_name = if let Some(cid) = event.client_id {
-                            state.ctx.clients.get_by_id(cid).await.map(|c| c.name.clone())
-                        } else { None };
-                        let target_name = if let Some(tid) = event.target_id {
-                            state.ctx.clients.get_by_id(tid).await.map(|c| c.name.clone())
-                        } else { None };
+                        // Resolve client/target names by slot CID
+                        let (client_db_id, client_name) = if let Some(cid) = event.client_id {
+                            match state.ctx.as_ref() {
+                                Some(ctx) => match ctx.clients.get_by_cid(&cid.to_string()).await {
+                                    Some(c) => (Some(c.id), Some(c.name.clone())),
+                                    None => (None, None),
+                                },
+                                None => (None, None),
+                            }
+                        } else { (None, None) };
+                        let (target_db_id, target_name) = if let Some(tid) = event.target_id {
+                            match state.ctx.as_ref() {
+                                Some(ctx) => match ctx.clients.get_by_cid(&tid.to_string()).await {
+                                    Some(c) => (Some(c.id), Some(c.name.clone())),
+                                    None => (None, None),
+                                },
+                                None => (None, None),
+                            }
+                        } else { (None, None) };
 
                         let payload = serde_json::json!({
                             "type": evt_key,
                             "time": event.time,
-                            "client_id": event.client_id,
-                            "target_id": event.target_id,
+                            "client_id": client_db_id.or(event.client_id),
+                            "target_id": target_db_id.or(event.target_id),
                             "client_name": client_name,
                             "target_name": target_name,
                             "data": data,

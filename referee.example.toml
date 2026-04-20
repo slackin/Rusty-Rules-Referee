@@ -27,6 +27,13 @@ port = 8080                 # Web UI port
 
 # Default login: admin / changeme (change after first login!)
 
+# ---- Auto-Update ----
+[update]
+enabled = false             # Set to true to enable automatic update checking
+# url = "https://r3.pugbot.net/api/updates"  # Update server URL
+# check_interval = 3600    # How often to check (seconds, default: 1 hour)
+# auto_restart = true      # Automatically restart after applying an update
+
 # Plugins to load (order matters for dependencies)
 
 # ---- Core admin plugin (must be first) ----

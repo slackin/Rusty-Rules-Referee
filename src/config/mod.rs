@@ -45,6 +45,8 @@ pub struct RefereeConfig {
     #[serde(default)]
     pub web: WebSection,
     #[serde(default)]
+    pub update: UpdateSection,
+    #[serde(default)]
     pub master: Option<MasterSection>,
     #[serde(default)]
     pub client: Option<ClientSection>,
@@ -135,6 +137,46 @@ fn default_bind_address() -> String {
 
 fn default_web_port() -> u16 {
     8080
+}
+
+/// Auto-update configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UpdateSection {
+    /// Whether auto-update checking is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// URL of the update server (serves latest.json).
+    #[serde(default = "default_update_url")]
+    pub url: String,
+    /// How often (seconds) to check for updates.
+    #[serde(default = "default_update_interval")]
+    pub check_interval: u64,
+    /// Whether to automatically restart after applying an update.
+    #[serde(default = "default_auto_restart")]
+    pub auto_restart: bool,
+}
+
+impl Default for UpdateSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: default_update_url(),
+            check_interval: default_update_interval(),
+            auto_restart: default_auto_restart(),
+        }
+    }
+}
+
+fn default_update_url() -> String {
+    "https://r3.pugbot.net/api/updates".to_string()
+}
+
+fn default_update_interval() -> u64 {
+    3600
+}
+
+fn default_auto_restart() -> bool {
+    true
 }
 
 /// Master server configuration (used when running in master mode).

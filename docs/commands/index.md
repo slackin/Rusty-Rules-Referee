@@ -16,12 +16,19 @@ Available to all players.
 | `!stats` | stats | Shows your kills, deaths, K/D ratio |
 | `!topstats` | stats | Shows top 5 players by kills |
 | `!xlrstats` / `!xlr` | xlrstats | Shows your XLR stats and skill rating |
-| `!xlrtopstats` | xlrstats | Shows top ranked players |
+| `!xlrtopstats` / `!topstats` | xlrstats | Shows top 10 ranked players by skill |
 | `!hs` / `!headshots [player]` | headshotcounter | Shows headshot stats |
 | `!login <password>` | login | Authenticates with admin password |
 | `!setpassword <password>` | login | Sets/changes admin password |
 | `!follow <player>` | follow | Start following a player |
 | `!unfollow <player>` | follow | Stop following a player |
+| `!greeting` | welcome | Show your current custom greeting |
+| `!setgreeting <message>` | welcome | Set a custom greeting (use $name for your name, 'none' to clear) |
+| `!forgive` / `!f` | tk | Forgive the last person who team killed you |
+| `!forgivelist` / `!fl` | tk | List unforgiven TKs against you |
+| `!forgiveall` / `!fa` | tk | Forgive all TKs against you |
+| `!forgiveinfo` / `!fi` | tk | Show your unforgiven TK count and kicks remaining |
+| `!forgiveprev` / `!fp` | tk | Show who last team killed you |
 | `!<custom>` | customcommands | Any user-defined command |
 
 ## User (Level 1)
@@ -57,6 +64,7 @@ Can manage players and issue warnings.
 | `!warnremove <player>` | admin | Remove last warning |
 | `!warninfo <player>` | admin | Show warning count |
 | `!ident [player]` / `!id` | poweradminurt | Show player @id |
+| `!forgiveclear <player>` / `!fc` | tk | Admin: clear TK records for a player |
 
 ## Admin (Level 40)
 
@@ -85,6 +93,10 @@ Can tempban and use advanced server commands.
 | `!captain [player]` | poweradminurt | Set captain (match mode) |
 | `!sub [player]` | poweradminurt | Set substitute (match mode) |
 | `!lock` / `!unlock` | poweradminurt | Lock/unlock team assignments |
+| `!teams` | poweradminurt | Force team balance by player count |
+| `!skuffle` | poweradminurt | Skill-based team shuffle |
+| `!advise` | poweradminurt | Report team balance status |
+| `!autoskuffle [mode]` | poweradminurt | Set skill balance mode (0-3) |
 
 ## Senior Admin (Level 60)
 
@@ -130,6 +142,15 @@ Can permanently ban and configure server settings.
 | `!maprestart` | poweradminurt | Restart current map |
 | `!matchon` / `!matchoff` | poweradminurt | Enable/disable match mode |
 | `!lms` / `!jump` / `!freeze` / `!gungame` | poweradminurt | Set gametype |
+| `!ffa` / `!tdm` / `!ts` / `!ftl` | poweradminurt | Set gametype (FFA, TDM, Team Survivor, Follow The Leader) |
+| `!cah` / `!ctf` / `!bomb` | poweradminurt | Set gametype (Capture And Hold, CTF, Bomb) |
+| `!bluewave` / `!redwave [secs]` | poweradminurt | Get/set team wave respawn time |
+| `!setwave <secs>` | poweradminurt | Set wave respawn for both teams |
+| `!setgravity [val]` | poweradminurt | Get/set gravity (use 'default' to reset) |
+| `!vote <on/off/reset>` | poweradminurt | Enable/disable/reset voting |
+| `!bigtext <message>` | poweradminurt | Display big text on all screens |
+| `!version` | poweradminurt | Show PowerAdminUrt version info |
+| `!pause` | poweradminurt | Pause/unpause game |
 
 ## Super Admin (Level 80)
 

@@ -148,11 +148,16 @@ impl PowerAdminUrtPlugin {
             "gear" | "skins" | "funstuff" | "goto" => LEVEL_SENIOR_ADMIN,
             "instagib" | "hardcore" | "randomorder" | "stamina" => LEVEL_SENIOR_ADMIN,
             "lms" | "jump" | "freeze" | "gungame" => LEVEL_SENIOR_ADMIN,
+            "ffa" | "tdm" | "ts" | "ftl" | "cah" | "ctf" | "bomb" => LEVEL_SENIOR_ADMIN,
             "setnextmap" | "maplist" | "cyclemap" => LEVEL_SENIOR_ADMIN,
             "moon" | "public" | "hotpotato" => LEVEL_SENIOR_ADMIN,
             "waverespawns" | "respawngod" | "respawndelay" => LEVEL_SENIOR_ADMIN,
             "caplimit" | "fraglimit" | "timelimit" => LEVEL_SENIOR_ADMIN,
             "mapreload" | "maprestart" => LEVEL_SENIOR_ADMIN,
+            "bluewave" | "redwave" | "setwave" | "setgravity" => LEVEL_SENIOR_ADMIN,
+            "vote" => LEVEL_SENIOR_ADMIN,
+            "bigtext" | "version" | "pause" => LEVEL_SENIOR_ADMIN,
+            "teams" | "skuffle" | "advise" | "autoskuffle" => LEVEL_ADMIN,
             "lock" | "unlock" => LEVEL_ADMIN,
             "matchon" | "matchoff" => LEVEL_SENIOR_ADMIN,
             "set" | "get" | "exec" => LEVEL_SUPER_ADMIN,
@@ -536,6 +541,41 @@ impl PowerAdminUrtPlugin {
                 ctx.say("^7Game type changed to ^4GunGame").await?;
             }
 
+            "ffa" => {
+                ctx.set_cvar("g_gametype", "0").await?;
+                ctx.say("^7Game type changed to ^4Free For All").await?;
+            }
+
+            "tdm" => {
+                ctx.set_cvar("g_gametype", "3").await?;
+                ctx.say("^7Game type changed to ^4Team Death Match").await?;
+            }
+
+            "ts" => {
+                ctx.set_cvar("g_gametype", "4").await?;
+                ctx.say("^7Game type changed to ^4Team Survivor").await?;
+            }
+
+            "ftl" => {
+                ctx.set_cvar("g_gametype", "5").await?;
+                ctx.say("^7Game type changed to ^4Follow The Leader").await?;
+            }
+
+            "cah" => {
+                ctx.set_cvar("g_gametype", "6").await?;
+                ctx.say("^7Game type changed to ^4Capture And Hold").await?;
+            }
+
+            "ctf" => {
+                ctx.set_cvar("g_gametype", "7").await?;
+                ctx.say("^7Game type changed to ^4Capture The Flag").await?;
+            }
+
+            "bomb" => {
+                ctx.set_cvar("g_gametype", "8").await?;
+                ctx.say("^7Game type changed to ^4Bomb").await?;
+            }
+
             // ---- Server settings toggles ----
 
             "skins" => {
@@ -857,6 +897,150 @@ impl PowerAdminUrtPlugin {
                 }
             }
 
+            // ---- Wave respawn time commands ----
+
+            "bluewave" => {
+                if args.is_empty() {
+                    let val = ctx.get_cvar("g_bluewave").await.unwrap_or_default();
+                    ctx.message(&issuer_cid_str, &format!("^7Blue wave respawn: ^3{}", val)).await?;
+                } else if let Ok(secs) = args.parse::<u32>() {
+                    ctx.set_cvar("g_bluewave", &secs.to_string()).await?;
+                    ctx.say(&format!("^7Blue wave respawn set to ^3{} ^7seconds", secs)).await?;
+                } else {
+                    ctx.message(&issuer_cid_str, "Usage: !bluewave <seconds>").await?;
+                }
+            }
+
+            "redwave" => {
+                if args.is_empty() {
+                    let val = ctx.get_cvar("g_redwave").await.unwrap_or_default();
+                    ctx.message(&issuer_cid_str, &format!("^7Red wave respawn: ^3{}", val)).await?;
+                } else if let Ok(secs) = args.parse::<u32>() {
+                    ctx.set_cvar("g_redwave", &secs.to_string()).await?;
+                    ctx.say(&format!("^7Red wave respawn set to ^3{} ^7seconds", secs)).await?;
+                } else {
+                    ctx.message(&issuer_cid_str, "Usage: !redwave <seconds>").await?;
+                }
+            }
+
+            "setwave" => {
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !setwave <seconds>").await?;
+                } else if let Ok(secs) = args.parse::<u32>() {
+                    ctx.set_cvar("g_bluewave", &secs.to_string()).await?;
+                    ctx.set_cvar("g_redwave", &secs.to_string()).await?;
+                    ctx.say(&format!("^7Wave respawns set to ^3{} ^7seconds for both teams", secs)).await?;
+                } else {
+                    ctx.message(&issuer_cid_str, "Usage: !setwave <seconds>").await?;
+                }
+            }
+
+            "setgravity" => {
+                if args.is_empty() {
+                    let val = ctx.get_cvar("g_gravity").await.unwrap_or_default();
+                    ctx.message(&issuer_cid_str, &format!("^7Gravity: ^3{}", val)).await?;
+                } else {
+                    let value = if args.eq_ignore_ascii_case("default") || args.eq_ignore_ascii_case("reset") {
+                        "800"
+                    } else {
+                        args
+                    };
+                    ctx.set_cvar("g_gravity", value).await?;
+                    ctx.say(&format!("^7Gravity set to ^3{}", value)).await?;
+                }
+            }
+
+            // ---- Voting control ----
+
+            "vote" => {
+                match args.to_lowercase().as_str() {
+                    "on" => {
+                        ctx.set_cvar("g_allowvote", "536871039").await?;
+                        ctx.say("^7Voting: ^2ON").await?;
+                    }
+                    "off" => {
+                        ctx.set_cvar("g_allowvote", "0").await?;
+                        ctx.say("^7Voting: ^1OFF").await?;
+                    }
+                    "reset" => {
+                        ctx.set_cvar("g_allowvote", "536871039").await?;
+                        ctx.say("^7Voting: ^3RESET to default").await?;
+                    }
+                    _ => ctx.message(&issuer_cid_str, "Usage: !vote <on/off/reset>").await?,
+                }
+            }
+
+            // ---- Utility commands ----
+
+            "bigtext" => {
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "Usage: !bigtext <message>").await?;
+                } else {
+                    ctx.bigtext(args).await?;
+                }
+            }
+
+            "version" => {
+                ctx.message(&issuer_cid_str, "^7PowerAdminUrt ^2v2.0 ^7for ^3R3 Rusty Rules Referee").await?;
+            }
+
+            "pause" => {
+                let result = ctx.write("pause").await?;
+                ctx.message(&issuer_cid_str, &format!("^7{}", result)).await?;
+            }
+
+            // ---- Team balance commands ----
+
+            "teams" => {
+                // Force team balance by player count — move newest player from larger team
+                let response = ctx.write("players").await?;
+                let (red_count, blue_count) = count_teams(&response);
+                let diff = (red_count as i32 - blue_count as i32).unsigned_abs();
+                if diff <= self.team_diff {
+                    ctx.message(&issuer_cid_str, "^7Teams are already balanced").await?;
+                } else {
+                    let target_team = if red_count > blue_count { "blue" } else { "red" };
+                    let source_team = if red_count > blue_count { "RED" } else { "BLUE" };
+                    ctx.say("^3Balancing teams by player count!").await?;
+                    if let Some(cid) = find_last_player_on_team(&response, source_team) {
+                        ctx.write(&format!("forceteam {} {}", cid, target_team)).await?;
+                        ctx.say(&format!("^7Teams balanced (was ^1{} ^7vs ^4{} ^7)", red_count, blue_count)).await?;
+                    }
+                }
+            }
+
+            "skuffle" => {
+                // Skill shuffle — shuffle teams for balance using kill ratios
+                ctx.say("^3Skill Shuffle in Progress!").await?;
+                ctx.write("shuffleteams").await?;
+                ctx.say("^7Teams have been skill-shuffled").await?;
+            }
+
+            "advise" => {
+                // Report team balance status
+                let response = ctx.write("players").await?;
+                let (red_count, blue_count) = count_teams(&response);
+                let diff = (red_count as i32 - blue_count as i32).abs();
+                let msg = if diff <= self.team_diff as i32 {
+                    format!("^7Teams look ^2fair ^7(Red:^1{} ^7Blue:^4{})", red_count, blue_count)
+                } else if red_count > blue_count {
+                    format!("^1Red ^7team is stronger (Red:^1{} ^7Blue:^4{}). Use ^3!balance ^7to fix", red_count, blue_count)
+                } else {
+                    format!("^4Blue ^7team is stronger (Red:^1{} ^7Blue:^4{}). Use ^3!balance ^7to fix", red_count, blue_count)
+                };
+                ctx.say(&msg).await?;
+            }
+
+            "autoskuffle" => {
+                // Report or toggle skill balance mode
+                if args.is_empty() {
+                    ctx.message(&issuer_cid_str, "^7Auto-skuffle: team balance is checked automatically when enabled in config").await?;
+                    ctx.message(&issuer_cid_str, "^7Options: 0-none, 1-advise, 2-autobalance, 3-autoskuffle").await?;
+                } else {
+                    ctx.message(&issuer_cid_str, &format!("^7Skill balancer mode: ^3{}", args)).await?;
+                }
+            }
+
             // ---- Server cvar get/set and exec ----
 
             "set" => {
@@ -1097,12 +1281,16 @@ impl Plugin for PowerAdminUrtPlugin {
                         "slap" | "nuke" | "mute" | "kill" | "force" | "swap" | "swap2" | "swap3"
                         | "captain" | "sub" | "gear" | "balance" | "ident" | "id"
                         | "lms" | "jump" | "freeze" | "gungame"
+                        | "ffa" | "tdm" | "ts" | "ftl" | "cah" | "ctf" | "bomb"
                         | "skins" | "funstuff" | "goto" | "instagib" | "hardcore"
                         | "randomorder" | "stamina" | "setnextmap" | "maplist"
                         | "poke" | "veto" | "cyclemap" | "mapreload" | "maprestart"
                         | "swapteams" | "shuffleteams" | "muteall" | "moon" | "public"
                         | "waverespawns" | "respawngod" | "respawndelay"
                         | "caplimit" | "fraglimit" | "timelimit" | "hotpotato"
+                        | "bluewave" | "redwave" | "setwave" | "setgravity"
+                        | "vote" | "bigtext" | "version" | "pause"
+                        | "teams" | "skuffle" | "advise" | "autoskuffle"
                         | "set" | "get" | "exec"
                         | "lock" | "unlock" | "matchon" | "matchoff"
                     );

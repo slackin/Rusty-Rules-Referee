@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 use rusty_rules_referee::config::{RefereeConfig, RunMode};
 use rusty_rules_referee::core::context::BotContext;
 use rusty_rules_referee::core::log_tailer::LogTailer;
-use rusty_rules_referee::core::{Client, Clients, Game};
+use rusty_rules_referee::core::{Client, Clients, Game, Team};
 use rusty_rules_referee::events::{Event, EventRegistry};
 use rusty_rules_referee::parsers::{GameParser, LogLine, ParsedAction};
 use rusty_rules_referee::parsers::urbanterror::UrbanTerrorParser;
@@ -51,6 +51,7 @@ use rusty_rules_referee::storage;
 use rusty_rules_referee::sync;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_HASH: &str = env!("BUILD_HASH");
 
 #[derive(Parser)]
 #[command(name = "rusty-rules-referee", about = "Game server administration bot")]
@@ -62,6 +63,10 @@ struct Cli {
     /// Run mode: standalone (default), master, or client.
     #[arg(long, default_value = "standalone")]
     mode: RunMode,
+
+    /// Print the build hash and exit.
+    #[arg(long)]
+    build_hash: bool,
 }
 
 /// Create the Urban Terror 4.3 game parser.
@@ -82,11 +87,18 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    info!("Rusty Rules Referee v{VERSION}");
+    info!("Rusty Rules Referee v{VERSION} (build {BUILD_HASH})");
     info!("====================================================");
 
     // Parse CLI arguments
     let cli = Cli::parse();
+
+    // --build-hash flag: print build hash and exit (used by push-update scripts)
+    if cli.build_hash {
+        println!("{}", BUILD_HASH);
+        return Ok(());
+    }
+
     let config_path = cli.config;
     let mode = cli.mode;
 
@@ -213,14 +225,23 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
         let web_event_tx = ws_event_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = rusty_rules_referee::web::start_server(
-                web_ctx,
+                Some(web_ctx),
                 web_config,
                 web_config_path,
                 web_storage,
                 web_event_tx,
+                None, // No connected_clients in standalone mode
             ).await {
                 error!(error = %e, "Web admin server failed");
             }
+        });
+    }
+
+    // Start auto-update checker if enabled
+    if config.update.enabled {
+        let update_config = config.update.clone();
+        tokio::spawn(async move {
+            rusty_rules_referee::update::run_update_loop(update_config, BUILD_HASH).await;
         });
     }
 
@@ -295,6 +316,13 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                                 }
                             }
 
+                            // Save updated client (including auth) to DB
+                            if client.id > 0 {
+                                if let Err(e) = handler_storage.save_client(&client).await {
+                                    error!(error = %e, "Failed to save client on connect");
+                                }
+                            }
+
                             handler_clients.connect(&cid_str, client).await;
 
                             // Fire EVT_CLIENT_AUTH
@@ -313,12 +341,53 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                 }
             }
 
+            // --- Client auth from AccountValidated ---
+            if evt_key == Some("EVT_CLIENT_AUTH") {
+                if let Some(cid) = &event.client_id {
+                    if let rusty_rules_referee::events::EventData::Text(ref auth_val) = event.data {
+                        let cid_str = cid.to_string();
+                        let auth_clone = auth_val.clone();
+                        handler_clients.update(&cid_str, |c| {
+                            c.auth = auth_clone.clone();
+                            c.auth_name = Some(auth_clone);
+                        }).await;
+                        // Persist auth to DB
+                        if let Some(c) = handler_clients.get_by_cid(&cid.to_string()).await {
+                            if c.id > 0 {
+                                if let Err(e) = handler_storage.save_client(&c).await {
+                                    error!(error = %e, "Failed to save client auth");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // --- Map change ---
             if evt_key == Some("EVT_GAME_MAP_CHANGE") {
                 if let rusty_rules_referee::events::EventData::MapChange { new, .. } = &event.data {
                     let mut g = handler_game.write().await;
                     g.start_map(new);
                     info!(map = %new, "Game state updated: map change");
+                }
+            }
+
+            // --- Client info change (team updates) ---
+            if evt_key == Some("EVT_CLIENT_INFO_CHANGE") {
+                if let Some(cid) = &event.client_id {
+                    if let rusty_rules_referee::events::EventData::Text(ref json) = event.data {
+                        if let Ok(pairs) = serde_json::from_str::<Vec<(String, String)>>(json) {
+                            for (k, v) in &pairs {
+                                if k == "t" {
+                                    let team = Team::from_str_urt(v);
+                                    handler_clients.update(&cid.to_string(), |c| {
+                                        c.team = team;
+                                    }).await;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -343,6 +412,7 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
         let poller_rcon = rcon.clone();
         let poller_clients = clients.clone();
         let poller_game = game.clone();
+        let poller_storage = db.clone();
         tokio::spawn(async move {
             use regex::Regex;
             use std::collections::HashMap;
@@ -387,7 +457,7 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                                         let val = val.trim();
                                         match key {
                                             "gear" => gear = Some(val.to_string()),
-                                            "auth" => auth = Some(val.to_string()),
+                                            "authl" => auth = Some(val.to_string()),
                                             "cg_rgb" => cg_rgb = Some(val.to_string()),
                                             "name" | "n" => current_name = Some(val.to_string()),
                                             _ => {}
@@ -398,12 +468,26 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                                 let a = auth;
                                 let rgb = cg_rgb;
                                 let cn = current_name;
+                                let need_auth_save = a.as_ref().map_or(false, |v| !v.is_empty());
                                 poller_clients.update(cid, |c| {
                                     if let Some(ref v) = g { c.gear = Some(v.clone()); }
-                                    if let Some(ref v) = a { c.auth_name = Some(v.clone()); }
+                                    if let Some(ref v) = a {
+                                        c.auth_name = Some(v.clone());
+                                        if !v.is_empty() && c.auth != *v {
+                                            c.auth = v.clone();
+                                        }
+                                    }
                                     if let Some(ref v) = rgb { c.armband = Some(v.clone()); }
                                     if let Some(ref v) = cn { c.current_name = Some(v.clone()); }
                                 }).await;
+                                // Persist auth if it was updated
+                                if need_auth_save {
+                                    if let Some(c) = poller_clients.get_by_cid(cid).await {
+                                        if c.id > 0 {
+                                            let _ = poller_storage.save_client(&c).await;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -483,6 +567,13 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                                 let _ = db.save_alias(client.id, &info.name).await;
                             }
 
+                            // Save updated client (including auth) to DB
+                            if client.id > 0 {
+                                if let Err(e) = db.save_client(&client).await {
+                                    error!(error = %e, "Startup sync: failed to save client auth");
+                                }
+                            }
+
                             clients.connect(&sp.slot, client).await;
                             info!(slot = %sp.slot, name = %info.name, guid = %info.guid, "Startup sync: registered player");
                         }
@@ -495,6 +586,26 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
             Err(e) => {
                 error!(error = %e, "Startup sync: RCON status query failed");
             }
+        }
+
+        // Fetch initial teams via RCON `players` command
+        if let Ok(raw) = rcon.send("players").await {
+            for line in raw.lines() {
+                let line = line.trim();
+                // Format: "0:PlayerName TEAM:BLUE KILLS:0 ..."
+                if let Some(colon_pos) = line.find(':') {
+                    if let Ok(_slot_num) = line[..colon_pos].parse::<u32>() {
+                        let slot = line[..colon_pos].to_string();
+                        if let Some(team_start) = line.find("TEAM:") {
+                            let team_str = &line[team_start + 5..];
+                            let team_val = team_str.split_whitespace().next().unwrap_or("");
+                            let team = Team::from_str_urt(team_val);
+                            clients.update(&slot, |c| { c.team = team; }).await;
+                        }
+                    }
+                }
+            }
+            info!("Startup sync: player teams loaded");
         }
 
         // Also fetch initial serverinfo
@@ -587,35 +698,24 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // Broadcast channel for internal events from client bots
     let (internal_event_tx, _) = broadcast::channel::<sync::protocol::EventPayload>(1024);
 
+    // Shared connected_clients map — used by both sync API and web API
+    let connected_clients = Arc::new(RwLock::new(std::collections::HashMap::<i64, sync::master::ConnectedClient>::new()));
+
     // Start the web admin server if enabled
     if config.web.enabled {
-        // In master mode, we don't have a real BotContext (no RCON, no parser).
-        // The web UI will need to route commands through connected client bots.
-        // For now, create a minimal context — the web API will be updated
-        // in Phase 4 to handle multi-server routing.
-        let event_registry = Arc::new(EventRegistry::new());
-        let game = Arc::new(RwLock::new(Game::new("iourt43")));
-        let clients = Arc::new(Clients::new());
-        let rcon_addr: SocketAddr = "127.0.0.1:0".parse()?;
-        let rcon = Arc::new(RconClient::new(rcon_addr, ""));
-        let parser = create_parser(rcon.clone(), event_registry.clone());
-
-        let ctx = Arc::new(BotContext::new(
-            rcon, db.clone(), game, event_registry, parser, clients,
-        ));
-
-        let web_ctx = ctx;
         let web_config = config.clone();
         let web_config_path = config_path.clone();
         let web_storage = db.clone();
         let web_event_tx = ws_event_tx.clone();
+        let web_connected = connected_clients.clone();
         tokio::spawn(async move {
             if let Err(e) = rusty_rules_referee::web::start_server(
-                web_ctx,
+                None, // No local BotContext in master mode
                 web_config,
                 web_config_path,
                 web_storage,
                 web_event_tx,
+                Some(web_connected),
             ).await {
                 error!(error = %e, "Web admin server failed");
             }
@@ -625,11 +725,13 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // Start the internal sync API (mTLS)
     let sync_storage = db.clone();
     let sync_config = master_config.clone();
+    let sync_connected = connected_clients.clone();
     tokio::spawn(async move {
         if let Err(e) = sync::master::start_master_api(
             &sync_config,
             sync_storage,
             internal_event_tx,
+            sync_connected,
         ).await {
             error!(error = %e, "Master internal API failed");
         }
@@ -662,6 +764,14 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
             }
         }
     });
+
+    // Start auto-update checker if enabled
+    if config.update.enabled {
+        let update_config = config.update.clone();
+        tokio::spawn(async move {
+            rusty_rules_referee::update::run_update_loop(update_config, BUILD_HASH).await;
+        });
+    }
 
     info!("Master server running. Press Ctrl+C to stop.");
     tokio::signal::ctrl_c().await?;
@@ -813,6 +923,14 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         }
     });
 
+    // Start auto-update checker if enabled
+    if config.update.enabled {
+        let update_config = config.update.clone();
+        tokio::spawn(async move {
+            rusty_rules_referee::update::run_update_loop(update_config, BUILD_HASH).await;
+        });
+    }
+
     // Event queue (channel between log reader and event handler)
     let (event_tx, mut event_rx) = mpsc::channel::<Event>(1024);
 
@@ -879,6 +997,13 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                                 }
                             }
 
+                            // Save updated client (including auth) to DB
+                            if client.id > 0 {
+                                if let Err(e) = handler_storage.save_client(&client).await {
+                                    error!(error = %e, "Failed to save client on connect");
+                                }
+                            }
+
                             handler_clients.connect(&cid_str, client).await;
 
                             if let Some(auth_id) = handler_event_registry.get_id("EVT_CLIENT_AUTH") {
@@ -896,12 +1021,53 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                 }
             }
 
+            // --- Client auth from AccountValidated ---
+            if evt_key == Some("EVT_CLIENT_AUTH") {
+                if let Some(cid) = &event.client_id {
+                    if let rusty_rules_referee::events::EventData::Text(ref auth_val) = event.data {
+                        let cid_str = cid.to_string();
+                        let auth_clone = auth_val.clone();
+                        handler_clients.update(&cid_str, |c| {
+                            c.auth = auth_clone.clone();
+                            c.auth_name = Some(auth_clone);
+                        }).await;
+                        // Persist auth to DB
+                        if let Some(c) = handler_clients.get_by_cid(&cid.to_string()).await {
+                            if c.id > 0 {
+                                if let Err(e) = handler_storage.save_client(&c).await {
+                                    error!(error = %e, "Failed to save client auth");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // --- Map change ---
             if evt_key == Some("EVT_GAME_MAP_CHANGE") {
                 if let rusty_rules_referee::events::EventData::MapChange { new, .. } = &event.data {
                     let mut g = handler_game.write().await;
                     g.start_map(new);
                     info!(map = %new, "Game state updated: map change");
+                }
+            }
+
+            // --- Client info change (team updates) ---
+            if evt_key == Some("EVT_CLIENT_INFO_CHANGE") {
+                if let Some(cid) = &event.client_id {
+                    if let rusty_rules_referee::events::EventData::Text(ref json) = event.data {
+                        if let Ok(pairs) = serde_json::from_str::<Vec<(String, String)>>(json) {
+                            for (k, v) in &pairs {
+                                if k == "t" {
+                                    let team = Team::from_str_urt(v);
+                                    handler_clients.update(&cid.to_string(), |c| {
+                                        c.team = team;
+                                    }).await;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -926,6 +1092,7 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         let poller_rcon = rcon.clone();
         let poller_clients = clients.clone();
         let poller_game = game.clone();
+        let poller_storage = db.clone();
         tokio::spawn(async move {
             use regex::Regex;
             use std::collections::HashMap;
@@ -968,7 +1135,7 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                                         let val = val.trim();
                                         match key {
                                             "gear" => gear = Some(val.to_string()),
-                                            "auth" => auth = Some(val.to_string()),
+                                            "authl" => auth = Some(val.to_string()),
                                             "cg_rgb" => cg_rgb = Some(val.to_string()),
                                             "name" | "n" => current_name = Some(val.to_string()),
                                             _ => {}
@@ -979,12 +1146,26 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                                 let a = auth;
                                 let rgb = cg_rgb;
                                 let cn = current_name;
+                                let need_auth_save = a.as_ref().map_or(false, |v| !v.is_empty());
                                 poller_clients.update(cid, |c| {
                                     if let Some(ref v) = g { c.gear = Some(v.clone()); }
-                                    if let Some(ref v) = a { c.auth_name = Some(v.clone()); }
+                                    if let Some(ref v) = a {
+                                        c.auth_name = Some(v.clone());
+                                        if !v.is_empty() && c.auth != *v {
+                                            c.auth = v.clone();
+                                        }
+                                    }
                                     if let Some(ref v) = rgb { c.armband = Some(v.clone()); }
                                     if let Some(ref v) = cn { c.current_name = Some(v.clone()); }
                                 }).await;
+                                // Persist auth if it was updated
+                                if need_auth_save {
+                                    if let Some(c) = poller_clients.get_by_cid(cid).await {
+                                        if c.id > 0 {
+                                            let _ = poller_storage.save_client(&c).await;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1056,6 +1237,14 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                             if client.id > 0 && !info.name.is_empty() {
                                 let _ = db.save_alias(client.id, &info.name).await;
                             }
+
+                            // Save updated client (including auth) to DB
+                            if client.id > 0 {
+                                if let Err(e) = db.save_client(&client).await {
+                                    error!(error = %e, "Startup sync: failed to save client auth");
+                                }
+                            }
+
                             clients.connect(&sp.slot, client).await;
                         }
                         Err(e) => {
@@ -1067,6 +1256,26 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
             Err(e) => {
                 error!(error = %e, "Startup sync: RCON status query failed");
             }
+        }
+
+        // Fetch initial teams via RCON `players` command
+        if let Ok(raw) = rcon.send("players").await {
+            for line in raw.lines() {
+                let line = line.trim();
+                // Format: "0:PlayerName TEAM:BLUE KILLS:0 ..."
+                if let Some(colon_pos) = line.find(':') {
+                    if let Ok(_slot_num) = line[..colon_pos].parse::<u32>() {
+                        let slot = line[..colon_pos].to_string();
+                        if let Some(team_start) = line.find("TEAM:") {
+                            let team_str = &line[team_start + 5..];
+                            let team_val = team_str.split_whitespace().next().unwrap_or("");
+                            let team = Team::from_str_urt(team_val);
+                            clients.update(&slot, |c| { c.team = team; }).await;
+                        }
+                    }
+                }
+            }
+            info!("Startup sync: player teams loaded");
         }
     }
 

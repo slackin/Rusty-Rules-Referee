@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use tracing::info;
 
 use crate::core::context::BotContext;
-use crate::events::Event;
+use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
 
 /// The Welcome plugin — greets players when they connect/authenticate.
@@ -71,17 +71,77 @@ impl Plugin for WelcomePlugin {
             return Ok(());
         };
 
-        // Only handle auth events (client is authenticated and in the Clients manager)
-        if let Some(key) = ctx.event_registry.get_key(event.event_type) {
-            if key != "EVT_CLIENT_AUTH" {
-                return Ok(());
+        let Some(key) = ctx.event_registry.get_key(event.event_type) else {
+            return Ok(());
+        };
+
+        // Handle !greeting / !setgreeting chat commands
+        if key == "EVT_CLIENT_SAY" || key == "EVT_CLIENT_TEAM_SAY" {
+            if let EventData::Text(ref text) = event.data {
+                if let Some(cmd) = text.strip_prefix('!') {
+                    let parts: Vec<&str> = cmd.splitn(2, char::is_whitespace).collect();
+                    let command = parts[0].to_lowercase();
+                    let args = parts.get(1).map(|s| s.trim()).unwrap_or("");
+                    let cid_str = client_id.to_string();
+
+                    match command.as_str() {
+                        "greeting" => {
+                            // Show your current greeting
+                            if let Some(client) = ctx.clients.get_by_cid(&cid_str).await {
+                                let greeting = client.get_var("welcome", "greeting")
+                                    .map(|v| v.value.as_str().unwrap_or("").to_string())
+                                    .unwrap_or_default();
+                                if greeting.is_empty() {
+                                    ctx.message(&cid_str, "^7You have no custom greeting set. Use ^3!setgreeting <message> ^7to set one.").await?;
+                                } else {
+                                    ctx.message(&cid_str, &format!("^7Your greeting: ^3{}", greeting)).await?;
+                                }
+                            }
+                        }
+                        "setgreeting" => {
+                            if args.is_empty() {
+                                ctx.message(&cid_str, "Usage: !setgreeting <message> — Use $name for your name. Use 'none' to clear.").await?;
+                            } else if args.eq_ignore_ascii_case("none") || args.eq_ignore_ascii_case("clear") {
+                                ctx.clients.update(&cid_str, |c| {
+                                    c.set_var("welcome", "greeting", serde_json::json!(""));
+                                }).await;
+                                ctx.message(&cid_str, "^7Custom greeting cleared").await?;
+                            } else {
+                                let greeting = args.to_string();
+                                ctx.clients.update(&cid_str, |c| {
+                                    c.set_var("welcome", "greeting", serde_json::json!(greeting));
+                                }).await;
+                                ctx.message(&cid_str, &format!("^7Greeting set to: ^3{}", args)).await?;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
+            return Ok(());
+        }
+
+        if key != "EVT_CLIENT_AUTH" {
+            return Ok(());
         }
 
         let cid_str = client_id.to_string();
 
         // Look up client from the connected-clients manager
         if let Some(client) = ctx.clients.get_by_cid(&cid_str).await {
+            // Check for a custom greeting first
+            let custom_greeting = client.get_var("welcome", "greeting")
+                .and_then(|v| v.value.as_str().map(|s| s.to_string()));
+
+            if let Some(greeting) = custom_greeting {
+                if !greeting.is_empty() {
+                    let msg = greeting.replace("$name", &client.name);
+                    ctx.say(&msg).await?;
+                    info!(client = client_id, name = %client.name, "Custom greeting displayed");
+                    return Ok(());
+                }
+            }
+
             if client.last_visit.is_some() {
                 // Returning player
                 let last_visit = client
@@ -120,6 +180,8 @@ impl Plugin for WelcomePlugin {
     fn subscribed_events(&self) -> Option<Vec<String>> {
         Some(vec![
             "EVT_CLIENT_AUTH".to_string(),
+            "EVT_CLIENT_SAY".to_string(),
+            "EVT_CLIENT_TEAM_SAY".to_string(),
         ])
     }
 }

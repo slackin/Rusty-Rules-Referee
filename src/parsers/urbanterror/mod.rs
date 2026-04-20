@@ -233,7 +233,7 @@ impl UrbanTerrorParser {
                         info.ip = val.split(':').next().unwrap_or(val).to_string();
                     }
                     "team" | "t" => info.team = val.to_string(),
-                    "auth" => info.auth = val.to_string(),
+                    "authl" => info.auth = val.to_string(),
                     "cg_rgb" => info.cg_rgb = val.to_string(),
                     _ => {}
                 }

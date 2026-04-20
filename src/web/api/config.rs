@@ -91,6 +91,18 @@ pub async fn update_config(
         }
     }
 
+    // Merge [update] section
+    if let Some(update) = body.get("update").and_then(|v| v.as_object()) {
+        let section = doc.entry("update").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(t) = section.as_table_mut() {
+            for (k, v) in update {
+                if let Some(tv) = json_to_toml(v) {
+                    t.insert(k.clone(), tv);
+                }
+            }
+        }
+    }
+
     let output = toml::to_string_pretty(&doc).unwrap_or_default();
     if let Err(e) = std::fs::write(path, &output) {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Cannot write config: {}", e)}))).into_response();

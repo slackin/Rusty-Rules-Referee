@@ -13,6 +13,20 @@ pub enum Team {
     Blue,
 }
 
+impl Team {
+    /// Parse team from UrT numeric string ("0"=Free, "1"=Red, "2"=Blue, "3"=Spectator)
+    /// or text ("RED", "BLUE", "SPECTATOR", "FREE").
+    pub fn from_str_urt(s: &str) -> Team {
+        match s.trim() {
+            "1" | "RED" | "Red" | "red" => Team::Red,
+            "2" | "BLUE" | "Blue" | "blue" => Team::Blue,
+            "3" | "SPECTATOR" | "Spectator" | "spectator" => Team::Spectator,
+            "0" | "FREE" | "Free" | "free" => Team::Free,
+            _ => Team::Unknown,
+        }
+    }
+}
+
 /// A variable stored by a plugin on a client.
 #[derive(Debug, Clone)]
 pub struct ClientVar {

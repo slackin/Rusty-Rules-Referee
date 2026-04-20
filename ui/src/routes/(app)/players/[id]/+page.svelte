@@ -324,7 +324,7 @@
 					<div class="max-h-64 overflow-y-auto divide-y divide-surface-800/50">
 						{#each player.aliases as alias}
 							<div class="flex items-center justify-between px-5 py-2.5">
-								<span class="text-sm text-surface-200">{stripColors(alias.name)}</span>
+								<span class="text-sm text-surface-200">{stripColors(alias.alias)}</span>
 								<span class="text-xs text-surface-500">used {alias.num_used ?? 0}× · {timeAgo(alias.time_add)}</span>
 							</div>
 						{/each}

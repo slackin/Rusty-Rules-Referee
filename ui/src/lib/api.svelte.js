@@ -93,6 +93,11 @@ export const api = {
 	unmutePlayer: (cid) =>
 		request(`/players/${cid}/unmute`, { method: 'POST' }),
 	searchClients: (query) => request(`/clients/search?q=${encodeURIComponent(query)}`).then(r => r.clients),
+	allClients: ({ limit = 25, offset = 0, search = '', sortBy = 'last_visit', order = 'desc' } = {}) => {
+		let url = `/clients?limit=${limit}&offset=${offset}&sort_by=${sortBy}&order=${order}`;
+		if (search) url += `&search=${encodeURIComponent(search)}`;
+		return request(url);
+	},
 	updatePlayerGroup: (id, groupId) =>
 		request(`/players/${id}/group`, { method: 'PUT', body: JSON.stringify({ group_id: groupId }) }),
 
@@ -165,5 +170,15 @@ export const api = {
 		request(`/users/${id}`, { method: 'PUT', body: JSON.stringify(user) }),
 	deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 	changePassword: (currentPassword, newPassword) =>
-		request('/users/me/password', { method: 'PUT', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
+		request('/users/me/password', { method: 'PUT', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
+
+	// Version & Updates
+	version: () => request('/version'),
+	checkUpdate: () => request('/version/check', { method: 'POST' }),
+	applyUpdate: () => request('/version/update', { method: 'POST' }),
+
+	// Setup
+	setupStatus: () => request('/setup/status'),
+	completeSetup: (data) =>
+		request('/setup/complete', { method: 'POST', body: JSON.stringify(data) }),
 };

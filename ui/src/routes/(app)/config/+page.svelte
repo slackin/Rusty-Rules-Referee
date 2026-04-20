@@ -1,7 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api.svelte.js';
-	import { Save, RotateCcw, ChevronDown, ChevronRight, Eye, EyeOff, Bot, Server, Globe, Puzzle, Info, Plus, Trash2, Database, ArrowRightLeft, FileSearch, CircleCheck, CircleAlert, TriangleAlert, CircleHelp, Wrench, FileText, Power, Folder, File, ChevronUp } from 'lucide-svelte';
+	import { Save, RotateCcw, ChevronDown, ChevronRight, Eye, EyeOff, Bot, Server, Globe, Puzzle, Info, Plus, Trash2, Database, ArrowRightLeft, FileSearch, CircleCheck, CircleAlert, TriangleAlert, CircleHelp, Wrench, FileText, Power, Folder, File, ChevronUp, Download, RefreshCw, Package } from 'lucide-svelte';
 
 	let loading = $state(true);
 	let saving = $state(false);
@@ -56,6 +56,15 @@
 	let browsePath = $state('/');
 	let browseEntries = $state([]);
 	let browseError = $state('');
+
+	// Version & update state
+	let versionInfo = $state(null);
+	let updateCheck = $state(null);
+	let checkingUpdate = $state(false);
+	let applyingUpdate = $state(false);
+	let updateMsg = $state('');
+	let updateMsgType = $state('');
+	let update = $state({});
 
 	async function browseDir(path) {
 		browseLoading = true;
@@ -420,7 +429,7 @@
 	];
 
 	function currentJson() {
-		return JSON.stringify({ referee, server, web, plugins });
+		return JSON.stringify({ referee, server, web, update, plugins });
 	}
 
 	let isDirty = $derived(currentJson() !== originalJson);
@@ -432,12 +441,17 @@
 			referee = cfg.referee || {};
 			server = cfg.server || {};
 			web = cfg.web || {};
+			update = cfg.update || { enabled: false, url: 'https://r3.pugbot.net/api/updates', check_interval: 3600, auto_restart: true };
 			plugins = (cfg.plugins || []).map(p => ({ ...p, settings: p.settings || {} }));
-			originalJson = JSON.stringify({ referee, server, web, plugins });
+			originalJson = JSON.stringify({ referee, server, web, update, plugins });
 		} catch (e) {
 			message = e.message;
 			messageType = 'error';
 		}
+		// Load version info
+		try {
+			versionInfo = await api.version();
+		} catch { /* non-critical */ }
 		loading = false;
 	});
 
@@ -445,7 +459,7 @@
 		saving = true;
 		message = '';
 		try {
-			const payload = { referee, server, web, plugins };
+			const payload = { referee, server, web, update, plugins };
 			await api.updateConfig(payload);
 			message = 'Configuration saved successfully. Some changes may require a restart.';
 			messageType = 'success';
@@ -462,6 +476,7 @@
 		referee = orig.referee;
 		server = orig.server;
 		web = orig.web;
+		update = orig.update;
 		plugins = orig.plugins;
 		message = '';
 	}
@@ -659,6 +674,211 @@
 							<Power class="h-3.5 w-3.5" /> Restart Bot
 						</button>
 					{/if}
+				</div>
+			</div>
+		</section>
+
+		<!-- Version & Updates -->
+		<section class="card">
+			<div class="flex items-center gap-3 border-b border-surface-800 px-6 py-4">
+				<div class="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10">
+					<Package class="h-4.5 w-4.5 text-violet-400" />
+				</div>
+				<div>
+					<h2 class="text-sm font-semibold text-surface-100">Version & Updates</h2>
+					<p class="text-xs text-surface-500">Current build info, update checker, and auto-update settings</p>
+				</div>
+			</div>
+			<div class="p-6 space-y-6">
+				<!-- Current version info -->
+				{#if versionInfo}
+				<div class="rounded-lg bg-surface-800/50 p-4 space-y-2">
+					<div class="flex items-center gap-2 text-sm font-semibold text-surface-100">
+						<Package class="h-4 w-4 text-violet-400" />
+						Rusty Rules Referee
+					</div>
+					<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+						<div>
+							<span class="text-surface-500">Version</span>
+							<p class="font-mono text-surface-200">{versionInfo.version}</p>
+						</div>
+						<div>
+							<span class="text-surface-500">Git Commit</span>
+							<p class="font-mono text-surface-200">{versionInfo.git_commit}</p>
+						</div>
+						<div>
+							<span class="text-surface-500">Build</span>
+							<p class="font-mono text-surface-200 truncate" title={versionInfo.build_hash}>{versionInfo.build_hash}</p>
+						</div>
+						<div>
+							<span class="text-surface-500">Platform</span>
+							<p class="font-mono text-surface-200">{versionInfo.platform}</p>
+						</div>
+					</div>
+				</div>
+				{/if}
+
+				<!-- Update check -->
+				<div class="space-y-3">
+					<div class="flex items-center gap-3">
+						<button
+							class="btn-sm bg-violet-500/10 text-violet-400 ring-1 ring-violet-500/20 hover:bg-violet-500/20"
+							disabled={checkingUpdate}
+							onclick={async () => {
+								checkingUpdate = true;
+								updateMsg = '';
+								updateCheck = null;
+								try {
+									updateCheck = await api.checkUpdate();
+								} catch (err) {
+									try {
+										const parsed = JSON.parse(err.message);
+										updateMsg = parsed.error || err.message;
+									} catch {
+										updateMsg = err.message;
+									}
+									updateMsgType = 'error';
+								} finally {
+									checkingUpdate = false;
+								}
+							}}
+						>
+							{#if checkingUpdate}
+								<div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-violet-300/30 border-t-violet-300"></div>
+								Checking...
+							{:else}
+								<RefreshCw class="h-3.5 w-3.5" />
+								Check for Updates
+							{/if}
+						</button>
+
+						{#if updateCheck && !updateCheck.update_available}
+							<span class="flex items-center gap-1.5 text-xs text-emerald-400">
+								<CircleCheck class="h-3.5 w-3.5" />
+								Up to date
+							</span>
+						{/if}
+					</div>
+
+					{#if updateMsg}
+						<div class="rounded-lg px-4 py-3 text-sm {updateMsgType === 'error' ? 'bg-red-500/10 text-red-400 ring-1 ring-red-500/20' : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20'}">
+							{updateMsg}
+						</div>
+					{/if}
+
+					{#if updateCheck?.update_available}
+						<div class="rounded-lg bg-amber-500/10 ring-1 ring-amber-500/20 p-4 space-y-3">
+							<div class="flex items-center gap-2 text-sm font-semibold text-amber-300">
+								<Download class="h-4 w-4" />
+								Update Available
+							</div>
+							<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+								<div>
+									<span class="text-amber-400/60">New Version</span>
+									<p class="font-mono text-amber-200">{updateCheck.latest_version}</p>
+								</div>
+								<div>
+									<span class="text-amber-400/60">Git Commit</span>
+									<p class="font-mono text-amber-200">{updateCheck.latest_git_commit}</p>
+								</div>
+								<div>
+									<span class="text-amber-400/60">Released</span>
+									<p class="font-mono text-amber-200">{updateCheck.released_at}</p>
+								</div>
+								<div>
+									<span class="text-amber-400/60">Download Size</span>
+									<p class="font-mono text-amber-200">{updateCheck.download_size ? (updateCheck.download_size / 1024 / 1024).toFixed(1) + ' MB' : 'Unknown'}</p>
+								</div>
+							</div>
+							<div class="flex items-center gap-3 pt-1">
+								<button
+									class="btn-sm bg-amber-600 text-white hover:bg-amber-500"
+									disabled={applyingUpdate}
+									onclick={async () => {
+										applyingUpdate = true;
+										updateMsg = '';
+										try {
+											const res = await api.applyUpdate();
+											if (res.status === 'applied') {
+												updateMsg = res.message;
+												updateMsgType = 'success';
+												updateCheck = null;
+											} else {
+												updateMsg = res.message || 'Already up to date.';
+												updateMsgType = 'success';
+											}
+										} catch (err) {
+											try {
+												const parsed = JSON.parse(err.message);
+												updateMsg = parsed.error || err.message;
+											} catch {
+												updateMsg = err.message;
+											}
+											updateMsgType = 'error';
+										} finally {
+											applyingUpdate = false;
+										}
+									}}
+								>
+									{#if applyingUpdate}
+										<div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white"></div>
+										Downloading & Applying...
+									{:else}
+										<Download class="h-3.5 w-3.5" />
+										Download & Apply Update
+									{/if}
+								</button>
+								<span class="text-xs text-surface-500">A restart is required after applying.</span>
+							</div>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Auto-update settings -->
+				<div class="border-t border-surface-800 pt-5">
+					<h3 class="mb-4 text-xs font-semibold uppercase tracking-wider text-surface-500">Auto-Update Settings</h3>
+					<div class="grid gap-5 sm:grid-cols-2">
+						<div class="flex items-center justify-between sm:col-span-2">
+							<div>
+								<label for="update_enabled" class="text-xs font-medium text-surface-400">Enable Auto-Update</label>
+								<p class="text-xs text-surface-600">Periodically check for and apply updates automatically</p>
+							</div>
+							<button
+								id="update_enabled"
+								class="relative h-6 w-11 rounded-full transition-colors {update.enabled ? 'bg-accent' : 'bg-surface-700'}"
+								onclick={() => update.enabled = !update.enabled}
+								role="switch"
+								aria-checked={update.enabled}
+							>
+								<span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform {update.enabled ? 'translate-x-5' : 'translate-x-0'}"></span>
+							</button>
+						</div>
+						<div>
+							<label for="update_url" class="mb-1.5 block text-xs font-medium text-surface-400">Update Server URL</label>
+							<input id="update_url" type="text" class="input font-mono text-sm" bind:value={update.url} placeholder="https://r3.pugbot.net/api/updates" />
+							<p class="mt-1 text-xs text-surface-600">URL serving latest.json manifest</p>
+						</div>
+						<div>
+							<label for="update_interval" class="mb-1.5 block text-xs font-medium text-surface-400">Check Interval (seconds)</label>
+							<input id="update_interval" type="number" class="input font-mono" bind:value={update.check_interval} placeholder="3600" />
+							<p class="mt-1 text-xs text-surface-600">How often to poll for updates (default: 3600 = 1 hour)</p>
+						</div>
+						<div class="flex items-center justify-between sm:col-span-2">
+							<div>
+								<label for="update_auto_restart" class="text-xs font-medium text-surface-400">Auto-Restart After Update</label>
+								<p class="text-xs text-surface-600">Automatically restart the bot after downloading an update</p>
+							</div>
+							<button
+								id="update_auto_restart"
+								class="relative h-6 w-11 rounded-full transition-colors {update.auto_restart ? 'bg-accent' : 'bg-surface-700'}"
+								onclick={() => update.auto_restart = !update.auto_restart}
+								role="switch"
+								aria-checked={update.auto_restart}
+							>
+								<span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform {update.auto_restart ? 'translate-x-5' : 'translate-x-0'}"></span>
+							</button>
+						</div>
+					</div>
 				</div>
 			</div>
 		</section>

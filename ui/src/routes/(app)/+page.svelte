@@ -98,64 +98,64 @@
 		notesSaving = false;
 	}
 
-	// Scoreboard player expansion & actions
-	let expandedPlayer = $state(null);
-	let actionLoading = $state(null); // 'kick' | 'ban' | 'tempban' | 'msg' | null
+	// Scoreboard expandable player panel
+	let expandedPlayer = $state(null); // cid of expanded player
+	let actionLoading = $state(false);
 	let actionResult = $state(null);
 	let kickReason = $state('');
 	let banReason = $state('');
 	let banDuration = $state('');
-	let pmMessage = $state('');
+	let messageText = $state('');
 
 	function togglePlayer(cid) {
 		if (expandedPlayer === cid) {
 			expandedPlayer = null;
 		} else {
 			expandedPlayer = cid;
-			actionResult = null;
 			kickReason = '';
 			banReason = '';
 			banDuration = '';
-			pmMessage = '';
+			messageText = '';
 		}
 	}
 
 	async function doKick(cid, name) {
-		if (!confirm(`Kick ${stripColors(name)}?`)) return;
-		actionLoading = 'kick';
+		actionLoading = true;
 		actionResult = null;
 		try {
 			await api.kickPlayer(cid, kickReason || 'Kicked by admin');
 			actionResult = { ok: true, msg: `${stripColors(name)} kicked` };
-			setTimeout(() => { expandedPlayer = null; actionResult = null; }, 2000);
+			kickReason = '';
 		} catch (e) { actionResult = { ok: false, msg: e.message }; }
-		actionLoading = null;
+		actionLoading = false;
+		setTimeout(() => { actionResult = null; }, 3000);
 	}
 
 	async function doBan(cid, name) {
 		const dur = banDuration ? parseInt(banDuration) : null;
-		const label = dur ? `Temp-ban ${stripColors(name)} for ${dur} minutes` : `Permanently ban ${stripColors(name)}`;
-		if (!confirm(`${label}?`)) return;
-		actionLoading = 'ban';
+		actionLoading = true;
 		actionResult = null;
 		try {
 			await api.banPlayer(cid, banReason || 'Banned by admin', dur);
-			actionResult = { ok: true, msg: `${stripColors(name)} banned` };
-			setTimeout(() => { expandedPlayer = null; actionResult = null; }, 2000);
+			actionResult = { ok: true, msg: `${stripColors(name)} banned${dur ? ` (${dur}m)` : ''}` };
+			banReason = '';
+			banDuration = '';
 		} catch (e) { actionResult = { ok: false, msg: e.message }; }
-		actionLoading = null;
+		actionLoading = false;
+		setTimeout(() => { actionResult = null; }, 3000);
 	}
 
 	async function doMessage(cid) {
-		if (!pmMessage.trim()) return;
-		actionLoading = 'msg';
+		if (!messageText.trim()) return;
+		actionLoading = true;
+		actionResult = null;
 		try {
-			await api.messagePlayer(cid, pmMessage);
+			await api.messagePlayer(cid, messageText);
 			actionResult = { ok: true, msg: 'Message sent' };
-			pmMessage = '';
-			setTimeout(() => { actionResult = null; }, 2000);
+			messageText = '';
 		} catch (e) { actionResult = { ok: false, msg: e.message }; }
-		actionLoading = null;
+		actionLoading = false;
+		setTimeout(() => { actionResult = null; }, 3000);
 	}
 </script>
 
@@ -239,92 +239,85 @@
 				{:else}
 					<div class="p-4 space-y-4">
 						{#snippet playerRow(p, teamColor)}
-							<div class="rounded-lg transition-colors {expandedPlayer === p.cid ? 'bg-surface-800/50' : ''}">
-								<button class="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-surface-800/40 rounded-lg transition-colors text-left"
-									onclick={() => togglePlayer(p.cid)}>
-									<div class="flex-1 min-w-0 flex items-center gap-2">
-										<span class="text-surface-200 font-medium truncate">{stripColors(p.name)}</span>
-										{#if p.group_name && p.group_name !== 'Guest'}
-											<span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-accent/15 text-accent">{p.group_name}</span>
+							<div class="rounded-lg transition-colors {expandedPlayer === p.cid ? 'bg-surface-800/40' : ''}">
+								<button class="w-full flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-surface-800/40 rounded-lg transition-colors text-left"
+									onclick={() => isAdmin && togglePlayer(p.cid)}>
+									<span class="flex-1 min-w-0 flex flex-col">
+										<span class="flex items-center gap-2">
+											<span class="text-surface-200 font-medium truncate">{stripColors(p.current_name || p.name)}</span>
+											{#if p.auth}
+												<span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400">{p.auth}</span>
+											{/if}
+											{#if p.group_name && p.group_name !== 'Guest'}
+												<span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-accent/15 text-accent">{p.group_name}</span>
+											{/if}
+										</span>
+										{#if p.current_name && stripColors(p.current_name) !== stripColors(p.name)}
+											<span class="text-[10px] text-surface-500 truncate">aka {stripColors(p.name)}</span>
 										{/if}
-									</div>
+									</span>
 									<span class="text-surface-400 tabular-nums w-12 text-right">{p.score ?? 0}</span>
 									<span class="text-surface-500 tabular-nums w-16 text-right text-xs">{p.ping ?? '—'}ms</span>
-									{#if expandedPlayer === p.cid}
-										<ChevronUp class="h-3.5 w-3.5 text-surface-500 shrink-0" />
-									{:else}
-										<ChevronDown class="h-3.5 w-3.5 text-surface-500 shrink-0" />
+									{#if isAdmin}
+										<span class="text-surface-500">
+											{#if expandedPlayer === p.cid}
+												<ChevronUp class="h-4 w-4" />
+											{:else}
+												<ChevronDown class="h-4 w-4" />
+											{/if}
+										</span>
 									{/if}
 								</button>
-								{#if expandedPlayer === p.cid}
-									<div class="px-3 pb-3 pt-1 space-y-3 animate-fade-in">
-										<!-- Player info row -->
-										<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-surface-500">
-											<span>Slot: <span class="text-surface-300">{p.cid}</span></span>
-											<span>ID: <a href="/players/{p.id}" class="text-accent hover:underline">{p.id}</a></span>
-											{#if p.connected}<span>Connected: <span class="text-surface-300">{timeAgo(p.connected)}</span></span>{/if}
+								{#if isAdmin && expandedPlayer === p.cid}
+									<div class="px-3 pb-3 pt-1 space-y-2.5 animate-fade-in">
+										<div class="text-xs text-surface-500">
+											Slot: {p.cid} &nbsp;|&nbsp; ID: {p.id} &nbsp;|&nbsp; Connected: {p.connected ? new Date(p.connected).toLocaleDateString() : '—'}
 										</div>
-
-										{#if isAdmin}
-											<!-- Action result -->
-											{#if actionResult}
-												<div class="text-xs px-2 py-1.5 rounded {actionResult.ok ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}">
-													{actionResult.msg}
-												</div>
-											{/if}
-
-											<!-- Quick action buttons -->
-											<div class="flex flex-wrap gap-2">
-												<a href="/players/{p.id}" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-surface-700/50 text-xs text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors">
-													<Eye class="h-3 w-3" /> View Profile
-												</a>
-												<button onclick={() => doKick(p.cid, p.name)} disabled={actionLoading}
-													class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-amber-500/10 text-xs text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-40">
-													<UserX class="h-3 w-3" /> Kick
-												</button>
-												<button onclick={() => doBan(p.cid, p.name)} disabled={actionLoading}
-													class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-red-500/10 text-xs text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-40">
-													<ShieldBan class="h-3 w-3" /> Ban
-												</button>
-											</div>
-
-											<!-- Kick with reason -->
-											<div class="flex gap-2">
-												<input type="text" bind:value={kickReason} placeholder="Kick reason (optional)"
-													class="flex-1 px-2 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-amber-500 focus:outline-none" />
-												<button onclick={() => doKick(p.cid, p.name)} disabled={actionLoading}
-													class="px-2.5 py-1.5 rounded-md bg-amber-500/20 text-xs text-amber-400 hover:bg-amber-500/30 transition-colors disabled:opacity-40 whitespace-nowrap">
-													Kick
-												</button>
-											</div>
-
-											<!-- Ban with reason + duration -->
-											<div class="flex gap-2">
-												<input type="text" bind:value={banReason} placeholder="Ban reason (optional)"
-													class="flex-1 px-2 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-red-500 focus:outline-none" />
-												<input type="number" bind:value={banDuration} placeholder="Mins (perm if empty)" min="1"
-													class="w-28 px-2 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-red-500 focus:outline-none" />
-												<button onclick={() => doBan(p.cid, p.name)} disabled={actionLoading}
-													class="px-2.5 py-1.5 rounded-md bg-red-500/20 text-xs text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40 whitespace-nowrap">
-													Ban
-												</button>
-											</div>
-
-											<!-- Private message -->
-											<div class="flex gap-2">
-												<input type="text" bind:value={pmMessage} placeholder="Send private message..."
-													onkeydown={(e) => e.key === 'Enter' && doMessage(p.cid)}
-													class="flex-1 px-2 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-accent focus:outline-none" />
-												<button onclick={() => doMessage(p.cid)} disabled={actionLoading || !pmMessage.trim()}
-													class="px-2.5 py-1.5 rounded-md bg-accent/20 text-xs text-accent hover:bg-accent/30 transition-colors disabled:opacity-40">
-													<Send class="h-3 w-3" />
-												</button>
-											</div>
-										{:else}
-											<a href="/players/{p.id}" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-surface-700/50 text-xs text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors">
+										<div class="flex items-center gap-2">
+											<a href="/players/{p.id}" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors">
 												<Eye class="h-3 w-3" /> View Profile
 											</a>
-										{/if}
+											<button onclick={() => doKick(p.cid, p.name)} disabled={actionLoading}
+												class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors disabled:opacity-40">
+												<UserX class="h-3 w-3" /> Kick
+											</button>
+											<button onclick={() => doBan(p.cid, p.name)} disabled={actionLoading}
+												class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors disabled:opacity-40">
+												<ShieldBan class="h-3 w-3" /> Ban
+											</button>
+										</div>
+										<!-- Kick reason -->
+										<div class="flex items-center gap-2">
+											<input type="text" bind:value={kickReason} placeholder="Kick reason (optional)"
+												onkeydown={(e) => e.key === 'Enter' && doKick(p.cid, p.name)}
+												class="flex-1 px-2.5 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-amber-500 focus:outline-none" />
+											<button onclick={() => doKick(p.cid, p.name)} disabled={actionLoading}
+												class="px-3 py-1.5 rounded-md text-xs font-medium bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors disabled:opacity-40">
+												Kick
+											</button>
+										</div>
+										<!-- Ban reason + duration -->
+										<div class="flex items-center gap-2">
+											<input type="text" bind:value={banReason} placeholder="Ban reason (optional)"
+												onkeydown={(e) => e.key === 'Enter' && doBan(p.cid, p.name)}
+												class="flex-1 px-2.5 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-red-500 focus:outline-none" />
+											<input type="number" bind:value={banDuration} placeholder="Mins (perm if empty)" min="1"
+												class="w-28 px-2.5 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-red-500 focus:outline-none" />
+											<button onclick={() => doBan(p.cid, p.name)} disabled={actionLoading}
+												class="px-3 py-1.5 rounded-md text-xs font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40">
+												Ban
+											</button>
+										</div>
+										<!-- Private message -->
+										<div class="flex items-center gap-2">
+											<input type="text" bind:value={messageText} placeholder="Send private message..."
+												onkeydown={(e) => e.key === 'Enter' && doMessage(p.cid)}
+												class="flex-1 px-2.5 py-1.5 bg-surface-900 border border-surface-700 rounded-md text-xs text-surface-200 placeholder-surface-600 focus:border-accent focus:outline-none" />
+											<button onclick={() => doMessage(p.cid)} disabled={actionLoading || !messageText.trim()}
+												class="p-1.5 rounded-md bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-40">
+												<Send class="h-3.5 w-3.5" />
+											</button>
+										</div>
 									</div>
 								{/if}
 							</div>
@@ -364,50 +357,18 @@
 						{/if}
 						{#if specTeam.length > 0}
 							<div>
-								<div class="text-xs font-semibold uppercase text-surface-500 mb-2">Spectators ({specTeam.length})</div>
-								<div class="flex flex-wrap gap-2">
+								<div class="flex items-center justify-between mb-2">
+									<div class="text-xs font-semibold uppercase text-surface-500">Spectators ({specTeam.length})</div>
+									<div class="flex gap-4 text-[10px] uppercase tracking-wider text-surface-600 pr-8">
+										<span class="w-12 text-right">Score</span>
+										<span class="w-16 text-right">Ping</span>
+									</div>
+								</div>
+								<div class="space-y-0.5">
 									{#each specTeam as p}
-										<button onclick={() => togglePlayer(p.cid)}
-											class="text-xs bg-surface-800/40 rounded px-2 py-1 transition-colors
-												{expandedPlayer === p.cid ? 'text-accent bg-surface-800/80' : 'text-surface-400 hover:text-accent'}">
-											{stripColors(p.name)}
-										</button>
+										{@render playerRow(p, 'spec')}
 									{/each}
 								</div>
-								{#each specTeam as p}
-									{#if expandedPlayer === p.cid}
-										<div class="mt-2 rounded-lg bg-surface-800/50 p-3 space-y-3 animate-fade-in">
-											<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-surface-500">
-												<span>Slot: <span class="text-surface-300">{p.cid}</span></span>
-												<span>ID: <a href="/players/{p.id}" class="text-accent hover:underline">{p.id}</a></span>
-											</div>
-											{#if isAdmin}
-												{#if actionResult}
-													<div class="text-xs px-2 py-1.5 rounded {actionResult.ok ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}">
-														{actionResult.msg}
-													</div>
-												{/if}
-												<div class="flex flex-wrap gap-2">
-													<a href="/players/{p.id}" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-surface-700/50 text-xs text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors">
-														<Eye class="h-3 w-3" /> View Profile
-													</a>
-													<button onclick={() => doKick(p.cid, p.name)} disabled={actionLoading}
-														class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-amber-500/10 text-xs text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-40">
-														<UserX class="h-3 w-3" /> Kick
-													</button>
-													<button onclick={() => doBan(p.cid, p.name)} disabled={actionLoading}
-														class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-red-500/10 text-xs text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-40">
-														<ShieldBan class="h-3 w-3" /> Ban
-													</button>
-												</div>
-											{:else}
-												<a href="/players/{p.id}" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-surface-700/50 text-xs text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors">
-													<Eye class="h-3 w-3" /> View Profile
-												</a>
-											{/if}
-										</div>
-									{/if}
-								{/each}
 							</div>
 						{/if}
 					</div>
@@ -648,5 +609,13 @@
 				</div>
 			{/if}
 		</div>
+	</div>
+{/if}
+
+<!-- Action result toast -->
+{#if actionResult}
+	<div class="fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium animate-fade-in
+		{actionResult.ok ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}">
+		{actionResult.msg}
 	</div>
 {/if}

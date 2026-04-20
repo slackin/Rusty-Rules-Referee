@@ -7,7 +7,7 @@
 	import {
 		LayoutDashboard, Users, Shield, Gavel, Terminal, BarChart3, Settings,
 		UserCog, LogOut, Menu, X, ChevronDown, KeyRound, ScrollText, MessageSquare,
-		Map, BookOpen, Sliders
+		Map, BookOpen, Sliders, History
 	} from 'lucide-svelte';
 
 	let { children } = $props();
@@ -25,6 +25,7 @@
 	const nav = [
 		{ href: '/', label: 'Dashboard', icon: LayoutDashboard },
 		{ href: '/players', label: 'Players', icon: Users },
+		{ href: '/player-history', label: 'Player History', icon: History },
 		{ href: '/penalties', label: 'Penalties', icon: Gavel },
 		{ href: '/chat', label: 'Chat Logs', icon: MessageSquare },
 		{ href: '/stats', label: 'Statistics', icon: BarChart3 },

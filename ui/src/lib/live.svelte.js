@@ -81,12 +81,12 @@ function handleEvent(evt) {
 	recentEvents = [evt, ...recentEvents.slice(0, 49)];
 
 	// Push say/team-say events to recentChat
-	if (type === 'EVT_CLIENT_SAY' || type === 'EVT_CLIENT_SAY_TEAM') {
+	if (type === 'EVT_CLIENT_SAY' || type === 'EVT_CLIENT_TEAM_SAY') {
 		const chatMsg = {
 			id: Date.now(),
 			client_id: evt.client_id,
 			client_name: evt.client_name || 'Unknown',
-			channel: type === 'EVT_CLIENT_SAY_TEAM' ? 'team' : 'all',
+			channel: type === 'EVT_CLIENT_TEAM_SAY' ? 'team' : 'all',
 			message: evt.data?.text || '',
 			time_add: new Date().toISOString(),
 		};

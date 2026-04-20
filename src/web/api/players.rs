@@ -15,7 +15,11 @@ pub async fn list_players(
     AuthUser(_claims): AuthUser,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let connected = state.ctx.clients.get_all().await;
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(_) => return Json(serde_json::json!({"players": []})).into_response(),
+    };
+    let connected = ctx.clients.get_all().await;
     let groups = state.storage.get_groups().await.unwrap_or_default();
 
     let players: Vec<serde_json::Value> = connected.iter().map(|c| {
@@ -42,7 +46,7 @@ pub async fn list_players(
         })
     }).collect();
 
-    Json(serde_json::json!({"players": players}))
+    Json(serde_json::json!({"players": players})).into_response()
 }
 
 /// GET /api/v1/players/:id — player detail (reads from in-memory state, no RCON).
@@ -59,13 +63,16 @@ pub async fn get_player(
     };
 
     // Fetch all supplementary data in parallel
-    let (aliases, penalties, xlr, groups, connected) = tokio::join!(
+    let (aliases, penalties, xlr, groups) = tokio::join!(
         state.storage.get_aliases(id),
         state.storage.get_penalties(id, None),
         state.storage.get_xlr_player_stats(id),
         state.storage.get_groups(),
-        state.ctx.clients.get_all(),
     );
+    let connected = match state.ctx.as_ref() {
+        Some(ctx) => ctx.clients.get_all().await,
+        None => vec![],
+    };
     let aliases = aliases.unwrap_or_default();
     let penalties = penalties.unwrap_or_default();
     let xlr = xlr.unwrap_or(None);
@@ -237,7 +244,11 @@ pub async fn kick_player(
     Json(body): Json<PlayerActionBody>,
 ) -> impl IntoResponse {
     let reason = body.reason.as_deref().unwrap_or("Kicked by admin");
-    match state.ctx.kick(&cid, reason).await {
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(status) => return (status, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+    match ctx.kick(&cid, reason).await {
         Ok(_) => {
             let _ = state.storage.save_audit_entry(&AuditEntry {
                 id: 0,
@@ -263,10 +274,14 @@ pub async fn ban_player(
     Json(body): Json<PlayerActionBody>,
 ) -> impl IntoResponse {
     let reason = body.reason.as_deref().unwrap_or("Banned by admin");
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(status) => return (status, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
     let result = if let Some(duration) = body.duration {
-        state.ctx.temp_ban(&cid, reason, duration).await
+        ctx.temp_ban(&cid, reason, duration).await
     } else {
-        state.ctx.ban(&cid, reason).await
+        ctx.ban(&cid, reason).await
     };
 
     match result {
@@ -295,7 +310,11 @@ pub async fn message_player(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let msg = body.get("message").and_then(|v| v.as_str()).unwrap_or("");
-    match state.ctx.message(&cid, msg).await {
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(status) => return (status, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+    match ctx.message(&cid, msg).await {
         Ok(_) => Json(serde_json::json!({"status": "ok"})).into_response(),
         Err(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
@@ -312,7 +331,11 @@ pub async fn mute_player(
 ) -> impl IntoResponse {
     let duration = body.duration.unwrap_or(600); // default 10 minutes
     let reason = body.reason.as_deref().unwrap_or("Muted by admin");
-    match state.ctx.write(&format!("mute {} {}", cid, duration)).await {
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(status) => return (status, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+    match ctx.write(&format!("mute {} {}", cid, duration)).await {
         Ok(_) => {
             let _ = state.storage.save_audit_entry(&AuditEntry {
                 id: 0,
@@ -336,7 +359,11 @@ pub async fn unmute_player(
     State(state): State<AppState>,
     Path(cid): Path<String>,
 ) -> impl IntoResponse {
-    match state.ctx.write(&format!("unmute {}", cid)).await {
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(status) => return (status, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+    match ctx.write(&format!("unmute {}", cid)).await {
         Ok(_) => {
             let _ = state.storage.save_audit_entry(&AuditEntry {
                 id: 0,
@@ -357,6 +384,70 @@ pub async fn unmute_player(
 #[derive(Deserialize)]
 pub struct SearchQuery {
     pub q: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ListClientsQuery {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub search: Option<String>,
+    pub sort_by: Option<String>,
+    pub order: Option<String>,
+}
+
+/// GET /api/v1/clients — paginated list of all clients from DB.
+pub async fn list_all_clients(
+    AuthUser(_claims): AuthUser,
+    State(state): State<AppState>,
+    Query(query): Query<ListClientsQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(25).min(100);
+    let offset = query.offset.unwrap_or(0);
+    let sort_by = query.sort_by.as_deref().unwrap_or("last_visit");
+    let order = query.order.as_deref().unwrap_or("desc");
+
+    let (clients, total) = match state.storage.list_clients(limit, offset, query.search.as_deref(), sort_by, order).await {
+        Ok(r) => r,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    let groups = state.storage.get_groups().await.unwrap_or_default();
+    let connected = match state.ctx.as_ref() {
+        Some(ctx) => ctx.clients.get_all().await,
+        None => vec![],
+    };
+
+    let clients_json: Vec<serde_json::Value> = clients.iter().map(|c| {
+        let level = c.max_level();
+        let group_name = groups.iter()
+            .filter(|g| g.level <= level)
+            .max_by_key(|g| g.level)
+            .map(|g| g.name.clone());
+        let online = connected.iter().any(|cc| cc.id == c.id);
+        let live_name = connected.iter().find(|cc| cc.id == c.id)
+            .and_then(|cc| cc.current_name.clone());
+
+        serde_json::json!({
+            "id": c.id,
+            "guid": c.guid,
+            "name": c.name,
+            "ip": c.ip.map(|ip| ip.to_string()),
+            "auth": if c.auth.is_empty() { None } else { Some(&c.auth) },
+            "current_name": live_name,
+            "group_bits": c.group_bits,
+            "group_name": group_name,
+            "time_add": c.time_add,
+            "last_visit": c.last_visit,
+            "online": online,
+        })
+    }).collect();
+
+    Json(serde_json::json!({
+        "clients": clients_json,
+        "total": total,
+    })).into_response()
 }
 
 /// GET /api/v1/clients/search?q=name
@@ -385,6 +476,7 @@ pub async fn search_clients(
             "id": c.id,
             "guid": c.guid,
             "name": c.name,
+            "auth": if c.auth.is_empty() { None } else { Some(&c.auth) },
             "group_bits": c.group_bits,
             "last_visit": c.last_visit,
         })

@@ -64,6 +64,7 @@ pub trait Storage: Send + Sync {
 
     // ---- Client search extensions ----
     async fn get_client_count_by_level(&self, min_level: u32) -> Result<u64, StorageError>;
+    async fn list_clients(&self, limit: u32, offset: u32, search: Option<&str>, sort_by: &str, order: &str) -> Result<(Vec<Client>, u64), StorageError>;
 
     // ---- Convenience helpers ----
     /// Check if a client has an active ban or unexpired tempban.

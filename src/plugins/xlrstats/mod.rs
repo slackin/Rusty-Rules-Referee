@@ -260,7 +260,39 @@ impl Plugin for XlrstatsPlugin {
                             } else if command == "xlrtopstats" || command == "topstats" {
                                 if let Some(client_id) = event.client_id {
                                     let cid_str = client_id.to_string();
-                                    ctx.message(&cid_str, "^3Top stats: ^7(Coming soon — requires DB queries)").await?;
+                                    // Collect stats from all connected clients
+                                    let all_clients = ctx.clients.get_all().await;
+                                    let mut stats: Vec<(String, i64, i64, f64)> = Vec::new();
+                                    for c in &all_clients {
+                                        let kills: i64 = c.get_var("xlrstats", "kills")
+                                            .map(|v| v.as_i64())
+                                            .unwrap_or(0);
+                                        let deaths: i64 = c.get_var("xlrstats", "deaths")
+                                            .map(|v| v.as_i64())
+                                            .unwrap_or(0);
+                                        let skill: f64 = c.get_var("xlrstats", "skill")
+                                            .and_then(|v| v.value.as_f64())
+                                            .unwrap_or(1000.0);
+                                        if kills >= self.min_kills as i64 {
+                                            stats.push((c.name.clone(), kills, deaths, skill));
+                                        }
+                                    }
+                                    stats.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+                                    if stats.is_empty() {
+                                        ctx.message(&cid_str, &format!(
+                                            "^3Top Stats: ^7No players with {} or more kills yet",
+                                            self.min_kills
+                                        )).await?;
+                                    } else {
+                                        ctx.message(&cid_str, "^3--- Top Players by Skill ---").await?;
+                                        for (i, (name, kills, deaths, skill)) in stats.iter().take(10).enumerate() {
+                                            let ratio = if *deaths > 0 { *kills as f64 / *deaths as f64 } else { *kills as f64 };
+                                            ctx.message(&cid_str, &format!(
+                                                "^7{}. ^2{} ^7- Skill:^3{:.0} ^7K:^2{} ^7D:^1{} ^7R:^3{:.2}",
+                                                i + 1, name, skill, kills, deaths, ratio
+                                            )).await?;
+                                        }
+                                    }
                                 }
                             }
                         }

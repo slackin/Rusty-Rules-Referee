@@ -55,6 +55,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/players/:cid/unmute", post(api::players::unmute_player))
         .route("/players/:id/group", put(api::players::update_player_group))
         // Client search
+        .route("/clients", get(api::players::list_all_clients))
         .route("/clients/search", get(api::players::search_clients))
         // Penalties
         .route("/penalties", get(api::penalties::list_penalties))
@@ -105,9 +106,22 @@ pub fn build_router(state: AppState) -> Router {
         .route("/pairing/enable", post(api::pairing::enable_pairing))
         .route("/pairing/disable", post(api::pairing::disable_pairing))
         .route("/pairing/pair", post(api::pairing::pair_client))
+        // Multi-server management (master mode)
+        .route("/servers", get(api::servers::list_servers))
+        .route("/servers/:id", get(api::servers::get_server))
+        .route("/servers/:id", delete(api::servers::delete_server))
+        .route("/servers/:id/rcon", post(api::servers::server_rcon))
+        .route("/servers/:id/kick", post(api::servers::server_kick))
+        .route("/servers/:id/ban", post(api::servers::server_ban))
+        .route("/servers/:id/say", post(api::servers::server_say))
+        .route("/servers/:id/message", post(api::servers::server_message))
         // First-run setup wizard
         .route("/setup/status", get(api::setup::setup_status))
-        .route("/setup/complete", post(api::setup::complete_setup));
+        .route("/setup/complete", post(api::setup::complete_setup))
+        // Version & updates
+        .route("/version", get(api::version::get_version))
+        .route("/version/check", post(api::version::check_update))
+        .route("/version/update", post(api::version::apply_latest_update));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -180,11 +194,12 @@ code{background:#222;padding:2px 8px;border-radius:4px;font-size:0.9rem}
 
 /// Start the web admin server.
 pub async fn start_server(
-    ctx: Arc<BotContext>,
+    ctx: Option<Arc<BotContext>>,
     config: RefereeConfig,
     config_path: String,
     storage: Arc<dyn Storage>,
     event_tx: broadcast::Sender<Event>,
+    connected_clients: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, crate::sync::master::ConnectedClient>>>>,
 ) -> anyhow::Result<()> {
     let jwt_secret = config
         .web
@@ -215,6 +230,7 @@ pub async fn start_server(
         jwt_secret,
         event_tx,
         storage,
+        connected_clients,
     };
 
     let app = build_router(state);
