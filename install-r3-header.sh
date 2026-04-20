@@ -281,7 +281,7 @@ if [ -f "$INSTALL_DIR/r3.toml" ]; then
 fi
 
 mkdir -p "$INSTALL_DIR"
-tail -n +"$ARCHIVE_LINE" "$0" | tar xz -C "$HOME_DIR/"
+tail -n +"$ARCHIVE_LINE" "$0" | tar xz --strip-components=1 -C "$INSTALL_DIR"
 
 # ---- Generate config ----
 info "Generating configuration..."
