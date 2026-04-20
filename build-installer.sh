@@ -39,6 +39,12 @@ if [ -f "$SCRIPT_DIR/referee.example.toml" ]; then
     cp "$SCRIPT_DIR/referee.example.toml" "$STAGE/r3/referee.example.toml"
 fi
 
+# Stage the uninstaller
+if [ -f "$SCRIPT_DIR/uninstall-r3.sh" ]; then
+    cp "$SCRIPT_DIR/uninstall-r3.sh" "$STAGE/r3/uninstall-r3.sh"
+    chmod +x "$STAGE/r3/uninstall-r3.sh"
+fi
+
 # Create the tarball
 echo "Creating archive..."
 (cd "$STAGE" && tar czf "$STAGE/payload.tar.gz" r3/)

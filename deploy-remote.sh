@@ -226,6 +226,13 @@ chmod 644 "${PUBLISH_BASE}/${INSTALLER_FILENAME}"
 INSTALLER_SIZE=$(du -h "${PUBLISH_BASE}/${INSTALLER_FILENAME}" | awk '{print $1}')
 ok "Installer published: ${PUBLISH_BASE}/${INSTALLER_FILENAME} (${INSTALLER_SIZE})"
 
+# Publish uninstaller separately too
+if [ -f "${BUILD_DIR}/uninstall-r3.sh" ]; then
+    cp "${BUILD_DIR}/uninstall-r3.sh" "${PUBLISH_BASE}/uninstall-r3.sh"
+    chmod 644 "${PUBLISH_BASE}/uninstall-r3.sh"
+    ok "Uninstaller published: ${PUBLISH_BASE}/uninstall-r3.sh"
+fi
+
 # ---- Summary ----
 echo ""
 echo -e "${GREEN}${BOLD}"
