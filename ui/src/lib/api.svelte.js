@@ -181,6 +181,12 @@ export const api = {
 	setupStatus: () => request('/setup/status'),
 	completeSetup: (data) =>
 		request('/setup/complete', { method: 'POST', body: JSON.stringify(data) }),
+	setupBrowse: (path) =>
+		request('/setup/browse', { method: 'POST', body: JSON.stringify({ path }) }),
+	setupScanConfigs: () =>
+		request('/setup/scan-configs', { method: 'POST' }),
+	setupAnalyzeCfg: (path) =>
+		request('/setup/analyze-cfg', { method: 'POST', body: JSON.stringify({ path }) }),
 
 	// Multi-server management (master mode)
 	servers: () => request('/servers').then(r => r.servers),

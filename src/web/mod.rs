@@ -125,6 +125,9 @@ pub fn build_router(state: AppState) -> Router {
         // First-run setup wizard
         .route("/setup/status", get(api::setup::setup_status))
         .route("/setup/complete", post(api::setup::complete_setup))
+        .route("/setup/browse", post(api::setup::setup_browse))
+        .route("/setup/scan-configs", post(api::setup::setup_scan_configs))
+        .route("/setup/analyze-cfg", post(api::setup::setup_analyze_cfg))
         // Version & updates
         .route("/version", get(api::version::get_version))
         .route("/version/check", post(api::version::check_update))
