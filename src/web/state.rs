@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, oneshot, RwLock};
 
 use crate::config::RefereeConfig;
 use crate::core::context::BotContext;
 use crate::events::Event;
 use crate::storage::Storage;
 use crate::sync::master::ConnectedClient;
+use crate::sync::protocol::{ClientRequest, ClientResponse};
 
 /// Shared state for all web handlers.
 #[derive(Clone)]
@@ -20,6 +21,10 @@ pub struct AppState {
     pub storage: Arc<dyn Storage>,
     /// Connected game-server bots — only populated in master mode.
     pub connected_clients: Option<Arc<RwLock<HashMap<i64, ConnectedClient>>>>,
+    /// Pending request/response correlations (master mode only).
+    pub pending_responses: Option<Arc<RwLock<HashMap<String, oneshot::Sender<ClientResponse>>>>>,
+    /// Pending requests queued for client bots (master mode only).
+    pub pending_client_requests: Option<Arc<RwLock<HashMap<i64, Vec<(String, ClientRequest)>>>>>,
 }
 
 impl AppState {

@@ -236,6 +236,8 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                 web_storage,
                 web_event_tx,
                 None, // No connected_clients in standalone mode
+                None, // No pending_responses in standalone mode
+                None, // No pending_client_requests in standalone mode
             ).await {
                 error!(error = %e, "Web admin server failed");
             }
@@ -706,6 +708,10 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // Shared connected_clients map — used by both sync API and web API
     let connected_clients = Arc::new(RwLock::new(std::collections::HashMap::<i64, sync::master::ConnectedClient>::new()));
 
+    // Shared pending request maps — used by both sync API and web API
+    let pending_responses = Arc::new(RwLock::new(std::collections::HashMap::<String, tokio::sync::oneshot::Sender<sync::protocol::ClientResponse>>::new()));
+    let pending_client_requests = Arc::new(RwLock::new(std::collections::HashMap::<i64, Vec<(String, sync::protocol::ClientRequest)>>::new()));
+
     // Start the web admin server if enabled
     if config.web.enabled {
         let web_config = config.clone();
@@ -713,6 +719,8 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
         let web_storage = db.clone();
         let web_event_tx = ws_event_tx.clone();
         let web_connected = connected_clients.clone();
+        let web_pending_responses = pending_responses.clone();
+        let web_pending_client_requests = pending_client_requests.clone();
         tokio::spawn(async move {
             if let Err(e) = rusty_rules_referee::web::start_server(
                 None, // No local BotContext in master mode
@@ -721,6 +729,8 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
                 web_storage,
                 web_event_tx,
                 Some(web_connected),
+                Some(web_pending_responses),
+                Some(web_pending_client_requests),
             ).await {
                 error!(error = %e, "Web admin server failed");
             }
@@ -731,12 +741,16 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
     let sync_storage = db.clone();
     let sync_config = master_config.clone();
     let sync_connected = connected_clients.clone();
+    let sync_pending_responses = pending_responses.clone();
+    let sync_pending_client_requests = pending_client_requests.clone();
     tokio::spawn(async move {
         if let Err(e) = sync::master::start_master_api(
             &sync_config,
             sync_storage,
             internal_event_tx,
             sync_connected,
+            sync_pending_responses,
+            sync_pending_client_requests,
         ).await {
             error!(error = %e, "Master internal API failed");
         }

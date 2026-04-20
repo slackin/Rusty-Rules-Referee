@@ -20,7 +20,8 @@ use axum::{
     response::IntoResponse,
     routing::{get, post, put},
 };
-use tokio::sync::{broadcast, RwLock};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, oneshot, RwLock};
 use tracing::{error, info, warn};
 
 use crate::config::MasterSection;
@@ -37,6 +38,11 @@ pub struct MasterState {
     pub connected_clients: Arc<RwLock<HashMap<i64, ConnectedClient>>>,
     /// Broadcast channel for forwarding events to the web UI.
     pub event_tx: broadcast::Sender<EventPayload>,
+    /// Pending request/response correlations: request_id → oneshot sender.
+    pub pending_responses: Arc<RwLock<HashMap<String, oneshot::Sender<ClientResponse>>>>,
+    /// Pending requests queued for client bots to pick up via polling.
+    /// Key: server_id → Vec of (request_id, request).
+    pub pending_client_requests: Arc<RwLock<HashMap<i64, Vec<(String, ClientRequest)>>>>,
 }
 
 /// Represents a connected client bot.
@@ -58,6 +64,8 @@ pub fn build_internal_router(state: MasterState) -> Router {
         .route("/internal/config/:server_id", put(handle_put_config))
         .route("/internal/bans", get(handle_get_global_bans))
         .route("/internal/ws", get(handle_ws))
+        .route("/internal/requests/:server_id", get(handle_poll_requests))
+        .route("/internal/responses", post(handle_client_response))
         .with_state(state)
 }
 
@@ -381,6 +389,14 @@ async fn handle_ws_connection(mut socket: ws::WebSocket, state: MasterState) {
                                     hb.max_clients,
                                 ).await;
                             }
+                            Ok(SyncMessage::Response { request_id, response }) => {
+                                let mut pending = state.pending_responses.write().await;
+                                if let Some(tx) = pending.remove(&request_id) {
+                                    let _ = tx.send(response);
+                                } else {
+                                    warn!(request_id, "Received response for unknown request");
+                                }
+                            }
                             Ok(other) => {
                                 warn!(?other, "Unhandled WS message from client");
                             }
@@ -422,6 +438,8 @@ pub async fn start_master_api(
     storage: Arc<dyn Storage>,
     event_tx: broadcast::Sender<EventPayload>,
     connected_clients: Arc<RwLock<HashMap<i64, ConnectedClient>>>,
+    pending_responses: Arc<RwLock<HashMap<String, oneshot::Sender<ClientResponse>>>>,
+    pending_client_requests: Arc<RwLock<HashMap<i64, Vec<(String, ClientRequest)>>>>,
 ) -> anyhow::Result<()> {
     let tls_acceptor = tls::build_master_tls_acceptor(
         Path::new(&config.tls_cert),
@@ -433,6 +451,8 @@ pub async fn start_master_api(
         storage,
         connected_clients,
         event_tx,
+        pending_responses,
+        pending_client_requests,
     };
 
     let app = build_internal_router(state);
@@ -479,5 +499,94 @@ pub async fn start_master_api(
                 }
             }
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal REST endpoints for client request/response polling
+// ---------------------------------------------------------------------------
+
+/// GET /internal/requests/:server_id — client polls for pending requests.
+async fn handle_poll_requests(
+    State(state): State<MasterState>,
+    axum::extract::Path(server_id): axum::extract::Path<i64>,
+) -> Json<PendingRequestsResponse> {
+    let mut pending = state.pending_client_requests.write().await;
+    let items = pending.remove(&server_id).unwrap_or_default();
+
+    let requests: Vec<PendingRequestItem> = items
+        .into_iter()
+        .map(|(request_id, request)| PendingRequestItem { request_id, request })
+        .collect();
+
+    Json(PendingRequestsResponse { requests })
+}
+
+/// POST /internal/responses — client sends back a response to a request.
+async fn handle_client_response(
+    State(state): State<MasterState>,
+    Json(body): Json<ClientResponseSubmission>,
+) -> StatusCode {
+    let mut pending = state.pending_responses.write().await;
+    if let Some(tx) = pending.remove(&body.request_id) {
+        let _ = tx.send(body.response);
+        StatusCode::OK
+    } else {
+        warn!(request_id = %body.request_id, "Response for unknown or expired request");
+        StatusCode::NOT_FOUND
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public helper: send a request to a connected client and await the response
+// ---------------------------------------------------------------------------
+
+/// Queue a request for a client bot and wait for its response.
+///
+/// The request is placed in `pending_client_requests` for the given server_id.
+/// The client picks it up during its next poll cycle (every ~2s). A oneshot
+/// channel correlates the eventual response. Times out after `timeout`.
+pub async fn send_request_to_server(
+    pending_responses: &Arc<RwLock<HashMap<String, oneshot::Sender<ClientResponse>>>>,
+    pending_client_requests: &Arc<RwLock<HashMap<i64, Vec<(String, ClientRequest)>>>>,
+    server_id: i64,
+    request: ClientRequest,
+    timeout: std::time::Duration,
+) -> Result<ClientResponse, String> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+
+    // Create oneshot for the response
+    let (resp_tx, resp_rx) = oneshot::channel();
+
+    // Store the oneshot sender
+    pending_responses.write().await.insert(request_id.clone(), resp_tx);
+
+    // Queue the request for the client to pick up
+    {
+        let mut pending = pending_client_requests.write().await;
+        pending
+            .entry(server_id)
+            .or_insert_with(Vec::new)
+            .push((request_id.clone(), request));
+    }
+
+    // Await the response with timeout
+    match tokio::time::timeout(timeout, resp_rx).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => {
+            pending_responses.write().await.remove(&request_id);
+            Err("Client disconnected before responding".to_string())
+        }
+        Err(_) => {
+            pending_responses.write().await.remove(&request_id);
+            // Also clean up the queued request if it hasn't been picked up
+            {
+                let mut pending = pending_client_requests.write().await;
+                if let Some(reqs) = pending.get_mut(&server_id) {
+                    reqs.retain(|(id, _)| id != &request_id);
+                }
+            }
+            Err("Request timed out waiting for client response".to_string())
+        }
     }
 }

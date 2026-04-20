@@ -144,6 +144,81 @@ pub struct ServerConfigPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Client request/response (master → client → master)
+// ---------------------------------------------------------------------------
+
+/// Requests that the master can send to a client bot for execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "request_type", content = "params")]
+pub enum ClientRequest {
+    /// Scan known game directories for .cfg files.
+    ScanConfigFiles,
+    /// Read and parse a specific server.cfg file.
+    ParseConfigFile { path: String },
+    /// Download and install a fresh UrT 4.3 dedicated server.
+    InstallGameServer { install_path: String },
+    /// Poll install progress.
+    InstallStatus,
+}
+
+/// Responses from a client bot back to the master.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "response_type", content = "data")]
+pub enum ClientResponse {
+    /// List of config files found on the client filesystem.
+    ConfigFiles { files: Vec<ConfigFileEntry> },
+    /// Parsed config from a server.cfg file.
+    ParsedConfig {
+        settings: ServerConfigPayload,
+        checks: Vec<ConfigCheck>,
+        all_settings: Vec<CfgSetting>,
+        raw: String,
+    },
+    /// Game server installation started.
+    InstallStarted,
+    /// Game server installation progress.
+    InstallProgress {
+        stage: String,
+        percent: u8,
+        error: Option<String>,
+    },
+    /// Game server installation completed.
+    InstallComplete {
+        install_path: String,
+        game_log: Option<String>,
+    },
+    /// Error response.
+    Error { message: String },
+}
+
+/// A config file found during filesystem scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigFileEntry {
+    pub path: String,
+    pub size: u64,
+    pub modified: Option<String>,
+}
+
+/// A health check result from parsing a server.cfg.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigCheck {
+    pub key: String,
+    pub status: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix_value: Option<String>,
+}
+
+/// A single key-value setting from a server.cfg file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CfgSetting {
+    pub key: String,
+    pub value: String,
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket messages (bidirectional)
 // ---------------------------------------------------------------------------
 
@@ -174,6 +249,18 @@ pub enum SyncMessage {
     HeartbeatAck(HeartbeatResponse),
     /// Error/status message.
     Status(StatusMessage),
+
+    // -- Bidirectional request/response --
+    /// Request from master to client.
+    Request {
+        request_id: String,
+        request: ClientRequest,
+    },
+    /// Response from client to master.
+    Response {
+        request_id: String,
+        response: ClientResponse,
+    },
 }
 
 /// A command sent from master to client for execution via RCON.
@@ -217,4 +304,28 @@ pub struct CommandResult {
 pub struct StatusMessage {
     pub code: u16,
     pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Request polling (client polls master for pending requests)
+// ---------------------------------------------------------------------------
+
+/// Response from `GET /internal/requests/:server_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingRequestsResponse {
+    pub requests: Vec<PendingRequestItem>,
+}
+
+/// A single pending request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingRequestItem {
+    pub request_id: String,
+    pub request: ClientRequest,
+}
+
+/// Sent by client via `POST /internal/responses`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientResponseSubmission {
+    pub request_id: String,
+    pub response: ClientResponse,
 }

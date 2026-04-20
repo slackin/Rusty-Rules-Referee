@@ -12,7 +12,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use crate::sync::protocol::{RemoteAction, RemoteCommand, SyncMessage, ServerConfigPayload, ConfigSync};
+use crate::sync::protocol::{RemoteAction, RemoteCommand, SyncMessage, ServerConfigPayload, ConfigSync, ClientRequest, ClientResponse};
 use crate::web::state::AppState;
 
 // ---- Response types ----
@@ -375,4 +375,112 @@ pub async fn update_server_config(
         ok: true,
         message: "Configuration saved and pushed".to_string(),
     }).into_response()
+}
+
+// ---- Server setup endpoints (config scan, install) ----
+
+#[derive(Debug, Deserialize)]
+pub struct ParseConfigRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InstallServerRequest {
+    pub install_path: String,
+}
+
+/// Helper: send a ClientRequest to a server via the polling infrastructure and await the response.
+async fn send_client_request(
+    state: &AppState,
+    server_id: i64,
+    request: ClientRequest,
+    timeout: std::time::Duration,
+) -> Result<ClientResponse, (StatusCode, String)> {
+    let pending_responses = state
+        .pending_responses
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Not running in master mode".to_string()))?;
+    let pending_client_requests = state
+        .pending_client_requests
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Not running in master mode".to_string()))?;
+
+    crate::sync::master::send_request_to_server(
+        pending_responses,
+        pending_client_requests,
+        server_id,
+        request,
+        timeout,
+    )
+    .await
+    .map_err(|e| (StatusCode::GATEWAY_TIMEOUT, e))
+}
+
+/// POST /api/v1/servers/:id/scan-configs — ask the client to scan for .cfg files.
+pub async fn scan_server_configs(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> impl IntoResponse {
+    info!(server_id, "Scanning for config files on client");
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::ScanConfigFiles,
+        std::time::Duration::from_secs(60),
+    ).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
+/// POST /api/v1/servers/:id/parse-config — ask the client to parse a specific config file.
+pub async fn parse_server_config(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<ParseConfigRequest>,
+) -> impl IntoResponse {
+    info!(server_id, path = %req.path, "Parsing config file on client");
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::ParseConfigFile { path: req.path },
+        std::time::Duration::from_secs(60),
+    ).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
+/// POST /api/v1/servers/:id/install-server — ask the client to install a fresh game server.
+pub async fn install_game_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<InstallServerRequest>,
+) -> impl IntoResponse {
+    info!(server_id, path = %req.install_path, "Starting game server install on client");
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::InstallGameServer { install_path: req.install_path },
+        std::time::Duration::from_secs(300),
+    ).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
+/// GET /api/v1/servers/:id/install-status — poll the install progress on the client.
+pub async fn install_status(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> impl IntoResponse {
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::InstallStatus,
+        std::time::Duration::from_secs(30),
+    ).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
 }

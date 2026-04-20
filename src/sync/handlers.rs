@@ -1,0 +1,592 @@
+//! Client-side request handlers for master-initiated operations.
+//!
+//! These run on the client bot when the master sends a Request message
+//! via the sync WebSocket. Each handler performs a local operation
+//! (filesystem scan, config parsing, game server installation) and
+//! returns a ClientResponse.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::RwLock;
+use tracing::{error, info, warn};
+
+use super::protocol::*;
+
+// ---------------------------------------------------------------------------
+// Install state (shared across poll requests)
+// ---------------------------------------------------------------------------
+
+/// Tracks the progress of a game server installation.
+#[derive(Debug, Clone)]
+pub struct InstallState {
+    pub stage: String,
+    pub percent: u8,
+    pub error: Option<String>,
+    pub completed: bool,
+    pub install_path: Option<String>,
+    pub game_log: Option<String>,
+}
+
+impl Default for InstallState {
+    fn default() -> Self {
+        Self {
+            stage: "idle".to_string(),
+            percent: 0,
+            error: None,
+            completed: false,
+            install_path: None,
+            game_log: None,
+        }
+    }
+}
+
+/// Shared install state that persists across requests.
+pub type SharedInstallState = Arc<RwLock<InstallState>>;
+
+pub fn new_install_state() -> SharedInstallState {
+    Arc::new(RwLock::new(InstallState::default()))
+}
+
+// ---------------------------------------------------------------------------
+// Config file scanning
+// ---------------------------------------------------------------------------
+
+/// Scan known game directories for .cfg files.
+pub async fn handle_scan_config_files() -> ClientResponse {
+    let home = match home_dir() {
+        Some(h) => h,
+        None => {
+            return ClientResponse::Error {
+                message: "Cannot determine home directory".to_string(),
+            };
+        }
+    };
+
+    // Known directories where UrT server configs might live
+    let search_dirs = vec![
+        home.join(".q3a/q3ut4"),
+        home.join("q3ut4"),
+        home.join("urbanterror/q3ut4"),
+        home.join("urbanterror/UrbanTerror43/q3ut4"),
+        PathBuf::from("/opt/urbanterror/q3ut4"),
+        PathBuf::from("/usr/local/games/urbanterror/q3ut4"),
+    ];
+
+    // Also scan home directory one level deep for */q3ut4/ patterns
+    let mut extra_dirs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&home) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let candidate = p.join("q3ut4");
+                if candidate.is_dir() && !search_dirs.contains(&candidate) {
+                    extra_dirs.push(candidate);
+                }
+            }
+        }
+    }
+
+    let all_dirs: Vec<PathBuf> = search_dirs
+        .into_iter()
+        .chain(extra_dirs)
+        .filter(|d| d.is_dir())
+        .collect();
+
+    let mut files = Vec::new();
+
+    for dir in &all_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension() {
+                        if ext == "cfg" {
+                            if let Ok(meta) = std::fs::metadata(&path) {
+                                let modified = meta.modified().ok().map(|t| {
+                                    let dt: chrono::DateTime<chrono::Utc> = t.into();
+                                    dt.to_rfc3339()
+                                });
+                                files.push(ConfigFileEntry {
+                                    path: path.to_string_lossy().to_string(),
+                                    size: meta.len(),
+                                    modified,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by path for consistent ordering
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    info!(count = files.len(), dirs = all_dirs.len(), "Scanned for config files");
+
+    ClientResponse::ConfigFiles { files }
+}
+
+// ---------------------------------------------------------------------------
+// Config file parsing
+// ---------------------------------------------------------------------------
+
+/// Read and parse a specific server.cfg file, extracting game server settings.
+pub async fn handle_parse_config_file(path: &str) -> ClientResponse {
+    let file_path = Path::new(path);
+
+    // Security: only allow .cfg files
+    match file_path.extension().and_then(|e| e.to_str()) {
+        Some("cfg") => {}
+        _ => {
+            return ClientResponse::Error {
+                message: "Only .cfg files can be read".to_string(),
+            };
+        }
+    }
+
+    // Security: must be under a known game directory
+    if !is_allowed_config_path(file_path) {
+        return ClientResponse::Error {
+            message: "Path is not under a recognized game server directory".to_string(),
+        };
+    }
+
+    let content = match std::fs::read_to_string(file_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Cannot read file: {}", e),
+            };
+        }
+    };
+
+    // Parse all "set <key> <value>" and "seta <key> <value>" lines
+    let mut all_settings: Vec<CfgSetting> = Vec::new();
+    let mut setting_map: HashMap<String, String> = HashMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+
+        if trimmed.starts_with("set ") || trimmed.starts_with("seta ") {
+            let rest = if trimmed.starts_with("seta ") {
+                &trimmed[5..]
+            } else {
+                &trimmed[4..]
+            };
+            let rest = rest.trim();
+            if let Some((key, val_raw)) = rest.split_once(char::is_whitespace) {
+                let val = val_raw.trim().trim_matches('"');
+                all_settings.push(CfgSetting {
+                    key: key.to_string(),
+                    value: val.to_string(),
+                });
+                setting_map.insert(key.to_string(), val.to_string());
+            }
+        }
+    }
+
+    // Run health checks (same logic as analyze_server_cfg in web API)
+    let checks = run_config_checks(&setting_map);
+
+    // Extract ServerConfigPayload values
+    let rcon_password = setting_map
+        .get("rconPassword")
+        .or_else(|| setting_map.get("sv_rconPassword"))
+        .cloned()
+        .unwrap_or_default();
+
+    let port = setting_map
+        .get("net_port")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(27960);
+
+    let game_log = setting_map.get("g_log").cloned().filter(|v| !v.is_empty());
+
+    // Try to resolve game_log to an absolute path relative to the cfg file's directory
+    let game_log = game_log.map(|log| {
+        let log_path = Path::new(&log);
+        if log_path.is_absolute() {
+            log
+        } else if let Some(parent) = file_path.parent() {
+            let resolved = parent.join(&log);
+            resolved.to_string_lossy().to_string()
+        } else {
+            log
+        }
+    });
+
+    let settings = ServerConfigPayload {
+        address: String::new(), // Not available in server.cfg — must be provided separately
+        port,
+        rcon_password,
+        game_log,
+    };
+
+    info!(path, settings_count = all_settings.len(), "Parsed config file");
+
+    ClientResponse::ParsedConfig {
+        settings,
+        checks,
+        all_settings,
+        raw: content,
+    }
+}
+
+/// Run health checks on parsed server.cfg settings.
+fn run_config_checks(settings: &HashMap<String, String>) -> Vec<ConfigCheck> {
+    let mut checks = Vec::new();
+
+    // 1. g_log — must be set
+    match settings.get("g_log") {
+        Some(v) if !v.is_empty() => {
+            checks.push(ConfigCheck {
+                key: "g_log".into(),
+                status: "ok".into(),
+                message: format!("Game log enabled: \"{}\"", v),
+                fix_key: None,
+                fix_value: None,
+            });
+        }
+        _ => {
+            checks.push(ConfigCheck {
+                key: "g_log".into(),
+                status: "error".into(),
+                message: "g_log is not set. The bot requires game logging to be enabled.".into(),
+                fix_key: Some("g_log".into()),
+                fix_value: Some("games.log".into()),
+            });
+        }
+    }
+
+    // 2. g_logsync — must be 1
+    match settings.get("g_logsync").map(|s| s.as_str()) {
+        Some("1") => {
+            checks.push(ConfigCheck {
+                key: "g_logsync".into(),
+                status: "ok".into(),
+                message: "Log sync is enabled (writes flushed immediately).".into(),
+                fix_key: None,
+                fix_value: None,
+            });
+        }
+        Some(v) => {
+            checks.push(ConfigCheck {
+                key: "g_logsync".into(),
+                status: "error".into(),
+                message: format!("g_logsync is \"{}\" but must be \"1\" for real-time log reading.", v),
+                fix_key: Some("g_logsync".into()),
+                fix_value: Some("1".into()),
+            });
+        }
+        None => {
+            checks.push(ConfigCheck {
+                key: "g_logsync".into(),
+                status: "error".into(),
+                message: "g_logsync is not set. Must be \"1\" for real-time log reading.".into(),
+                fix_key: Some("g_logsync".into()),
+                fix_value: Some("1".into()),
+            });
+        }
+    }
+
+    // 3. g_logroll — should be 0
+    match settings.get("g_logroll").map(|s| s.as_str()) {
+        Some("0") | None => {
+            checks.push(ConfigCheck {
+                key: "g_logroll".into(),
+                status: "ok".into(),
+                message: "Log roll is disabled (recommended).".into(),
+                fix_key: None,
+                fix_value: None,
+            });
+        }
+        Some(v) => {
+            checks.push(ConfigCheck {
+                key: "g_logroll".into(),
+                status: "warning".into(),
+                message: format!("g_logroll is \"{}\". Recommend \"0\" to prevent log rotation issues.", v),
+                fix_key: Some("g_logroll".into()),
+                fix_value: Some("0".into()),
+            });
+        }
+    }
+
+    // 4. sv_strictAuth — recommended
+    match settings.get("sv_strictAuth").map(|s| s.as_str()) {
+        Some("1") => {
+            checks.push(ConfigCheck {
+                key: "sv_strictAuth".into(),
+                status: "ok".into(),
+                message: "Strict auth is enabled. Player auth names will be tracked.".into(),
+                fix_key: None,
+                fix_value: None,
+            });
+        }
+        Some(v) => {
+            checks.push(ConfigCheck {
+                key: "sv_strictAuth".into(),
+                status: "warning".into(),
+                message: format!("sv_strictAuth is \"{}\". Recommend \"1\" for player auth tracking.", v),
+                fix_key: Some("sv_strictAuth".into()),
+                fix_value: Some("1".into()),
+            });
+        }
+        None => {
+            checks.push(ConfigCheck {
+                key: "sv_strictAuth".into(),
+                status: "warning".into(),
+                message: "sv_strictAuth not set. Recommend \"1\" for player auth tracking.".into(),
+                fix_key: Some("sv_strictAuth".into()),
+                fix_value: Some("1".into()),
+            });
+        }
+    }
+
+    // 5. rconPassword — must be set
+    let rcon = settings.get("rconPassword").or_else(|| settings.get("sv_rconPassword"));
+    match rcon {
+        Some(v) if !v.is_empty() => {
+            checks.push(ConfigCheck {
+                key: "rconPassword".into(),
+                status: "ok".into(),
+                message: "RCON password is set.".into(),
+                fix_key: None,
+                fix_value: None,
+            });
+        }
+        _ => {
+            checks.push(ConfigCheck {
+                key: "rconPassword".into(),
+                status: "error".into(),
+                message: "No RCON password set. The bot requires RCON to manage the server.".into(),
+                fix_key: None,
+                fix_value: None,
+            });
+        }
+    }
+
+    // 6. g_gametype — informational
+    if let Some(gt) = settings.get("g_gametype") {
+        let gt_name = match gt.as_str() {
+            "0" => "Free For All",
+            "1" => "Last Man Standing",
+            "3" => "Team Death Match",
+            "4" => "Team Survivor",
+            "5" => "Follow the Leader",
+            "6" => "Capture and Hold",
+            "7" => "Capture the Flag",
+            "8" => "Bomb Mode",
+            "9" => "Jump Mode",
+            "10" => "Freeze Tag",
+            "11" => "Gun Game",
+            _ => "Unknown",
+        };
+        checks.push(ConfigCheck {
+            key: "g_gametype".into(),
+            status: "info".into(),
+            message: format!("Game type: {} ({})", gt_name, gt),
+            fix_key: None,
+            fix_value: None,
+        });
+    }
+
+    checks
+}
+
+/// Check if a path is under a recognized game server directory.
+fn is_allowed_config_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+
+    // Must contain q3ut4 or urbanterror somewhere in the path
+    if path_str.contains("q3ut4")
+        || path_str.contains("urbanterror")
+        || path_str.contains("q3a")
+    {
+        return true;
+    }
+
+    // Also allow if under home directory (common custom install locations)
+    if let Some(home) = home_dir() {
+        if path.starts_with(&home) {
+            return true;
+        }
+    }
+
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Game server installation
+// ---------------------------------------------------------------------------
+
+const URT_DOWNLOAD_URL: &str =
+    "https://www.urbanterror.info/downloads/software/urt/43/UrbanTerror43_ded.tar.gz";
+
+/// Start downloading and installing a UrT 4.3 dedicated server.
+/// This spawns a background task and updates the shared install state.
+pub fn start_install_game_server(install_path: String, state: SharedInstallState) {
+    tokio::spawn(async move {
+        run_install(install_path, state).await;
+    });
+}
+
+async fn run_install(install_path: String, state: SharedInstallState) {
+    let target = Path::new(&install_path);
+
+    // Update: downloading
+    {
+        let mut s = state.write().await;
+        s.stage = "downloading".to_string();
+        s.percent = 5;
+        s.error = None;
+        s.completed = false;
+    }
+
+    // Create target directory
+    if let Err(e) = tokio::fs::create_dir_all(target).await {
+        let mut s = state.write().await;
+        s.stage = "error".to_string();
+        s.error = Some(format!("Failed to create directory: {}", e));
+        return;
+    }
+
+    let tmp_path = format!("/tmp/urt43_ded_{}.tar.gz", std::process::id());
+
+    // Download
+    info!(url = URT_DOWNLOAD_URL, dest = %tmp_path, "Downloading UrT 4.3 dedicated server");
+    {
+        let mut s = state.write().await;
+        s.stage = "downloading".to_string();
+        s.percent = 10;
+    }
+
+    let download_result = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "wget -q -O '{}' '{}' 2>&1 || curl -fsSL -o '{}' '{}' 2>&1",
+            tmp_path, URT_DOWNLOAD_URL, tmp_path, URT_DOWNLOAD_URL
+        ))
+        .output()
+        .await;
+
+    match download_result {
+        Ok(output) if output.status.success() => {
+            let mut s = state.write().await;
+            s.stage = "extracting".to_string();
+            s.percent = 60;
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(format!("Download failed: {}", stderr));
+            return;
+        }
+        Err(e) => {
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(format!("Failed to run download command: {}", e));
+            return;
+        }
+    }
+
+    // Extract
+    info!(dest = %install_path, "Extracting UrT 4.3 dedicated server");
+    let extract_result = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "tar xzf '{}' -C '{}' --strip-components=1 2>&1 || tar xzf '{}' -C '{}' 2>&1",
+            tmp_path, install_path, tmp_path, install_path
+        ))
+        .output()
+        .await;
+
+    // Clean up temp file regardless of result
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    match extract_result {
+        Ok(output) if output.status.success() => {
+            let mut s = state.write().await;
+            s.stage = "configuring".to_string();
+            s.percent = 90;
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(format!("Extraction failed: {}", stderr));
+            return;
+        }
+        Err(e) => {
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(format!("Failed to run extract command: {}", e));
+            return;
+        }
+    }
+
+    // Auto-detect game log path
+    let game_log = {
+        let candidate = Path::new(&install_path).join("q3ut4/games.log");
+        // Create empty games.log if it doesn't exist (so the path is ready)
+        let log_dir = candidate.parent().unwrap();
+        let _ = std::fs::create_dir_all(log_dir);
+        if !candidate.exists() {
+            let _ = std::fs::File::create(&candidate);
+        }
+        Some(candidate.to_string_lossy().to_string())
+    };
+
+    // Done
+    {
+        let mut s = state.write().await;
+        s.stage = "complete".to_string();
+        s.percent = 100;
+        s.completed = true;
+        s.install_path = Some(install_path.clone());
+        s.game_log = game_log;
+    }
+
+    info!(path = %install_path, "UrT 4.3 dedicated server installation complete");
+}
+
+/// Handle an install status poll.
+pub async fn handle_install_status(state: &SharedInstallState) -> ClientResponse {
+    let s = state.read().await;
+    if s.completed {
+        ClientResponse::InstallComplete {
+            install_path: s.install_path.clone().unwrap_or_default(),
+            game_log: s.game_log.clone(),
+        }
+    } else if s.error.is_some() {
+        ClientResponse::InstallProgress {
+            stage: s.stage.clone(),
+            percent: s.percent,
+            error: s.error.clone(),
+        }
+    } else {
+        ClientResponse::InstallProgress {
+            stage: s.stage.clone(),
+            percent: s.percent,
+            error: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
+}

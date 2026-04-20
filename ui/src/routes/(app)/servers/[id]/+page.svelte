@@ -1,7 +1,7 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
 	import { page } from '$app/stores';
-	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save } from 'lucide-svelte';
+	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save, Download, FileSearch, Wrench, FolderOpen, Check, AlertTriangle, Loader2 } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
 	let server = $state(null);
@@ -17,6 +17,26 @@
 	let configRconPassword = $state('');
 	let configGameLog = $state('');
 
+	// Setup wizard state
+	let setupMethod = $state(null); // 'install' | 'scan' | 'manual' | null
+	let setupStep = $state(0);
+
+	// Install flow
+	let installPath = $state('/opt/urbanterror');
+	let installStarted = $state(false);
+	let installProgress = $state(null);
+	let installError = $state('');
+	let installPolling = $state(false);
+
+	// Scan flow
+	let scanning = $state(false);
+	let scanResults = $state(null);
+	let scanError = $state('');
+	let selectedConfigPath = $state('');
+	let parsing = $state(false);
+	let parsedConfig = $state(null);
+	let parseError = $state('');
+
 	// RCON
 	let rconCommand = $state('');
 	let rconHistory = $state([]);
@@ -28,7 +48,7 @@
 	let sayResult = $state(null);
 
 	// Kick/Ban
-	let actionType = $state(null); // 'kick' | 'ban'
+	let actionType = $state(null);
 	let actionCid = $state('');
 	let actionReason = $state('');
 	let actionDuration = $state(60);
@@ -73,12 +93,124 @@
 			if (configGameLog.trim()) payload.game_log = configGameLog;
 			const res = await api.updateServerConfig(serverId, payload);
 			configResult = { ok: true, message: res.message || 'Configuration saved and pushed' };
-			// Reload server info to reflect updated address/port
+			// Reset setup wizard state on successful save
+			setupMethod = null;
+			setupStep = 0;
 			loadServer();
 		} catch (e) {
 			configResult = { ok: false, message: e.message || 'Failed to save' };
 		}
 		configSaving = false;
+	}
+
+	// --- Install flow ---
+	async function startInstall() {
+		if (!installPath.trim()) return;
+		installStarted = true;
+		installError = '';
+		installProgress = { stage: 'Starting...', percent: 0 };
+		try {
+			await api.installGameServer(serverId, installPath);
+			pollInstallStatus();
+		} catch (e) {
+			installError = e.message || 'Failed to start installation';
+			installStarted = false;
+		}
+	}
+
+	async function pollInstallStatus() {
+		installPolling = true;
+		while (installPolling) {
+			try {
+				const resp = await api.installStatus(serverId);
+				if (resp.InstallProgress) {
+					installProgress = resp.InstallProgress;
+				} else if (resp.InstallComplete) {
+					installProgress = { stage: 'Complete!', percent: 100 };
+					installPolling = false;
+					// Pre-fill config from install results
+					if (resp.InstallComplete.game_log) {
+						configGameLog = resp.InstallComplete.game_log;
+					}
+					if (resp.InstallComplete.install_path) {
+						installPath = resp.InstallComplete.install_path;
+					}
+					// Move to manual config step with pre-filled game_log
+					setupStep = 2;
+				} else if (resp.Error) {
+					installError = resp.Error.message || 'Installation failed';
+					installPolling = false;
+				}
+			} catch (e) {
+				installError = e.message || 'Lost connection during install';
+				installPolling = false;
+			}
+			if (installPolling) {
+				await new Promise(r => setTimeout(r, 2000));
+			}
+		}
+	}
+
+	// --- Scan flow ---
+	async function scanConfigs() {
+		scanning = true;
+		scanError = '';
+		scanResults = null;
+		try {
+			const resp = await api.scanServerConfigs(serverId);
+			if (resp.ConfigFiles) {
+				scanResults = resp.ConfigFiles.files || [];
+			} else if (resp.Error) {
+				scanError = resp.Error.message || 'Scan failed';
+			}
+		} catch (e) {
+			scanError = e.message || 'Failed to scan for config files';
+		}
+		scanning = false;
+	}
+
+	async function parseSelectedConfig() {
+		if (!selectedConfigPath) return;
+		parsing = true;
+		parseError = '';
+		parsedConfig = null;
+		try {
+			const resp = await api.parseServerConfig(serverId, selectedConfigPath);
+			if (resp.ParsedConfig) {
+				parsedConfig = resp.ParsedConfig;
+				// Pre-fill the config form
+				if (parsedConfig.address) configAddress = parsedConfig.address;
+				if (parsedConfig.port) configPort = parsedConfig.port;
+				if (parsedConfig.rcon_password) configRconPassword = parsedConfig.rcon_password;
+				if (parsedConfig.game_log) configGameLog = parsedConfig.game_log;
+				setupStep = 2;
+			} else if (resp.Error) {
+				parseError = resp.Error.message || 'Parse failed';
+			}
+		} catch (e) {
+			parseError = e.message || 'Failed to parse config file';
+		}
+		parsing = false;
+	}
+
+	function selectMethod(method) {
+		setupMethod = method;
+		setupStep = 1;
+		// Reset sub-states
+		installStarted = false;
+		installProgress = null;
+		installError = '';
+		scanResults = null;
+		scanError = '';
+		selectedConfigPath = '';
+		parsedConfig = null;
+		parseError = '';
+		configResult = null;
+	}
+
+	function backToMethodSelect() {
+		setupMethod = null;
+		setupStep = 0;
 	}
 
 	function isUnconfigured() {
@@ -198,58 +330,278 @@
 		</div>
 
 		{#if isUnconfigured()}
-			<!-- Unconfigured banner -->
-			<div class="rounded-xl border border-amber-500/30 bg-amber-500/5 p-6">
-				<h2 class="mb-2 flex items-center gap-2 text-base font-semibold text-amber-400">
-					<Settings class="h-4 w-4" />
-					Game Server Configuration Required
-				</h2>
-				<p class="text-sm text-surface-400">This client has connected but the game server details haven't been configured yet. Fill in the details below to push the configuration to the client.</p>
-			</div>
-		{/if}
+			<!-- Setup Wizard -->
+			{#if setupMethod === null}
+				<!-- Method Selection -->
+				<div class="rounded-xl border border-amber-500/30 bg-amber-500/5 p-6">
+					<h2 class="mb-2 flex items-center gap-2 text-base font-semibold text-amber-400">
+						<Settings class="h-4 w-4" />
+						Game Server Configuration Required
+					</h2>
+					<p class="text-sm text-surface-400">This client has connected but the game server hasn't been configured yet. Choose how you'd like to set it up:</p>
+				</div>
 
-		<!-- Server Configuration -->
-		<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
-			<h2 class="mb-4 flex items-center gap-2 text-base font-semibold text-surface-100">
-				<Settings class="h-4 w-4 text-surface-400" />
-				Game Server Settings
-			</h2>
+				<div class="grid gap-4 sm:grid-cols-3">
+					<!-- Install Fresh -->
+					<button onclick={() => selectMethod('install')} class="group rounded-xl border border-surface-700 bg-surface-900 p-6 text-left hover:border-accent/50 hover:bg-surface-800/80 transition-all">
+						<div class="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
+							<Download class="h-5 w-5 text-blue-400" />
+						</div>
+						<h3 class="text-sm font-semibold text-surface-100">Install Fresh Copy</h3>
+						<p class="mt-1 text-xs text-surface-500">Download and install a fresh Urban Terror 4.3 dedicated server on the client machine.</p>
+					</button>
 
-			{#if configResult}
-				<div class="mb-4 rounded-lg px-3 py-2 text-sm {configResult.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}">
-					{configResult.message}
+					<!-- Scan Config -->
+					<button onclick={() => selectMethod('scan')} class="group rounded-xl border border-surface-700 bg-surface-900 p-6 text-left hover:border-accent/50 hover:bg-surface-800/80 transition-all">
+						<div class="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10">
+							<FileSearch class="h-5 w-5 text-emerald-400" />
+						</div>
+						<h3 class="text-sm font-semibold text-surface-100">Scan Config File</h3>
+						<p class="mt-1 text-xs text-surface-500">Scan the client machine for existing server config files and auto-detect settings.</p>
+					</button>
+
+					<!-- Manual -->
+					<button onclick={() => selectMethod('manual')} class="group rounded-xl border border-surface-700 bg-surface-900 p-6 text-left hover:border-accent/50 hover:bg-surface-800/80 transition-all">
+						<div class="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-purple-500/10">
+							<Wrench class="h-5 w-5 text-purple-400" />
+						</div>
+						<h3 class="text-sm font-semibold text-surface-100">Manual Configuration</h3>
+						<p class="mt-1 text-xs text-surface-500">Manually enter the game server IP, port, RCON password, and log path.</p>
+					</button>
+				</div>
+
+			{:else if setupMethod === 'install' && setupStep === 1}
+				<!-- Install Flow -->
+				<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
+					<div class="mb-4 flex items-center justify-between">
+						<h2 class="flex items-center gap-2 text-base font-semibold text-surface-100">
+							<Download class="h-4 w-4 text-blue-400" />
+							Install Game Server
+						</h2>
+						<button onclick={backToMethodSelect} class="text-xs text-surface-500 hover:text-surface-300 transition-colors">&larr; Back</button>
+					</div>
+
+					{#if !installStarted}
+						<p class="mb-4 text-sm text-surface-400">Choose a directory on the client machine where the Urban Terror 4.3 dedicated server will be installed.</p>
+						<div class="mb-4">
+							<label for="install-path" class="mb-1 block text-xs font-medium text-surface-400">Install Directory</label>
+							<input id="install-path" type="text" bind:value={installPath} placeholder="/opt/urbanterror" class="input text-sm" />
+						</div>
+						<button onclick={startInstall} class="btn-primary flex items-center gap-2" disabled={!installPath.trim()}>
+							<Download class="h-4 w-4" />
+							Start Installation
+						</button>
+					{:else}
+						<!-- Progress -->
+						<div class="space-y-3">
+							<div class="flex items-center gap-3">
+								{#if installError}
+									<AlertTriangle class="h-5 w-5 text-red-400" />
+								{:else if installProgress?.percent >= 100}
+									<Check class="h-5 w-5 text-emerald-400" />
+								{:else}
+									<Loader2 class="h-5 w-5 animate-spin text-accent" />
+								{/if}
+								<span class="text-sm text-surface-200">{installProgress?.stage || 'Starting...'}</span>
+							</div>
+
+							<div class="h-2 w-full overflow-hidden rounded-full bg-surface-800">
+								<div class="h-full rounded-full bg-accent transition-all duration-500" style="width: {installProgress?.percent || 0}%"></div>
+							</div>
+
+							{#if installError}
+								<div class="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-sm text-red-400">{installError}</div>
+								<button onclick={() => { installStarted = false; installError = ''; }} class="btn-secondary text-sm">Try Again</button>
+							{/if}
+						</div>
+					{/if}
+				</div>
+
+			{:else if setupMethod === 'scan' && setupStep === 1}
+				<!-- Scan Flow -->
+				<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
+					<div class="mb-4 flex items-center justify-between">
+						<h2 class="flex items-center gap-2 text-base font-semibold text-surface-100">
+							<FileSearch class="h-4 w-4 text-emerald-400" />
+							Scan for Config Files
+						</h2>
+						<button onclick={backToMethodSelect} class="text-xs text-surface-500 hover:text-surface-300 transition-colors">&larr; Back</button>
+					</div>
+
+					{#if !scanResults && !scanning}
+						<p class="mb-4 text-sm text-surface-400">We'll scan the client machine for Urban Terror server config files (.cfg) in common directories.</p>
+						<button onclick={scanConfigs} class="btn-primary flex items-center gap-2">
+							<FileSearch class="h-4 w-4" />
+							Scan Now
+						</button>
+					{:else if scanning}
+						<div class="flex items-center gap-3 py-4">
+							<Loader2 class="h-5 w-5 animate-spin text-accent" />
+							<span class="text-sm text-surface-300">Scanning for config files...</span>
+						</div>
+					{:else if scanResults}
+						{#if scanResults.length === 0}
+							<div class="rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-400">
+								No config files found. Try manual configuration instead.
+							</div>
+							<button onclick={backToMethodSelect} class="mt-3 btn-secondary text-sm">&larr; Choose Another Method</button>
+						{:else}
+							<p class="mb-3 text-sm text-surface-400">Found {scanResults.length} config file{scanResults.length !== 1 ? 's' : ''}. Select one to parse:</p>
+							<div class="space-y-2 max-h-64 overflow-y-auto">
+								{#each scanResults as file}
+									<button
+										onclick={() => { selectedConfigPath = file.path; }}
+										class="w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors {selectedConfigPath === file.path ? 'border-accent bg-accent/10 text-accent' : 'border-surface-700 bg-surface-800 text-surface-300 hover:border-surface-600'}"
+									>
+										<div class="font-mono text-xs">{file.path}</div>
+										{#if file.size}
+											<div class="mt-0.5 text-xs text-surface-500">{(file.size / 1024).toFixed(1)} KB</div>
+										{/if}
+									</button>
+								{/each}
+							</div>
+
+							<div class="mt-4 flex items-center gap-3">
+								<button onclick={parseSelectedConfig} class="btn-primary flex items-center gap-2" disabled={!selectedConfigPath || parsing}>
+									{#if parsing}
+										<Loader2 class="h-4 w-4 animate-spin" />
+										Parsing...
+									{:else}
+										<Check class="h-4 w-4" />
+										Use This Config
+									{/if}
+								</button>
+								<button onclick={scanConfigs} class="btn-secondary text-sm flex items-center gap-2">
+									<RefreshCw class="h-3.5 w-3.5" />
+									Re-scan
+								</button>
+							</div>
+						{/if}
+					{/if}
+
+					{#if scanError}
+						<div class="mt-3 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-sm text-red-400">{scanError}</div>
+					{/if}
+					{#if parseError}
+						<div class="mt-3 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-sm text-red-400">{parseError}</div>
+					{/if}
+				</div>
+
+			{:else if setupStep === 2 || setupMethod === 'manual'}
+				<!-- Final config form (pre-filled from scan/install, or blank for manual) -->
+				<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
+					<div class="mb-4 flex items-center justify-between">
+						<h2 class="flex items-center gap-2 text-base font-semibold text-surface-100">
+							<Settings class="h-4 w-4 text-surface-400" />
+							{#if setupMethod === 'scan'}
+								Confirm Detected Settings
+							{:else if setupMethod === 'install'}
+								Configure Installed Server
+							{:else}
+								Manual Configuration
+							{/if}
+						</h2>
+						<button onclick={backToMethodSelect} class="text-xs text-surface-500 hover:text-surface-300 transition-colors">&larr; Back</button>
+					</div>
+
+					{#if parsedConfig?.checks?.length > 0}
+						<div class="mb-4 space-y-2">
+							{#each parsedConfig.checks as check}
+								<div class="flex items-start gap-2 rounded-lg px-3 py-2 text-xs {check.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}">
+									{#if check.ok}
+										<Check class="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+									{:else}
+										<AlertTriangle class="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+									{/if}
+									<div>
+										<span class="font-medium">{check.name}</span>
+										{#if check.message}<span class="ml-1 text-surface-400">— {check.message}</span>{/if}
+									</div>
+								</div>
+							{/each}
+						</div>
+					{/if}
+
+					{#if configResult}
+						<div class="mb-4 rounded-lg px-3 py-2 text-sm {configResult.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}">
+							{configResult.message}
+						</div>
+					{/if}
+
+					<div class="grid gap-4 sm:grid-cols-2">
+						<div>
+							<label for="cfg-address" class="mb-1 block text-xs font-medium text-surface-400">Server IP Address</label>
+							<input id="cfg-address" type="text" bind:value={configAddress} placeholder="e.g. 203.0.113.10" class="input text-sm" />
+						</div>
+						<div>
+							<label for="cfg-port" class="mb-1 block text-xs font-medium text-surface-400">Game Port</label>
+							<input id="cfg-port" type="number" bind:value={configPort} placeholder="27960" class="input text-sm" />
+						</div>
+						<div>
+							<label for="cfg-rcon" class="mb-1 block text-xs font-medium text-surface-400">RCON Password</label>
+							<input id="cfg-rcon" type="password" bind:value={configRconPassword} placeholder="RCON password" class="input text-sm" />
+						</div>
+						<div>
+							<label for="cfg-log" class="mb-1 block text-xs font-medium text-surface-400">Game Log Path <span class="text-surface-600">(optional)</span></label>
+							<input id="cfg-log" type="text" bind:value={configGameLog} placeholder="/path/to/games.log" class="input text-sm" />
+						</div>
+					</div>
+
+					<div class="mt-4 flex items-center gap-3">
+						<button onclick={saveConfig} class="btn-primary flex items-center gap-2" disabled={configSaving || !configAddress.trim() || !configRconPassword.trim()}>
+							<Save class="h-4 w-4" />
+							{configSaving ? 'Saving...' : 'Save & Push to Client'}
+						</button>
+						{#if configSaving}
+							<div class="h-4 w-4 animate-spin rounded-full border-2 border-accent/20 border-t-accent"></div>
+						{/if}
+					</div>
 				</div>
 			{/if}
+		{:else}
+			<!-- Already configured — show editable config -->
+			<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
+				<h2 class="mb-4 flex items-center gap-2 text-base font-semibold text-surface-100">
+					<Settings class="h-4 w-4 text-surface-400" />
+					Game Server Settings
+				</h2>
 
-			<div class="grid gap-4 sm:grid-cols-2">
-				<div>
-					<label for="cfg-address" class="mb-1 block text-xs font-medium text-surface-400">Server IP Address</label>
-					<input id="cfg-address" type="text" bind:value={configAddress} placeholder="e.g. 203.0.113.10" class="input text-sm" />
-				</div>
-				<div>
-					<label for="cfg-port" class="mb-1 block text-xs font-medium text-surface-400">Game Port</label>
-					<input id="cfg-port" type="number" bind:value={configPort} placeholder="27960" class="input text-sm" />
-				</div>
-				<div>
-					<label for="cfg-rcon" class="mb-1 block text-xs font-medium text-surface-400">RCON Password</label>
-					<input id="cfg-rcon" type="password" bind:value={configRconPassword} placeholder="RCON password" class="input text-sm" />
-				</div>
-				<div>
-					<label for="cfg-log" class="mb-1 block text-xs font-medium text-surface-400">Game Log Path <span class="text-surface-600">(optional)</span></label>
-					<input id="cfg-log" type="text" bind:value={configGameLog} placeholder="/path/to/games.log" class="input text-sm" />
-				</div>
-			</div>
-
-			<div class="mt-4 flex items-center gap-3">
-				<button onclick={saveConfig} class="btn-primary flex items-center gap-2" disabled={configSaving || !configAddress.trim() || !configRconPassword.trim()}>
-					<Save class="h-4 w-4" />
-					{configSaving ? 'Saving...' : 'Save & Push to Client'}
-				</button>
-				{#if configSaving}
-					<div class="h-4 w-4 animate-spin rounded-full border-2 border-accent/20 border-t-accent"></div>
+				{#if configResult}
+					<div class="mb-4 rounded-lg px-3 py-2 text-sm {configResult.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}">
+						{configResult.message}
+					</div>
 				{/if}
+
+				<div class="grid gap-4 sm:grid-cols-2">
+					<div>
+						<label for="cfg-address" class="mb-1 block text-xs font-medium text-surface-400">Server IP Address</label>
+						<input id="cfg-address" type="text" bind:value={configAddress} placeholder="e.g. 203.0.113.10" class="input text-sm" />
+					</div>
+					<div>
+						<label for="cfg-port" class="mb-1 block text-xs font-medium text-surface-400">Game Port</label>
+						<input id="cfg-port" type="number" bind:value={configPort} placeholder="27960" class="input text-sm" />
+					</div>
+					<div>
+						<label for="cfg-rcon" class="mb-1 block text-xs font-medium text-surface-400">RCON Password</label>
+						<input id="cfg-rcon" type="password" bind:value={configRconPassword} placeholder="RCON password" class="input text-sm" />
+					</div>
+					<div>
+						<label for="cfg-log" class="mb-1 block text-xs font-medium text-surface-400">Game Log Path <span class="text-surface-600">(optional)</span></label>
+						<input id="cfg-log" type="text" bind:value={configGameLog} placeholder="/path/to/games.log" class="input text-sm" />
+					</div>
+				</div>
+
+				<div class="mt-4 flex items-center gap-3">
+					<button onclick={saveConfig} class="btn-primary flex items-center gap-2" disabled={configSaving || !configAddress.trim() || !configRconPassword.trim()}>
+						<Save class="h-4 w-4" />
+						{configSaving ? 'Saving...' : 'Save & Push to Client'}
+					</button>
+					{#if configSaving}
+						<div class="h-4 w-4 animate-spin rounded-full border-2 border-accent/20 border-t-accent"></div>
+					{/if}
+				</div>
 			</div>
-		</div>
+		{/if}
 
 		{#if server.online}
 			<!-- RCON Console -->

@@ -117,6 +117,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/message", post(api::servers::server_message))
         .route("/servers/:id/config", get(api::servers::get_server_config))
         .route("/servers/:id/config", put(api::servers::update_server_config))
+        // Server setup (config scan, install)
+        .route("/servers/:id/scan-configs", post(api::servers::scan_server_configs))
+        .route("/servers/:id/parse-config", post(api::servers::parse_server_config))
+        .route("/servers/:id/install-server", post(api::servers::install_game_server))
+        .route("/servers/:id/install-status", get(api::servers::install_status))
         // First-run setup wizard
         .route("/setup/status", get(api::setup::setup_status))
         .route("/setup/complete", post(api::setup::complete_setup))
@@ -202,6 +207,8 @@ pub async fn start_server(
     storage: Arc<dyn Storage>,
     event_tx: broadcast::Sender<Event>,
     connected_clients: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, crate::sync::master::ConnectedClient>>>>,
+    pending_responses: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<crate::sync::protocol::ClientResponse>>>>>,
+    pending_client_requests: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, Vec<(String, crate::sync::protocol::ClientRequest)>>>>>,
 ) -> anyhow::Result<()> {
     let jwt_secret = config
         .web
@@ -233,6 +240,8 @@ pub async fn start_server(
         event_tx,
         storage,
         connected_clients,
+        pending_responses,
+        pending_client_requests,
     };
 
     let app = build_router(state);

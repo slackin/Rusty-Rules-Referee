@@ -15,6 +15,7 @@ use crate::config::ClientSection;
 use crate::core::context::BotContext;
 use crate::events::Event;
 use crate::storage::Storage;
+use crate::sync::handlers::{self, SharedInstallState};
 use crate::sync::protocol::*;
 use crate::sync::queue::SyncQueue;
 use crate::sync::tls;
@@ -177,6 +178,8 @@ impl ClientSyncManager {
             let mut heartbeat_timer = tokio::time::interval(heartbeat_interval);
             let sync_interval = Duration::from_secs(self.config.sync_interval);
             let mut sync_timer = tokio::time::interval(sync_interval);
+            let mut request_poll_timer = tokio::time::interval(Duration::from_secs(2));
+            let install_state: SharedInstallState = handlers::new_install_state();
 
             let mut disconnected = false;
 
@@ -276,6 +279,56 @@ impl ClientSyncManager {
                     // Periodic sync (prune old queue entries)
                     _ = sync_timer.tick() => {
                         let _ = self.queue.prune(7).await;
+                    }
+
+                    // Poll master for pending requests (config scan, install, etc.)
+                    _ = request_poll_timer.tick() => {
+                        match http_client
+                            .get(format!("{}/internal/requests/{}", base_url, server_id))
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => {
+                                if let Ok(poll_resp) = resp.json::<PendingRequestsResponse>().await {
+                                    for item in poll_resp.requests {
+                                        let response = match item.request {
+                                            ClientRequest::ScanConfigFiles => {
+                                                handlers::handle_scan_config_files().await
+                                            }
+                                            ClientRequest::ParseConfigFile { path } => {
+                                                handlers::handle_parse_config_file(&path).await
+                                            }
+                                            ClientRequest::InstallGameServer { install_path } => {
+                                                handlers::start_install_game_server(
+                                                    install_path, install_state.clone(),
+                                                );
+                                                ClientResponse::InstallStarted
+                                            }
+                                            ClientRequest::InstallStatus => {
+                                                handlers::handle_install_status(&install_state).await
+                                            }
+                                        };
+
+                                        let submission = ClientResponseSubmission {
+                                            request_id: item.request_id,
+                                            response,
+                                        };
+
+                                        if let Err(e) = http_client
+                                            .post(format!("{}/internal/responses", base_url))
+                                            .json(&submission)
+                                            .send()
+                                            .await
+                                        {
+                                            warn!(error = %e, "Failed to send request response to master");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                debug!(error = %e, "Failed to poll for requests");
+                            }
+                        }
                     }
                 }
             }
