@@ -33,6 +33,16 @@ impl MysqlStorage {
     }
 
     async fn run_migrations(&self) -> Result<(), StorageError> {
+        // Run all migrations on a single connection to ensure session settings persist
+        let mut conn = self.pool.acquire().await
+            .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
+        // Ensure InnoDB is used for all tables (required for foreign keys)
+        sqlx::query("SET default_storage_engine=InnoDB")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
         // MySQL DDL — adapted from the SQLite migration
         let statements = [
             "CREATE TABLE IF NOT EXISTS `groups` (
@@ -90,7 +100,7 @@ impl MysqlStorage {
 
         for stmt in &statements {
             sqlx::query(stmt)
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await
                 .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
         }
@@ -114,7 +124,7 @@ impl MysqlStorage {
             .bind(name)
             .bind(keyword)
             .bind(level)
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         }
@@ -258,14 +268,14 @@ impl MysqlStorage {
 
         for stmt in &xlr_statements {
             sqlx::query(stmt)
-                .execute(&self.pool)
+                .execute(&mut *conn)
                 .await
                 .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
         }
 
         // Add auth column if not present
         let _ = sqlx::query("ALTER TABLE clients ADD COLUMN auth VARCHAR(255) NOT NULL DEFAULT ''")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await;
 
         // Map configs table
@@ -296,7 +306,7 @@ impl MysqlStorage {
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )"
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
@@ -320,19 +330,19 @@ impl MysqlStorage {
                 INDEX idx_servers_status (status)
             )"
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
         // Add multi-server columns to penalties/chat_messages if not present
         let _ = sqlx::query("ALTER TABLE penalties ADD COLUMN server_id BIGINT REFERENCES servers(id)")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await;
         let _ = sqlx::query("ALTER TABLE penalties ADD COLUMN scope VARCHAR(32) NOT NULL DEFAULT 'local'")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await;
         let _ = sqlx::query("ALTER TABLE chat_messages ADD COLUMN server_id BIGINT REFERENCES servers(id)")
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await;
 
         sqlx::query(
@@ -349,7 +359,7 @@ impl MysqlStorage {
                 INDEX idx_sync_queue_entity (entity_type, action)
             )"
         )
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
