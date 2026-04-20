@@ -77,6 +77,29 @@ fn create_parser(
     Arc::new(UrbanTerrorParser::new(rcon, event_registry))
 }
 
+/// Resolve a host (IP or DNS name) and port into a SocketAddr.
+///
+/// Accepts numeric IPs directly and uses DNS resolution for hostnames.
+/// Returns a descriptive error if resolution fails.
+async fn resolve_host_port(host: &str, port: u16) -> anyhow::Result<SocketAddr> {
+    // Fast path: already a numeric IP + port
+    if let Ok(addr) = format!("{}:{}", host, port).parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    // DNS lookup
+    let target = format!("{}:{}", host, port);
+    match tokio::net::lookup_host(target.clone()).await {
+        Ok(mut iter) => iter
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("DNS lookup for '{}' returned no addresses", target)),
+        Err(e) => Err(anyhow::anyhow!(
+            "Failed to resolve address '{}': {}",
+            target,
+            e
+        )),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Install the ring crypto provider for rustls before anything else
@@ -148,7 +171,7 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
     let event_registry = Arc::new(EventRegistry::new());
 
     // Set up RCON client
-    let rcon_addr: SocketAddr = format!("{}:{}", config.rcon_ip(), config.rcon_port()).parse()?;
+    let rcon_addr = resolve_host_port(config.rcon_ip(), config.rcon_port()).await?;
     let rcon = Arc::new(RconClient::new(rcon_addr, &config.server.rcon_password));
     info!(addr = %rcon_addr, "RCON client configured");
 
@@ -862,8 +885,28 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // Set up event registry
     let event_registry = Arc::new(EventRegistry::new());
 
-    // Set up RCON client
-    let rcon_addr: SocketAddr = format!("{}:{}", config.rcon_ip(), config.rcon_port()).parse()?;
+    // Set up RCON client — resolve address (supports hostnames).
+    // On failure, log and keep the service alive rather than crash-looping via systemd.
+    let rcon_addr = match resolve_host_port(config.rcon_ip(), config.rcon_port()).await {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!(
+                host = %config.rcon_ip(),
+                port = config.rcon_port(),
+                error = %e,
+                "Failed to resolve RCON address — fix the 'address' setting in the master UI. Staying alive and will retry on next config update."
+            );
+            // Park the task indefinitely so the service doesn't crash-loop.
+            // A config update (via master) will trigger a restart of run_client.
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                if let Ok(addr) = resolve_host_port(config.rcon_ip(), config.rcon_port()).await {
+                    info!(%addr, "RCON address now resolvable, continuing startup");
+                    break addr;
+                }
+            }
+        }
+    };
     let rcon = Arc::new(RconClient::new(rcon_addr, &config.server.rcon_password));
     info!(addr = %rcon_addr, "RCON client configured");
 
