@@ -157,6 +157,17 @@
 		}
 	}
 
+	/** Try to extract a human-readable message from an error thrown by the API client. */
+	function extractErrorMessage(e, fallback) {
+		const raw = e?.message || '';
+		// The API may return JSON like {"ok":false,"message":"..."}
+		try {
+			const parsed = JSON.parse(raw);
+			if (parsed.message) return parsed.message;
+		} catch {}
+		return raw || fallback;
+	}
+
 	// --- Scan flow ---
 	async function scanConfigs() {
 		scanning = true;
@@ -164,13 +175,17 @@
 		scanResults = null;
 		try {
 			const resp = await api.scanServerConfigs(serverId);
+			console.log('[R3] scanConfigs response:', resp);
 			if (resp.response_type === 'ConfigFiles') {
 				scanResults = resp.data?.files || [];
 			} else if (resp.response_type === 'Error') {
 				scanError = resp.data?.message || 'Scan failed';
+			} else {
+				scanError = `Unexpected response: ${JSON.stringify(resp).slice(0, 200)}`;
 			}
 		} catch (e) {
-			scanError = e.message || 'Failed to scan for config files';
+			console.error('[R3] scanConfigs error:', e);
+			scanError = extractErrorMessage(e, 'Failed to scan for config files');
 		}
 		scanning = false;
 	}
@@ -181,14 +196,18 @@
 		browseError = '';
 		try {
 			const resp = await api.browseServerFiles(serverId, path);
+			console.log('[R3] browseFiles response:', resp);
 			if (resp.response_type === 'DirectoryListing') {
 				browseEntries = resp.data?.entries || [];
 				browsePath = resp.data?.path || path;
 			} else if (resp.response_type === 'Error') {
 				browseError = resp.data?.message || 'Browse failed';
+			} else {
+				browseError = `Unexpected response: ${JSON.stringify(resp).slice(0, 200)}`;
 			}
 		} catch (e) {
-			browseError = e.message || 'Failed to browse files';
+			console.error('[R3] browseFiles error:', e);
+			browseError = extractErrorMessage(e, 'Failed to browse files');
 		}
 		browsing = false;
 	}
@@ -213,6 +232,7 @@
 		parsedConfig = null;
 		try {
 			const resp = await api.parseServerConfig(serverId, selectedConfigPath);
+			console.log('[R3] parseSelectedConfig response:', resp);
 			if (resp.response_type === 'ParsedConfig') {
 				parsedConfig = resp.data;
 				// Pre-fill the config form
@@ -223,9 +243,12 @@
 				setupStep = 2;
 			} else if (resp.response_type === 'Error') {
 				parseError = resp.data?.message || 'Parse failed';
+			} else {
+				parseError = `Unexpected response: ${JSON.stringify(resp).slice(0, 200)}`;
 			}
 		} catch (e) {
-			parseError = e.message || 'Failed to parse config file';
+			console.error('[R3] parseSelectedConfig error:', e);
+			parseError = extractErrorMessage(e, 'Failed to parse config file');
 		}
 		parsing = false;
 	}
