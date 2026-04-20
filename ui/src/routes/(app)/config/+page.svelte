@@ -441,7 +441,8 @@
 			referee = cfg.referee || {};
 			server = cfg.server || {};
 			web = cfg.web || {};
-			update = cfg.update || { enabled: false, url: 'https://r3.pugbot.net/api/updates', check_interval: 3600, auto_restart: true };
+			update = cfg.update || { enabled: false, url: 'https://r3.pugbot.net/api/updates', channel: 'beta', check_interval: 3600, auto_restart: true };
+			if (!update.channel) update.channel = 'beta';
 			plugins = (cfg.plugins || []).map(p => ({ ...p, settings: p.settings || {} }));
 			originalJson = JSON.stringify({ referee, server, web, update, plugins });
 		} catch (e) {
@@ -857,6 +858,16 @@
 							<label for="update_url" class="mb-1.5 block text-xs font-medium text-surface-400">Update Server URL</label>
 							<input id="update_url" type="text" class="input font-mono text-sm" bind:value={update.url} placeholder="https://r3.pugbot.net/api/updates" />
 							<p class="mt-1 text-xs text-surface-600">URL serving latest.json manifest</p>
+						</div>
+						<div>
+							<label for="update_channel" class="mb-1.5 block text-xs font-medium text-surface-400">Release Channel</label>
+							<select id="update_channel" class="input font-mono text-sm" bind:value={update.channel}>
+								<option value="production">production (unused — do not select)</option>
+								<option value="beta">beta (recommended — most stable)</option>
+								<option value="alpha">alpha (pre-release testing)</option>
+								<option value="dev">dev (bleeding edge)</option>
+							</select>
+							<p class="mt-1 text-xs text-surface-600">Which release channel to follow for updates</p>
 						</div>
 						<div>
 							<label for="update_interval" class="mb-1.5 block text-xs font-medium text-surface-400">Check Interval (seconds)</label>

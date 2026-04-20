@@ -18,9 +18,13 @@ use crate::config::UpdateSection;
 // Manifest types (deserialized from latest.json on the update server)
 // ---------------------------------------------------------------------------
 
-/// The update manifest served at `{update_url}/latest.json`.
+/// The update manifest served at `{update_url}/{channel}/latest.json`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UpdateManifest {
+    /// Release channel this manifest was published on (production/beta/alpha/dev).
+    /// Optional for backward compatibility, but expected on all new manifests.
+    #[serde(default)]
+    pub channel: Option<String>,
     /// Semantic version string, e.g. "2.0.0".
     pub version: String,
     /// Unique build identifier, e.g. "2.0.0-a1b2c3d4-20260419120000".
@@ -81,12 +85,17 @@ fn current_platform() -> &'static str {
 // Update check
 // ---------------------------------------------------------------------------
 
-/// Fetch the update manifest and check if a newer build is available.
+/// Fetch the update manifest for the given channel and check if a newer build is available.
 pub async fn check_for_update(
     base_url: &str,
+    channel: &str,
     current_build_hash: &str,
 ) -> anyhow::Result<Option<UpdateAvailable>> {
-    let manifest_url = format!("{}/latest.json", base_url.trim_end_matches('/'));
+    let manifest_url = format!(
+        "{}/{}/latest.json",
+        base_url.trim_end_matches('/'),
+        channel
+    );
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -98,6 +107,18 @@ pub async fn check_for_update(
     }
 
     let manifest: UpdateManifest = resp.json().await?;
+
+    // Defense-in-depth: if the manifest advertises a channel, it must match what we requested.
+    if let Some(m_channel) = manifest.channel.as_deref() {
+        if m_channel != channel {
+            warn!(
+                requested = channel,
+                got = m_channel,
+                "Update manifest channel mismatch — skipping"
+            );
+            return Ok(None);
+        }
+    }
 
     // Same build hash → up to date
     if manifest.build_hash == current_build_hash {
@@ -266,6 +287,7 @@ pub async fn run_update_loop(config: UpdateSection, current_build_hash: &str) {
 
     info!(
         url = %config.url,
+        channel = %config.channel,
         interval_secs = config.check_interval,
         build = current_build_hash,
         "Auto-update checker started"
@@ -277,7 +299,7 @@ pub async fn run_update_loop(config: UpdateSection, current_build_hash: &str) {
     loop {
         info!("Checking for updates...");
 
-        match check_for_update(&config.url, current_build_hash).await {
+        match check_for_update(&config.url, &config.channel, current_build_hash).await {
             Ok(Some(update)) => {
                 info!(
                     current = current_build_hash,

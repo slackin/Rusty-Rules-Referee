@@ -24,6 +24,12 @@ REMOTE_HOST="10.10.0.4"
 REMOTE_BASE="/home/bcmx/domains/r3.pugbot.net/public_html/api/updates"
 PLATFORM="linux-x86_64"
 
+# Release channels: production, beta, alpha, dev.
+# This script ALWAYS publishes to the dev channel. Use promote.sh on the
+# update server to move builds between channels (dev -> alpha -> beta -> production).
+CHANNEL="dev"
+REMOTE_DIR="${REMOTE_BASE}/${CHANNEL}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BINARY=""
 DO_BUILD=false
@@ -137,11 +143,12 @@ info "Size: ${FILE_SIZE} bytes ($(numfmt --to=iec "$FILE_SIZE" 2>/dev/null || ec
 
 # ---- Generate latest.json ----
 BINARY_FILENAME="r3-${PLATFORM}"
-DOWNLOAD_URL="https://r3.pugbot.net/api/updates/binaries/${BINARY_FILENAME}"
+DOWNLOAD_URL="https://r3.pugbot.net/api/updates/${CHANNEL}/binaries/${BINARY_FILENAME}"
 RELEASED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 MANIFEST=$(cat <<EOF
 {
+  "channel": "${CHANNEL}",
   "version": "${VERSION}",
   "build_hash": "${BUILD_HASH}",
   "git_commit": "${GIT_COMMIT}",
@@ -162,28 +169,30 @@ echo "$MANIFEST" | sed 's/^/    /'
 echo ""
 
 # ---- Upload to server ----
-info "Creating remote directories..."
+info "Creating remote directories (channel: ${CHANNEL})..."
 sshpass -p "$DEPLOY_PASS" ssh -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" \
-    "mkdir -p ${REMOTE_BASE}/binaries"
+    "mkdir -p ${REMOTE_DIR}/binaries"
 
 info "Uploading binary (${BINARY_FILENAME})..."
 sshpass -p "$DEPLOY_PASS" scp -o StrictHostKeyChecking=no \
-    "$BINARY" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_BASE}/binaries/${BINARY_FILENAME}"
+    "$BINARY" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/binaries/${BINARY_FILENAME}"
 
 info "Uploading latest.json..."
 echo "$MANIFEST" | sshpass -p "$DEPLOY_PASS" ssh -o StrictHostKeyChecking=no \
-    "${REMOTE_USER}@${REMOTE_HOST}" "cat > ${REMOTE_BASE}/latest.json"
+    "${REMOTE_USER}@${REMOTE_HOST}" "cat > ${REMOTE_DIR}/latest.json"
 
 # ---- Set permissions ----
 sshpass -p "$DEPLOY_PASS" ssh -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" \
-    "chmod 644 ${REMOTE_BASE}/latest.json ${REMOTE_BASE}/binaries/${BINARY_FILENAME}"
+    "chmod 644 ${REMOTE_DIR}/latest.json ${REMOTE_DIR}/binaries/${BINARY_FILENAME}"
 
 echo ""
 info "Update pushed successfully!"
 echo ""
+echo -e "  ${BOLD}Channel:${NC}  ${CHANNEL}"
 echo -e "  ${BOLD}Build:${NC}    ${BUILD_HASH}"
-echo -e "  ${BOLD}Manifest:${NC} https://r3.pugbot.net/api/updates/latest.json"
+echo -e "  ${BOLD}Manifest:${NC} https://r3.pugbot.net/api/updates/${CHANNEL}/latest.json"
 echo -e "  ${BOLD}Binary:${NC}   ${DOWNLOAD_URL}"
 echo ""
-echo -e "  Bots with ${BOLD}[update] enabled = true${NC} will pick this up automatically."
+echo -e "  Bots on the ${BOLD}${CHANNEL}${NC} channel with ${BOLD}[update] enabled = true${NC} will pick this up automatically."
+echo -e "  Use ${BOLD}promote.sh${NC} to move this build to alpha/beta/production."
 echo ""

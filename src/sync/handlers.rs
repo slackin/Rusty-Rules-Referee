@@ -687,10 +687,10 @@ pub async fn handle_get_version() -> ClientResponse {
 /// and returns `UpdateTriggered` immediately so the response reaches
 /// the master before this process restarts. If already up to date,
 /// returns `AlreadyUpToDate`.
-pub async fn handle_force_update(update_url: String) -> ClientResponse {
+pub async fn handle_force_update(update_url: String, channel: String) -> ClientResponse {
     let current_build = env!("BUILD_HASH").to_string();
 
-    let update = match crate::update::check_for_update(&update_url, &current_build).await {
+    let update = match crate::update::check_for_update(&update_url, &channel, &current_build).await {
         Ok(Some(u)) => u,
         Ok(None) => {
             info!(build = %current_build, "Force-update: already up to date");

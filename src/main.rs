@@ -851,6 +851,7 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         client_config.clone(),
         db.clone(),
         config_path.clone(),
+        config.update.channel.clone(),
     );
 
     // Spawn the sync manager

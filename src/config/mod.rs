@@ -156,9 +156,12 @@ pub struct UpdateSection {
     /// Whether auto-update checking is enabled.
     #[serde(default)]
     pub enabled: bool,
-    /// URL of the update server (serves latest.json).
+    /// URL of the update server (serves `<channel>/latest.json`).
     #[serde(default = "default_update_url")]
     pub url: String,
+    /// Release channel to follow: `production`, `beta`, `alpha`, or `dev`.
+    #[serde(default = "default_update_channel")]
+    pub channel: String,
     /// How often (seconds) to check for updates.
     #[serde(default = "default_update_interval")]
     pub check_interval: u64,
@@ -172,6 +175,7 @@ impl Default for UpdateSection {
         Self {
             enabled: false,
             url: default_update_url(),
+            channel: default_update_channel(),
             check_interval: default_update_interval(),
             auto_restart: default_auto_restart(),
         }
@@ -181,6 +185,13 @@ impl Default for UpdateSection {
 fn default_update_url() -> String {
     "https://r3.pugbot.net/api/updates".to_string()
 }
+
+fn default_update_channel() -> String {
+    "beta".to_string()
+}
+
+/// Valid release channels, in order of stability (most stable first).
+pub const VALID_UPDATE_CHANNELS: &[&str] = &["production", "beta", "alpha", "dev"];
 
 fn default_update_interval() -> u64 {
     3600
@@ -257,6 +268,13 @@ impl RefereeConfig {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let config: RefereeConfig = toml::from_str(&content)?;
+        if !VALID_UPDATE_CHANNELS.contains(&config.update.channel.as_str()) {
+            anyhow::bail!(
+                "Invalid [update] channel '{}' — expected one of: {}",
+                config.update.channel,
+                VALID_UPDATE_CHANNELS.join(", ")
+            );
+        }
         Ok(config)
     }
 

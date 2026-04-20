@@ -31,6 +31,11 @@ port = 8080                 # Web UI port
 [update]
 enabled = false             # Set to true to enable automatic update checking
 # url = "https://r3.pugbot.net/api/updates"  # Update server URL
+# channel = "beta"          # Release channel: production | beta | alpha | dev
+#                           #   production - unused (reserved for future)
+#                           #   beta       - recommended, most stable
+#                           #   alpha      - pre-release testing
+#                           #   dev        - bleeding edge (automated builds land here)
 # check_interval = 3600    # How often to check (seconds, default: 1 hour)
 # auto_restart = true      # Automatically restart after applying an update
 

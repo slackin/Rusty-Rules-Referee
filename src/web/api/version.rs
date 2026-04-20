@@ -11,13 +11,14 @@ const GIT_COMMIT: &str = env!("GIT_COMMIT");
 const BUILD_TIMESTAMP: &str = env!("BUILD_TIMESTAMP");
 
 /// GET /api/v1/version — return current version and build info.
-pub async fn get_version() -> impl IntoResponse {
+pub async fn get_version(State(state): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "version": VERSION,
         "build_hash": BUILD_HASH,
         "git_commit": GIT_COMMIT,
         "build_timestamp": BUILD_TIMESTAMP,
         "platform": current_platform(),
+        "channel": state.config.update.channel,
     }))
 }
 
@@ -27,8 +28,9 @@ pub async fn check_update(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let update_url = &state.config.update.url;
+    let channel = &state.config.update.channel;
 
-    match check_for_update(update_url, BUILD_HASH).await {
+    match check_for_update(update_url, channel, BUILD_HASH).await {
         Ok(Some(update)) => {
             Json(serde_json::json!({
                 "update_available": true,
@@ -71,9 +73,10 @@ pub async fn apply_latest_update(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let update_url = &state.config.update.url;
+    let channel = &state.config.update.channel;
 
     // First check if there's actually an update
-    let update = match check_for_update(update_url, BUILD_HASH).await {
+    let update = match check_for_update(update_url, channel, BUILD_HASH).await {
         Ok(Some(u)) => u,
         Ok(None) => {
             return Json(serde_json::json!({

@@ -26,6 +26,12 @@ PLATFORM="linux-x86_64"
 BINARY_NAME="rusty-rules-referee"
 BINARY_FILENAME="r3-${PLATFORM}"
 
+# Release channels: production, beta, alpha, dev.
+# Automated builds ALWAYS publish to the dev channel. Use promote.sh to move
+# builds between channels (dev -> alpha -> beta -> production).
+CHANNEL="dev"
+PUBLISH_DIR="${PUBLISH_BASE}/${CHANNEL}"
+
 SKIP_PULL=false
 
 # ---- Colors ----
@@ -165,15 +171,16 @@ ok "Size:       ${FILE_SIZE} bytes"
 CURRENT_STEP=$((CURRENT_STEP + 1))
 step $CURRENT_STEP "Publishing binary & manifest"
 
-mkdir -p "${PUBLISH_BASE}/binaries"
+mkdir -p "${PUBLISH_DIR}/binaries"
 
-cp "$BINARY" "${PUBLISH_BASE}/binaries/${BINARY_FILENAME}" || die "Failed to copy binary to publish path"
-ok "Binary copied to ${PUBLISH_BASE}/binaries/${BINARY_FILENAME}"
+cp "$BINARY" "${PUBLISH_DIR}/binaries/${BINARY_FILENAME}" || die "Failed to copy binary to publish path"
+ok "Binary copied to ${PUBLISH_DIR}/binaries/${BINARY_FILENAME}"
 
-# Generate latest.json
-DOWNLOAD_URL="https://r3.pugbot.net/api/updates/binaries/${BINARY_FILENAME}"
-cat > "${PUBLISH_BASE}/latest.json" <<EOF
+# Generate latest.json (channel-qualified URLs)
+DOWNLOAD_URL="https://r3.pugbot.net/api/updates/${CHANNEL}/binaries/${BINARY_FILENAME}"
+cat > "${PUBLISH_DIR}/latest.json" <<EOF
 {
+  "channel": "${CHANNEL}",
   "version": "${VERSION}",
   "build_hash": "${BUILD_HASH}",
   "git_commit": "${GIT_COMMIT}",
@@ -187,10 +194,10 @@ cat > "${PUBLISH_BASE}/latest.json" <<EOF
   }
 }
 EOF
-ok "Manifest written to ${PUBLISH_BASE}/latest.json"
+ok "Manifest written to ${PUBLISH_DIR}/latest.json (channel: ${CHANNEL})"
 
 # Set permissions (readable by nginx)
-chmod 644 "${PUBLISH_BASE}/latest.json" "${PUBLISH_BASE}/binaries/${BINARY_FILENAME}"
+chmod 644 "${PUBLISH_DIR}/latest.json" "${PUBLISH_DIR}/binaries/${BINARY_FILENAME}"
 ok "Permissions set (644)"
 
 # ---- Step: Verify ----
@@ -198,14 +205,14 @@ CURRENT_STEP=$((CURRENT_STEP + 1))
 step $CURRENT_STEP "Verifying deployment"
 
 # Verify the published binary matches what we built
-PUB_SHA256=$(sha256sum "${PUBLISH_BASE}/binaries/${BINARY_FILENAME}" | awk '{print $1}')
+PUB_SHA256=$(sha256sum "${PUBLISH_DIR}/binaries/${BINARY_FILENAME}" | awk '{print $1}')
 if [ "$PUB_SHA256" != "$SHA256" ]; then
     die "SHA-256 mismatch! Published binary doesn't match build"
 fi
 ok "Published binary SHA-256 verified"
 
 # Verify manifest is valid JSON
-if ! python3 -c "import json; json.load(open('${PUBLISH_BASE}/latest.json'))" 2>/dev/null; then
+if ! python3 -c "import json; json.load(open('${PUBLISH_DIR}/latest.json'))" 2>/dev/null; then
     die "latest.json is not valid JSON"
 fi
 ok "Manifest JSON validated"
@@ -240,12 +247,14 @@ echo "  ╔═══════════════════════
 echo "  ║       Deploy Successful!             ║"
 echo "  ╚══════════════════════════════════════╝"
 echo -e "${NC}"
+echo -e "  ${BOLD}Channel:${NC}  ${CHANNEL}"
 echo -e "  ${BOLD}Version:${NC}  ${VERSION}"
 echo -e "  ${BOLD}Build:${NC}    ${BUILD_HASH}"
 echo -e "  ${BOLD}SHA-256:${NC}  ${SHA256}"
-echo -e "  ${BOLD}Manifest:${NC} https://r3.pugbot.net/api/updates/latest.json"
+echo -e "  ${BOLD}Manifest:${NC} https://r3.pugbot.net/api/updates/${CHANNEL}/latest.json"
 echo -e "  ${BOLD}Binary:${NC}   ${DOWNLOAD_URL}"
 echo -e "  ${BOLD}Installer:${NC}https://r3.pugbot.net/api/updates/install-r3.sh"
 echo ""
-echo -e "  Game servers with ${BOLD}[update] enabled = true${NC} will auto-update."
+echo -e "  Game servers on the ${BOLD}${CHANNEL}${NC} channel with ${BOLD}[update] enabled = true${NC} will auto-update."
+echo -e "  Use ${BOLD}promote.sh${NC} to move this build to alpha/beta/production."
 echo ""

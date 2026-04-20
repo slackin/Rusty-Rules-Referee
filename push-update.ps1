@@ -32,6 +32,12 @@ $RemoteHost = "10.10.0.4"
 $RemoteBase = "/home/bcmx/domains/r3.pugbot.net/public_html/api/updates"
 $ScriptDir = $PSScriptRoot
 
+# Release channels: production, beta, alpha, dev.
+# This script ALWAYS publishes to the dev channel. Use promote.sh on the
+# update server to move builds between channels (dev -> alpha -> beta -> production).
+$Channel = "dev"
+$RemoteDir = "${RemoteBase}/${Channel}"
+
 if ($Help) {
     Write-Host "Usage: `$env:DEPLOY_PASS = 'pass'; .\push-update.ps1 [-Binary path] [-Platform name] [-Build]"
     Write-Host ""
@@ -98,10 +104,11 @@ Write-Host "  Size: $FileSize bytes (${FileSizeMB}MB)" -ForegroundColor Green
 
 # ---- Generate latest.json ----
 $BinaryFilename = "r3-${Platform}"
-$DownloadUrl = "https://r3.pugbot.net/api/updates/binaries/${BinaryFilename}"
+$DownloadUrl = "https://r3.pugbot.net/api/updates/${Channel}/binaries/${BinaryFilename}"
 $ReleasedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-$Manifest = @{
+$Manifest = [ordered]@{
+    channel    = $Channel
     version    = $Version
     build_hash = $BuildHash
     git_commit = $GitCommit
@@ -126,17 +133,17 @@ $TempManifest = [System.IO.Path]::GetTempFileName()
 $Manifest | Set-Content -Path $TempManifest -Encoding UTF8 -NoNewline
 
 try {
-    Write-Host "  Creating remote directories..." -ForegroundColor Green
-    ssh -o StrictHostKeyChecking=no "${RemoteUser}@${RemoteHost}" "mkdir -p ${RemoteBase}/binaries"
+    Write-Host "  Creating remote directories (channel: ${Channel})..." -ForegroundColor Green
+    ssh -o StrictHostKeyChecking=no "${RemoteUser}@${RemoteHost}" "mkdir -p ${RemoteDir}/binaries"
 
     Write-Host "  Uploading binary (${BinaryFilename})..." -ForegroundColor Green
-    scp -o StrictHostKeyChecking=no $Binary "${RemoteUser}@${RemoteHost}:${RemoteBase}/binaries/${BinaryFilename}"
+    scp -o StrictHostKeyChecking=no $Binary "${RemoteUser}@${RemoteHost}:${RemoteDir}/binaries/${BinaryFilename}"
 
     Write-Host "  Uploading latest.json..." -ForegroundColor Green
-    scp -o StrictHostKeyChecking=no $TempManifest "${RemoteUser}@${RemoteHost}:${RemoteBase}/latest.json"
+    scp -o StrictHostKeyChecking=no $TempManifest "${RemoteUser}@${RemoteHost}:${RemoteDir}/latest.json"
 
     Write-Host "  Setting permissions..." -ForegroundColor Green
-    ssh -o StrictHostKeyChecking=no "${RemoteUser}@${RemoteHost}" "chmod 644 ${RemoteBase}/latest.json ${RemoteBase}/binaries/${BinaryFilename}"
+    ssh -o StrictHostKeyChecking=no "${RemoteUser}@${RemoteHost}" "chmod 644 ${RemoteDir}/latest.json ${RemoteDir}/binaries/${BinaryFilename}"
 }
 finally {
     Remove-Item $TempManifest -ErrorAction SilentlyContinue
@@ -145,9 +152,11 @@ finally {
 Write-Host ""
 Write-Host "  Update pushed successfully!" -ForegroundColor Green
 Write-Host ""
+Write-Host "  Channel:  $Channel"
 Write-Host "  Build:    $BuildHash"
-Write-Host "  Manifest: https://r3.pugbot.net/api/updates/latest.json"
+Write-Host "  Manifest: https://r3.pugbot.net/api/updates/${Channel}/latest.json"
 Write-Host "  Binary:   $DownloadUrl"
 Write-Host ""
-Write-Host "  Bots with [update] enabled = true will pick this up automatically."
+Write-Host "  Bots on the '$Channel' channel with [update] enabled = true will pick this up automatically."
+Write-Host "  Use promote.sh on the update server to move this build to alpha/beta/production."
 Write-Host ""

@@ -606,7 +606,8 @@ pub async fn get_server_version(
 
     // Master-side view of the latest available build (manifest lookup).
     let update_url = state.config.update.url.clone();
-    let latest = match crate::update::check_for_update(&update_url, "").await {
+    let update_channel = state.config.update.channel.clone();
+    let latest = match crate::update::check_for_update(&update_url, &update_channel, "").await {
         // We pass an empty current_build so check_for_update always returns
         // Some(update) if the manifest loads successfully.
         Ok(Some(u)) => serde_json::json!({

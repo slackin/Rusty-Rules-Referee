@@ -2,6 +2,27 @@
 
 All notable changes to Rusty Rules Referee will be documented in this file.
 
+## [Unreleased]
+
+### Changed — Release Channels (BREAKING)
+
+The auto-update system now uses release channels. Artifacts on the update server
+are organized by channel (`production`, `beta`, `alpha`, `dev`). Automated builds
+(`deploy.sh` / `push-update.sh`) always publish to the **dev** channel. Use the
+new `promote.sh` script on the update server to move builds between channels
+(`dev → alpha → beta → production`).
+
+- **New** `[update].channel` config field (default: `beta`). Valid values:
+  `production`, `beta`, `alpha`, `dev`. Invalid values cause startup failure.
+- **New** `promote.sh` at repo root — promotes builds between channels.
+- Client now fetches manifest at `{url}/{channel}/latest.json` instead of
+  `{url}/latest.json`.
+- **BREAKING**: The legacy `/api/updates/latest.json` endpoint has been removed
+  from the publish pipeline. Clients running versions prior to this release will
+  stop auto-updating until reinstalled with a channel-aware build.
+- `production` channel directory is reserved for future use; no automation
+  currently writes to it.
+
 ## [2.1.0] - 2026-04-18
 
 ### Added

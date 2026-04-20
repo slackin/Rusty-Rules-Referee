@@ -318,6 +318,13 @@ bind_address = "0.0.0.0"
 port = ${WEB_PORT}
 jwt_secret = "${JWT_SECRET}"
 
+[update]
+enabled = false
+url = "https://r3.pugbot.net/api/updates"
+channel = "beta"          # production | beta | alpha | dev
+check_interval = 3600
+auto_restart = true
+
 # ---- Plugins ----
 
 [[plugins]]
@@ -422,6 +429,13 @@ bind_address = "0.0.0.0"
 port = ${WEB_PORT}
 jwt_secret = "${JWT_SECRET}"
 
+[update]
+enabled = false
+url = "https://r3.pugbot.net/api/updates"
+channel = "beta"          # production | beta | alpha | dev
+check_interval = 3600
+auto_restart = true
+
 [master]
 bind_address = "0.0.0.0"
 port = ${MASTER_SYNC_PORT}
@@ -496,6 +510,13 @@ enabled = false
 bind_address = "0.0.0.0"
 port = 8080
 jwt_secret = "${JWT_SECRET}"
+
+[update]
+enabled = false
+url = "https://r3.pugbot.net/api/updates"
+channel = "beta"          # production | beta | alpha | dev
+check_interval = 3600
+auto_restart = true
 
 [client]
 master_url = "${PAIR_SYNC_URL}"

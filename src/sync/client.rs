@@ -32,6 +32,8 @@ pub enum ConnectionState {
 pub struct ClientSyncManager {
     config: ClientSection,
     config_path: String,
+    /// Release channel this client follows for updates (forwarded to force-update handler).
+    update_channel: String,
     storage: Arc<dyn Storage>,
     queue: SyncQueue,
     server_id: Arc<RwLock<Option<i64>>>,
@@ -65,6 +67,7 @@ impl ClientSyncManager {
         config: ClientSection,
         storage: Arc<dyn Storage>,
         config_path: String,
+        update_channel: String,
     ) -> (Self, SyncHandle) {
         let (event_tx, event_rx) = mpsc::channel::<Event>(1024);
         let (command_tx, command_rx) = mpsc::channel::<SyncMessage>(256);
@@ -76,6 +79,7 @@ impl ClientSyncManager {
         let manager = Self {
             config,
             config_path,
+            update_channel,
             storage,
             queue,
             server_id: server_id.clone(),
@@ -318,7 +322,8 @@ impl ClientSyncManager {
                                             ClientRequest::ForceUpdate { update_url } => {
                                                 match update_url {
                                                     Some(url) if !url.is_empty() => {
-                                                        handlers::handle_force_update(url).await
+                                                        // Master supplies the URL; client always uses its own configured channel.
+                                                        handlers::handle_force_update(url, self.update_channel.clone()).await
                                                     }
                                                     _ => ClientResponse::Error {
                                                         message: "Master did not supply an update URL".to_string(),
