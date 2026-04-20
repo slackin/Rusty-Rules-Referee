@@ -230,9 +230,6 @@ case "$RUN_MODE" in
         ;;
 
     client)
-        download_game_server
-        collect_game_config
-
         section "Master Connection"
 
         while true; do
@@ -256,10 +253,6 @@ case "$RUN_MODE" in
         ask "Name for this server [$(hostname -s)]: "
         read -r CLIENT_SERVER_NAME
         CLIENT_SERVER_NAME="${CLIENT_SERVER_NAME:-$(hostname -s)}"
-
-        ask "Web UI port (local, optional) [8080]: "
-        read -r WEB_PORT
-        WEB_PORT="${WEB_PORT:-8080}"
         ;;
 esac
 
@@ -437,7 +430,7 @@ generate_client_config() {
 
     PAIR_URL="http://${MASTER_HOST}:${MASTER_WEB_PORT}/api/v1/pairing/pair"
     PAIR_PAYLOAD=$(cat << JSONEOF
-{"token":"${QUICK_CONNECT_KEY}","server_name":"${CLIENT_SERVER_NAME}","address":"${SERVER_IP}","port":${SERVER_PORT}}
+{"token":"${QUICK_CONNECT_KEY}","server_name":"${CLIENT_SERVER_NAME}"}
 JSONEOF
     )
 
@@ -484,16 +477,16 @@ logfile = "r3.log"
 log_level = "info"
 
 [server]
-public_ip = "${SERVER_IP}"
-port = ${SERVER_PORT}
-rcon_password = "${RCON_PASS}"
-game_log = "${GAME_LOG}"
+public_ip = "0.0.0.0"
+port = 0
+rcon_password = ""
+game_log = ""
 delay = 0.33
 
 [web]
-enabled = true
+enabled = false
 bind_address = "0.0.0.0"
-port = ${WEB_PORT}
+port = 8080
 jwt_secret = "${JWT_SECRET}"
 
 [client]
@@ -647,6 +640,7 @@ case "$RUN_MODE" in
         echo -e "  ${BOLD}Logs${NC}           journalctl -u r3 -f"
         echo ""
         echo -e "  ${GREEN}✓  Paired with master! This bot is managed from the master web UI.${NC}"
+        echo -e "  ${YELLOW}⚠  Configure game server details (IP, port, RCON) from the master dashboard.${NC}"
         ;;
 esac
 echo ""
