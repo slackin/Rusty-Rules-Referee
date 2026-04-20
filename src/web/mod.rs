@@ -117,9 +117,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/message", post(api::servers::server_message))
         .route("/servers/:id/config", get(api::servers::get_server_config))
         .route("/servers/:id/config", put(api::servers::update_server_config))
-        // Server setup (config scan, install)
+        // Server setup (config scan, install, browse)
         .route("/servers/:id/scan-configs", post(api::servers::scan_server_configs))
         .route("/servers/:id/parse-config", post(api::servers::parse_server_config))
+        .route("/servers/:id/browse", post(api::servers::browse_server_files))
         .route("/servers/:id/install-server", post(api::servers::install_game_server))
         .route("/servers/:id/install-status", get(api::servers::install_status))
         // First-run setup wizard

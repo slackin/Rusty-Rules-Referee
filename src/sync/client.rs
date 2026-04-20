@@ -298,6 +298,9 @@ impl ClientSyncManager {
                                             ClientRequest::ParseConfigFile { path } => {
                                                 handlers::handle_parse_config_file(&path).await
                                             }
+                                            ClientRequest::BrowseFiles { path } => {
+                                                handlers::handle_browse_files(&path).await
+                                            }
                                             ClientRequest::InstallGameServer { install_path } => {
                                                 handlers::start_install_game_server(
                                                     install_path, install_state.clone(),

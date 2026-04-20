@@ -155,6 +155,8 @@ pub enum ClientRequest {
     ScanConfigFiles,
     /// Read and parse a specific server.cfg file.
     ParseConfigFile { path: String },
+    /// Browse a directory on the client filesystem.
+    BrowseFiles { path: String },
     /// Download and install a fresh UrT 4.3 dedicated server.
     InstallGameServer { install_path: String },
     /// Poll install progress.
@@ -167,6 +169,11 @@ pub enum ClientRequest {
 pub enum ClientResponse {
     /// List of config files found on the client filesystem.
     ConfigFiles { files: Vec<ConfigFileEntry> },
+    /// Directory listing for the file browser.
+    DirectoryListing {
+        path: String,
+        entries: Vec<DirEntry>,
+    },
     /// Parsed config from a server.cfg file.
     ParsedConfig {
         settings: ServerConfigPayload,
@@ -197,6 +204,14 @@ pub struct ConfigFileEntry {
     pub path: String,
     pub size: u64,
     pub modified: Option<String>,
+}
+
+/// A directory entry returned by the file browser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
 }
 
 /// A health check result from parsing a server.cfg.

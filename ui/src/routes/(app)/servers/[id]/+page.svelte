@@ -1,7 +1,7 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
 	import { page } from '$app/stores';
-	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save, Download, FileSearch, Wrench, FolderOpen, Check, AlertTriangle, Loader2 } from 'lucide-svelte';
+	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save, Download, FileSearch, Wrench, FolderOpen, Check, AlertTriangle, Loader2, Folder, FileText, ChevronRight } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
 	let server = $state(null);
@@ -36,6 +36,12 @@
 	let parsing = $state(false);
 	let parsedConfig = $state(null);
 	let parseError = $state('');
+
+	// Browse flow
+	let browsing = $state(false);
+	let browseEntries = $state(null);
+	let browsePath = $state('');
+	let browseError = $state('');
 
 	// RCON
 	let rconCommand = $state('');
@@ -169,6 +175,37 @@
 		scanning = false;
 	}
 
+	// --- Browse flow ---
+	async function browseFiles(path = '') {
+		browsing = true;
+		browseError = '';
+		try {
+			const resp = await api.browseServerFiles(serverId, path);
+			if (resp.DirectoryListing) {
+				browseEntries = resp.DirectoryListing.entries || [];
+				browsePath = resp.DirectoryListing.path || path;
+			} else if (resp.Error) {
+				browseError = resp.Error.message || 'Browse failed';
+			}
+		} catch (e) {
+			browseError = e.message || 'Failed to browse files';
+		}
+		browsing = false;
+	}
+
+	function browseParent() {
+		if (!browsePath || browsePath === '/') return;
+		const parts = browsePath.split('/').filter(Boolean);
+		parts.pop();
+		const parent = '/' + parts.join('/');
+		browseFiles(parent);
+	}
+
+	function selectBrowseFile(name) {
+		const fullPath = browsePath.endsWith('/') ? browsePath + name : browsePath + '/' + name;
+		selectedConfigPath = fullPath;
+	}
+
 	async function parseSelectedConfig() {
 		if (!selectedConfigPath) return;
 		parsing = true;
@@ -205,6 +242,9 @@
 		selectedConfigPath = '';
 		parsedConfig = null;
 		parseError = '';
+		browseEntries = null;
+		browsePath = '';
+		browseError = '';
 		configResult = null;
 	}
 
@@ -418,67 +458,128 @@
 				</div>
 
 			{:else if setupMethod === 'scan' && setupStep === 1}
-				<!-- Scan Flow -->
+				<!-- Scan / Browse Flow -->
 				<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
 					<div class="mb-4 flex items-center justify-between">
 						<h2 class="flex items-center gap-2 text-base font-semibold text-surface-100">
 							<FileSearch class="h-4 w-4 text-emerald-400" />
-							Scan for Config Files
+							Find Config File
 						</h2>
 						<button onclick={backToMethodSelect} class="text-xs text-surface-500 hover:text-surface-300 transition-colors">&larr; Back</button>
 					</div>
 
-					{#if !scanResults && !scanning}
-						<p class="mb-4 text-sm text-surface-400">We'll scan the client machine for Urban Terror server config files (.cfg) in common directories.</p>
-						<button onclick={scanConfigs} class="btn-primary flex items-center gap-2">
-							<FileSearch class="h-4 w-4" />
-							Scan Now
-						</button>
-					{:else if scanning}
-						<div class="flex items-center gap-3 py-4">
-							<Loader2 class="h-5 w-5 animate-spin text-accent" />
-							<span class="text-sm text-surface-300">Scanning for config files...</span>
-						</div>
-					{:else if scanResults}
-						{#if scanResults.length === 0}
-							<div class="rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-400">
-								No config files found. Try manual configuration instead.
-							</div>
-							<button onclick={backToMethodSelect} class="mt-3 btn-secondary text-sm">&larr; Choose Another Method</button>
-						{:else}
-							<p class="mb-3 text-sm text-surface-400">Found {scanResults.length} config file{scanResults.length !== 1 ? 's' : ''}. Select one to parse:</p>
-							<div class="space-y-2 max-h-64 overflow-y-auto">
-								{#each scanResults as file}
-									<button
-										onclick={() => { selectedConfigPath = file.path; }}
-										class="w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors {selectedConfigPath === file.path ? 'border-accent bg-accent/10 text-accent' : 'border-surface-700 bg-surface-800 text-surface-300 hover:border-surface-600'}"
-									>
-										<div class="font-mono text-xs">{file.path}</div>
-										{#if file.size}
-											<div class="mt-0.5 text-xs text-surface-500">{(file.size / 1024).toFixed(1)} KB</div>
-										{/if}
-									</button>
-								{/each}
-							</div>
+					<p class="mb-4 text-sm text-surface-400">Browse the client's filesystem to locate a server.cfg file, or auto-scan common directories.</p>
 
-							<div class="mt-4 flex items-center gap-3">
-								<button onclick={parseSelectedConfig} class="btn-primary flex items-center gap-2" disabled={!selectedConfigPath || parsing}>
-									{#if parsing}
-										<Loader2 class="h-4 w-4 animate-spin" />
-										Parsing...
-									{:else}
-										<Check class="h-4 w-4" />
-										Use This Config
-									{/if}
-								</button>
-								<button onclick={scanConfigs} class="btn-secondary text-sm flex items-center gap-2">
-									<RefreshCw class="h-3.5 w-3.5" />
-									Re-scan
-								</button>
+					<!-- Action buttons -->
+					<div class="mb-4 flex items-center gap-3">
+						<button onclick={() => browseFiles('')} class="btn-secondary flex items-center gap-2 text-sm" disabled={browsing}>
+							{#if browsing}
+								<Loader2 class="h-4 w-4 animate-spin" />
+							{:else}
+								<FolderOpen class="h-4 w-4" />
+							{/if}
+							Browse Files
+						</button>
+						<button onclick={scanConfigs} class="btn-secondary flex items-center gap-2 text-sm" disabled={scanning}>
+							{#if scanning}
+								<Loader2 class="h-4 w-4 animate-spin" />
+							{:else}
+								<FileSearch class="h-4 w-4" />
+							{/if}
+							Auto-Scan
+						</button>
+					</div>
+
+					<!-- File Browser -->
+					{#if browseEntries !== null}
+						<div class="rounded-lg border border-surface-700 bg-surface-800/50">
+							<!-- Path bar -->
+							<div class="flex items-center gap-2 border-b border-surface-700 px-3 py-2">
+								<Folder class="h-4 w-4 text-surface-400 flex-shrink-0" />
+								<span class="text-xs font-mono text-surface-300 truncate">{browsePath}</span>
+								{#if browsePath && browsePath !== '/'}
+									<button onclick={browseParent} class="ml-auto text-xs text-accent hover:text-accent/80 transition-colors flex-shrink-0">&larr; Up</button>
+								{/if}
+							</div>
+							<!-- Entries -->
+							<div class="max-h-64 overflow-y-auto divide-y divide-surface-700/50">
+								{#if browseEntries.length === 0}
+									<div class="px-3 py-4 text-center text-xs text-surface-500">No .cfg files or folders found here</div>
+								{:else}
+									{#each browseEntries as entry}
+										{#if entry.is_dir}
+											<button
+												onclick={() => browseFiles(browsePath.endsWith('/') ? browsePath + entry.name : browsePath + '/' + entry.name)}
+												class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-700/50 transition-colors"
+											>
+												<Folder class="h-4 w-4 text-amber-400 flex-shrink-0" />
+												<span class="text-surface-200 truncate">{entry.name}</span>
+												<ChevronRight class="ml-auto h-3.5 w-3.5 text-surface-600 flex-shrink-0" />
+											</button>
+										{:else}
+											<button
+												onclick={() => selectBrowseFile(entry.name)}
+												class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors {selectedConfigPath === (browsePath.endsWith('/') ? browsePath + entry.name : browsePath + '/' + entry.name) ? 'bg-accent/10 text-accent' : 'hover:bg-surface-700/50 text-surface-300'}"
+											>
+												<FileText class="h-4 w-4 text-emerald-400 flex-shrink-0" />
+												<span class="truncate">{entry.name}</span>
+												<span class="ml-auto text-xs text-surface-500 flex-shrink-0">{(entry.size / 1024).toFixed(1)} KB</span>
+											</button>
+										{/if}
+									{/each}
+								{/if}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Auto-Scan Results -->
+					{#if scanResults !== null}
+						{#if scanResults.length === 0}
+							<div class="mt-3 rounded-lg bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-sm text-amber-400">
+								No config files found in common directories. Try browsing manually.
+							</div>
+						{:else}
+							<div class="mt-3">
+								<p class="mb-2 text-xs font-medium text-surface-400">Found {scanResults.length} config file{scanResults.length !== 1 ? 's' : ''} in common directories:</p>
+								<div class="space-y-1 max-h-48 overflow-y-auto">
+									{#each scanResults as file}
+										<button
+											onclick={() => { selectedConfigPath = file.path; }}
+											class="w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors {selectedConfigPath === file.path ? 'border-accent bg-accent/10 text-accent' : 'border-surface-700 bg-surface-800 text-surface-300 hover:border-surface-600'}"
+										>
+											<div class="font-mono text-xs">{file.path}</div>
+											{#if file.size}
+												<div class="mt-0.5 text-xs text-surface-500">{(file.size / 1024).toFixed(1)} KB</div>
+											{/if}
+										</button>
+									{/each}
+								</div>
 							</div>
 						{/if}
 					{/if}
 
+					<!-- Selected file + parse button -->
+					{#if selectedConfigPath}
+						<div class="mt-4 flex items-center gap-3">
+							<div class="flex-1 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2">
+								<div class="text-xs text-surface-400">Selected config file</div>
+								<div class="font-mono text-sm text-accent truncate">{selectedConfigPath}</div>
+							</div>
+							<button onclick={parseSelectedConfig} class="btn-primary flex items-center gap-2 flex-shrink-0" disabled={parsing}>
+								{#if parsing}
+									<Loader2 class="h-4 w-4 animate-spin" />
+									Parsing...
+								{:else}
+									<Check class="h-4 w-4" />
+									Use This File
+								{/if}
+							</button>
+						</div>
+					{/if}
+
+					{#if browseError}
+						<div class="mt-3 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-sm text-red-400">{browseError}</div>
+					{/if}
 					{#if scanError}
 						<div class="mt-3 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-sm text-red-400">{scanError}</div>
 					{/if}

@@ -377,10 +377,16 @@ pub async fn update_server_config(
     }).into_response()
 }
 
-// ---- Server setup endpoints (config scan, install) ----
+// ---- Server setup endpoints (config scan, install, browse) ----
 
 #[derive(Debug, Deserialize)]
 pub struct ParseConfigRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BrowseFilesRequest {
+    #[serde(default)]
     pub path: String,
 }
 
@@ -427,6 +433,24 @@ pub async fn scan_server_configs(
         server_id,
         ClientRequest::ScanConfigFiles,
         std::time::Duration::from_secs(60),
+    ).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
+/// POST /api/v1/servers/:id/browse — browse the client filesystem for config files.
+pub async fn browse_server_files(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<BrowseFilesRequest>,
+) -> impl IntoResponse {
+    info!(server_id, path = %req.path, "Browsing files on client");
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::BrowseFiles { path: req.path },
+        std::time::Duration::from_secs(30),
     ).await {
         Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
         Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),

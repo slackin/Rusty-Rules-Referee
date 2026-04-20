@@ -206,11 +206,13 @@ export const api = {
 	updateServerConfig: (id, config) =>
 		request(`/servers/${id}/config`, { method: 'PUT', body: JSON.stringify(config) }),
 
-	// Server setup (config scan, install)
+	// Server setup (config scan, install, browse)
 	scanServerConfigs: (id) =>
 		request(`/servers/${id}/scan-configs`, { method: 'POST' }),
 	parseServerConfig: (id, path) =>
 		request(`/servers/${id}/parse-config`, { method: 'POST', body: JSON.stringify({ path }) }),
+	browseServerFiles: (id, path = '') =>
+		request(`/servers/${id}/browse`, { method: 'POST', body: JSON.stringify({ path }) }),
 	installGameServer: (id, install_path) =>
 		request(`/servers/${id}/install-server`, { method: 'POST', body: JSON.stringify({ install_path }) }),
 	installStatus: (id) =>

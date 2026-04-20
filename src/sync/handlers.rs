@@ -54,6 +54,91 @@ pub fn new_install_state() -> SharedInstallState {
 // Config file scanning
 // ---------------------------------------------------------------------------
 
+/// Browse a directory on the client filesystem, restricted to the home dir.
+pub async fn handle_browse_files(path: &str) -> ClientResponse {
+    let home = match home_dir() {
+        Some(h) => h,
+        None => {
+            return ClientResponse::Error {
+                message: "Cannot determine home directory".to_string(),
+            };
+        }
+    };
+
+    let browse_path = if path.is_empty() || path == "~" {
+        home.clone()
+    } else {
+        PathBuf::from(path)
+    };
+
+    // Security: must be under home directory or common game directories
+    let allowed = browse_path.starts_with(&home)
+        || browse_path.starts_with("/opt/urbanterror")
+        || browse_path.starts_with("/usr/local/games/urbanterror");
+
+    if !allowed {
+        return ClientResponse::Error {
+            message: "Access denied: path must be under home directory or known game directories".to_string(),
+        };
+    }
+
+    // Canonicalize to prevent traversal
+    let canonical = match browse_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Cannot access path: {}", e),
+            };
+        }
+    };
+
+    if !canonical.starts_with(&home)
+        && !canonical.starts_with("/opt/urbanterror")
+        && !canonical.starts_with("/usr/local/games/urbanterror")
+    {
+        return ClientResponse::Error {
+            message: "Access denied: resolved path is outside allowed directories".to_string(),
+        };
+    }
+
+    let entries_iter = match std::fs::read_dir(&canonical) {
+        Ok(e) => e,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Cannot read directory: {}", e),
+            };
+        }
+    };
+
+    let mut entries: Vec<super::protocol::DirEntry> = Vec::new();
+    for entry in entries_iter.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Skip hidden files
+        if name.starts_with('.') {
+            continue;
+        }
+        let meta = entry.metadata().ok();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        // Only show directories and .cfg files
+        if is_dir || name.ends_with(".cfg") {
+            entries.push(super::protocol::DirEntry { name, is_dir, size });
+        }
+    }
+
+    // Sort: directories first, then files, alphabetically
+    entries.sort_by(|a, b| {
+        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+
+    info!(path = %canonical.display(), count = entries.len(), "Browsed directory");
+
+    ClientResponse::DirectoryListing {
+        path: canonical.to_string_lossy().to_string(),
+        entries,
+    }
+}
+
 /// Scan known game directories for .cfg files.
 pub async fn handle_scan_config_files() -> ClientResponse {
     let home = match home_dir() {
