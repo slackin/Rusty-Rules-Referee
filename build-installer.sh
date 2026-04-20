@@ -46,20 +46,19 @@ echo "Creating archive..."
 echo "Payload size: $(du -h "$STAGE/payload.tar.gz" | cut -f1)"
 
 # Write the self-extracting installer header
-# Copy everything from install-r3.sh up to (and including) __ARCHIVE_MARKER__
-HEADER_FILE="$SCRIPT_DIR/install-r3.sh"
+# Copy everything from install-r3-header.sh up to (and including) __ARCHIVE_MARKER__
+HEADER_FILE="$SCRIPT_DIR/install-r3-header.sh"
 if [ -f "$HEADER_FILE" ]; then
     # Extract the header portion (everything up to and including __ARCHIVE_MARKER__)
     MARKER_LINE=$(grep -n '^__ARCHIVE_MARKER__$' "$HEADER_FILE" | head -1 | cut -d: -f1)
     if [ -z "$MARKER_LINE" ]; then
-        echo "ERROR: No __ARCHIVE_MARKER__ found in install-r3.sh"
+        echo "ERROR: No __ARCHIVE_MARKER__ found in install-r3-header.sh"
         exit 1
     fi
-    # Write to temp file first since HEADER_FILE and OUTPUT are the same file
     head -n "$MARKER_LINE" "$HEADER_FILE" > "$STAGE/header.sh"
     cat "$STAGE/header.sh" > "$OUTPUT"
 else
-    echo "ERROR: install-r3.sh not found at $HEADER_FILE"
+    echo "ERROR: install-r3-header.sh not found at $HEADER_FILE"
     exit 1
 fi
 
