@@ -1,10 +1,28 @@
 # Installation
 
+## Quick Install (Recommended)
+
+The easiest way to install R3 is with the self-extracting installer. It includes the prebuilt binary, example config, and walks you through setup interactively:
+
+```bash
+curl -sSL https://r3.pugbot.net/api/updates/install-r3.sh -o install-r3.sh
+sudo bash install-r3.sh
+```
+
+The installer supports three modes: **Standalone** (single server), **Master** (multi-server hub), or **Client** (managed by a master).
+
+::: tip
+The installer is updated automatically with every release. It always contains the latest binary.
+:::
+
 ## Prerequisites
+
+- **A running Urban Terror 4.3 server** with RCON enabled and `g_logsync 1`
+
+The following are only needed if building from source:
 
 - **Rust** 1.70+ (2021 edition) — [Install Rust](https://rustup.rs/)
 - **Node.js** 18+ and npm — required to build the web dashboard frontend
-- **A running Urban Terror 4.3 server** with RCON enabled and `g_logsync 1`
 
 ## Building from Source
 

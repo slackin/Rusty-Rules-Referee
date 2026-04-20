@@ -9,6 +9,9 @@ hero:
     - theme: brand
       text: Get Started
       link: /guide/introduction
+    - theme: brand
+      text: Download Installer
+      link: https://r3.pugbot.net/api/updates/install-r3.sh
     - theme: alt
       text: Command Reference
       link: /commands/

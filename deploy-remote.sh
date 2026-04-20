@@ -62,9 +62,9 @@ done
 
 # ---- Determine step count ----
 if [ "$SKIP_PULL" = true ]; then
-    TOTAL_STEPS=5
-else
     TOTAL_STEPS=6
+else
+    TOTAL_STEPS=7
 fi
 
 CURRENT_STEP=0
@@ -210,6 +210,22 @@ if ! python3 -c "import json; json.load(open('${PUBLISH_BASE}/latest.json'))" 2>
 fi
 ok "Manifest JSON validated"
 
+# ---- Step: Build & Publish Installer ----
+CURRENT_STEP=$((CURRENT_STEP + 1))
+step $CURRENT_STEP "Building & publishing installer"
+
+INSTALLER_FILENAME="install-r3.sh"
+bash "${BUILD_DIR}/build-installer.sh" "$BINARY" || die "build-installer.sh failed"
+
+if [ ! -f "${BUILD_DIR}/install-r3.sh" ]; then
+    die "Installer not found after build"
+fi
+
+cp "${BUILD_DIR}/install-r3.sh" "${PUBLISH_BASE}/${INSTALLER_FILENAME}" || die "Failed to copy installer to publish path"
+chmod 644 "${PUBLISH_BASE}/${INSTALLER_FILENAME}"
+INSTALLER_SIZE=$(du -h "${PUBLISH_BASE}/${INSTALLER_FILENAME}" | awk '{print $1}')
+ok "Installer published: ${PUBLISH_BASE}/${INSTALLER_FILENAME} (${INSTALLER_SIZE})"
+
 # ---- Summary ----
 echo ""
 echo -e "${GREEN}${BOLD}"
@@ -222,6 +238,7 @@ echo -e "  ${BOLD}Build:${NC}    ${BUILD_HASH}"
 echo -e "  ${BOLD}SHA-256:${NC}  ${SHA256}"
 echo -e "  ${BOLD}Manifest:${NC} https://r3.pugbot.net/api/updates/latest.json"
 echo -e "  ${BOLD}Binary:${NC}   ${DOWNLOAD_URL}"
+echo -e "  ${BOLD}Installer:${NC}https://r3.pugbot.net/api/updates/install-r3.sh"
 echo ""
 echo -e "  Game servers with ${BOLD}[update] enabled = true${NC} will auto-update."
 echo ""
