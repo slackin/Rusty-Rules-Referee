@@ -123,6 +123,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/browse", post(api::servers::browse_server_files))
         .route("/servers/:id/install-server", post(api::servers::install_game_server))
         .route("/servers/:id/install-status", get(api::servers::install_status))
+        // Client version & forced update
+        .route("/servers/:id/version", get(api::servers::get_server_version))
+        .route("/servers/:id/force-update", post(api::servers::force_server_update))
         // First-run setup wizard
         .route("/setup/status", get(api::setup::setup_status))
         .route("/setup/complete", post(api::setup::complete_setup))
@@ -213,6 +216,7 @@ pub async fn start_server(
     connected_clients: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, crate::sync::master::ConnectedClient>>>>,
     pending_responses: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<crate::sync::protocol::ClientResponse>>>>>,
     pending_client_requests: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, Vec<(String, crate::sync::protocol::ClientRequest)>>>>>,
+    client_versions: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, crate::sync::master::ClientVersionInfo>>>>,
 ) -> anyhow::Result<()> {
     let jwt_secret = config
         .web
@@ -246,6 +250,7 @@ pub async fn start_server(
         connected_clients,
         pending_responses,
         pending_client_requests,
+        client_versions,
     };
 
     let app = build_router(state);

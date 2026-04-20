@@ -233,6 +233,8 @@ impl ClientSyncManager {
                             current_map: None,  // TODO: get from game state
                             player_count: 0,    // TODO: get from clients manager
                             max_clients: 0,     // TODO: get from game state
+                            build_hash: Some(env!("BUILD_HASH").to_string()),
+                            version: Some(env!("CARGO_PKG_VERSION").to_string()),
                         };
 
                         match http_client
@@ -309,6 +311,19 @@ impl ClientSyncManager {
                                             }
                                             ClientRequest::InstallStatus => {
                                                 handlers::handle_install_status(&install_state).await
+                                            }
+                                            ClientRequest::GetVersion => {
+                                                handlers::handle_get_version().await
+                                            }
+                                            ClientRequest::ForceUpdate { update_url } => {
+                                                match update_url {
+                                                    Some(url) if !url.is_empty() => {
+                                                        handlers::handle_force_update(url).await
+                                                    }
+                                                    _ => ClientResponse::Error {
+                                                        message: "Master did not supply an update URL".to_string(),
+                                                    },
+                                                }
                                             }
                                         };
 

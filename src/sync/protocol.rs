@@ -43,6 +43,12 @@ pub struct HeartbeatRequest {
     pub current_map: Option<String>,
     pub player_count: u32,
     pub max_clients: u32,
+    /// Client's current build hash (set by newer clients; absent on older builds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_hash: Option<String>,
+    /// Client's current semantic version string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +167,14 @@ pub enum ClientRequest {
     InstallGameServer { install_path: String },
     /// Poll install progress.
     InstallStatus,
+    /// Query the client's current version/build.
+    GetVersion,
+    /// Force the client to check for and apply an update immediately.
+    /// If `update_url` is provided, it overrides the client's configured URL.
+    ForceUpdate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_url: Option<String>,
+    },
 }
 
 /// Responses from a client bot back to the master.
@@ -193,6 +207,25 @@ pub enum ClientResponse {
     InstallComplete {
         install_path: String,
         game_log: Option<String>,
+    },
+    /// Current client version info.
+    Version {
+        version: String,
+        build_hash: String,
+        git_commit: String,
+        build_timestamp: String,
+        platform: String,
+    },
+    /// A force-update operation was accepted and is now running asynchronously.
+    UpdateTriggered {
+        current_build: String,
+        target_build: String,
+        target_version: String,
+        download_size: u64,
+    },
+    /// Force-update found no newer build available.
+    AlreadyUpToDate {
+        current_build: String,
     },
     /// Error response.
     Error { message: String },

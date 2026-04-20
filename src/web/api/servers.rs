@@ -29,6 +29,12 @@ pub struct ServerInfo {
     pub max_clients: u32,
     pub last_seen: Option<String>,
     pub online: bool,
+    /// Last client-reported build hash (from heartbeat).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_hash: Option<String>,
+    /// Last client-reported version string (from heartbeat).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -136,10 +142,25 @@ pub async fn list_servers(
         std::collections::HashSet::new()
     };
 
+    let versions: std::collections::HashMap<i64, (Option<String>, Option<String>)> =
+        if let Some(map) = state.client_versions.as_ref() {
+            map.read()
+                .await
+                .iter()
+                .map(|(k, v)| (*k, (v.build_hash.clone(), v.version.clone())))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
     let servers = servers
         .into_iter()
         .map(|s| {
             let online = is_server_online(connected_ids.contains(&s.id), s.last_seen);
+            let (build_hash, version) = versions
+                .get(&s.id)
+                .cloned()
+                .unwrap_or((None, None));
             ServerInfo {
                 id: s.id,
                 name: s.name,
@@ -151,6 +172,8 @@ pub async fn list_servers(
                 max_clients: s.max_clients,
                 last_seen: s.last_seen.map(|t| t.to_rfc3339()),
                 online,
+                build_hash,
+                version,
             }
         })
         .collect();
@@ -172,6 +195,16 @@ pub async fn get_server(
     };
     let online = is_server_online(ws_connected, s.last_seen);
 
+    let (build_hash, version) = if let Some(map) = state.client_versions.as_ref() {
+        map.read()
+            .await
+            .get(&server_id)
+            .map(|v| (v.build_hash.clone(), v.version.clone()))
+            .unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
+
     Ok(Json(ServerInfo {
         id: s.id,
         name: s.name,
@@ -183,6 +216,8 @@ pub async fn get_server(
         max_clients: s.max_clients,
         last_seen: s.last_seen.map(|t| t.to_rfc3339()),
         online,
+        build_hash,
+        version,
     }))
 }
 
@@ -520,5 +555,109 @@ pub async fn install_status(
     ).await {
         Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
         Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Version & force-update
+// ---------------------------------------------------------------------------
+
+/// GET /api/v1/servers/:id/version — query the client's current build info
+/// and compare against the master's update manifest.
+///
+/// Returns a JSON object with `client` (live response from the bot), `cached`
+/// (last heartbeat-reported version), and `latest` (master's view of the
+/// newest available build). Any section may be absent if the data is not yet
+/// available — for example if the client is offline the `client` field will
+/// contain an `error` message rather than a Version response.
+pub async fn get_server_version(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> impl IntoResponse {
+    // Cached heartbeat-reported version (always available once the client
+    // has posted at least one heartbeat with build_hash included).
+    let cached = if let Some(map) = state.client_versions.as_ref() {
+        map.read().await.get(&server_id).map(|v| {
+            serde_json::json!({
+                "build_hash": v.build_hash,
+                "version": v.version,
+                "reported_at": v.reported_at.to_rfc3339(),
+            })
+        })
+    } else {
+        None
+    };
+
+    // Live version query to the client. Short timeout so offline clients
+    // fail fast and we still return the cached value.
+    let live = match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::GetVersion,
+        std::time::Duration::from_secs(10),
+    ).await {
+        Ok(resp) => serde_json::json!({ "ok": true, "response": resp }),
+        Err((status, msg)) => serde_json::json!({
+            "ok": false,
+            "status": status.as_u16(),
+            "error": msg,
+        }),
+    };
+
+    // Master-side view of the latest available build (manifest lookup).
+    let update_url = state.config.update.url.clone();
+    let latest = match crate::update::check_for_update(&update_url, "").await {
+        // We pass an empty current_build so check_for_update always returns
+        // Some(update) if the manifest loads successfully.
+        Ok(Some(u)) => serde_json::json!({
+            "ok": true,
+            "version": u.manifest.version,
+            "build_hash": u.manifest.build_hash,
+            "git_commit": u.manifest.git_commit,
+            "released_at": u.manifest.released_at,
+            "download_size": u.platform.size,
+        }),
+        Ok(None) => serde_json::json!({ "ok": true, "up_to_date": true }),
+        Err(e) => serde_json::json!({
+            "ok": false,
+            "error": format!("Manifest check failed: {}", e),
+        }),
+    };
+
+    Json(serde_json::json!({
+        "server_id": server_id,
+        "client": live,
+        "cached": cached,
+        "latest": latest,
+        "master_update_url": update_url,
+    }))
+    .into_response()
+}
+
+/// POST /api/v1/servers/:id/force-update — tell the client bot to download
+/// and apply the latest update immediately, then restart itself.
+///
+/// The master passes its own `update.url` to the client so the client uses
+/// the same binary source the master publishes to.
+pub async fn force_server_update(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> impl IntoResponse {
+    let update_url = state.config.update.url.clone();
+    info!(server_id, url = %update_url, "Force-update requested for client");
+
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::ForceUpdate {
+            update_url: Some(update_url),
+        },
+        std::time::Duration::from_secs(90),
+    ).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => {
+            warn!(server_id, error = %msg, "Force-update request failed");
+            (status, Json(CommandResponse { ok: false, message: msg })).into_response()
+        }
     }
 }

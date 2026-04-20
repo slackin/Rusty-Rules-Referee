@@ -6,7 +6,7 @@ use crate::config::RefereeConfig;
 use crate::core::context::BotContext;
 use crate::events::Event;
 use crate::storage::Storage;
-use crate::sync::master::ConnectedClient;
+use crate::sync::master::{ClientVersionInfo, ConnectedClient};
 use crate::sync::protocol::{ClientRequest, ClientResponse};
 
 /// Shared state for all web handlers.
@@ -25,6 +25,8 @@ pub struct AppState {
     pub pending_responses: Option<Arc<RwLock<HashMap<String, oneshot::Sender<ClientResponse>>>>>,
     /// Pending requests queued for client bots (master mode only).
     pub pending_client_requests: Option<Arc<RwLock<HashMap<i64, Vec<(String, ClientRequest)>>>>>,
+    /// Last-reported client versions keyed by server_id (master mode only).
+    pub client_versions: Option<Arc<RwLock<HashMap<i64, ClientVersionInfo>>>>,
 }
 
 impl AppState {

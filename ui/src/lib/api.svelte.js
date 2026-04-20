@@ -217,6 +217,9 @@ export const api = {
 		request(`/servers/${id}/install-server`, { method: 'POST', body: JSON.stringify({ install_path }) }),
 	installStatus: (id) =>
 		request(`/servers/${id}/install-status`),
+	serverVersion: (id) => request(`/servers/${id}/version`),
+	forceServerUpdate: (id) =>
+		request(`/servers/${id}/force-update`, { method: 'POST' }),
 
 	// Pairing (master mode)
 	enablePairing: (expiry_minutes = 30) =>

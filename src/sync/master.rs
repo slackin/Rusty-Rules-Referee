@@ -43,6 +43,18 @@ pub struct MasterState {
     /// Pending requests queued for client bots to pick up via polling.
     /// Key: server_id → Vec of (request_id, request).
     pub pending_client_requests: Arc<RwLock<HashMap<i64, Vec<(String, ClientRequest)>>>>,
+    /// Last-known version info reported by each client via heartbeat.
+    /// Key: server_id → (build_hash, version, last_reported_at)
+    pub client_versions:
+        Arc<RwLock<HashMap<i64, ClientVersionInfo>>>,
+}
+
+/// Client-reported build/version info, refreshed on every heartbeat.
+#[derive(Debug, Clone)]
+pub struct ClientVersionInfo {
+    pub build_hash: Option<String>,
+    pub version: Option<String>,
+    pub reported_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Represents a connected client bot.
@@ -164,6 +176,18 @@ async fn handle_heartbeat(
             error!(error = %e, server_id = req.server_id, "Failed to update server status");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Record client-reported version info if present in this heartbeat.
+    if req.build_hash.is_some() || req.version.is_some() {
+        state.client_versions.write().await.insert(
+            req.server_id,
+            ClientVersionInfo {
+                build_hash: req.build_hash.clone(),
+                version: req.version.clone(),
+                reported_at: chrono::Utc::now(),
+            },
+        );
+    }
 
     let config_version = state
         .storage
@@ -440,6 +464,7 @@ pub async fn start_master_api(
     connected_clients: Arc<RwLock<HashMap<i64, ConnectedClient>>>,
     pending_responses: Arc<RwLock<HashMap<String, oneshot::Sender<ClientResponse>>>>,
     pending_client_requests: Arc<RwLock<HashMap<i64, Vec<(String, ClientRequest)>>>>,
+    client_versions: Arc<RwLock<HashMap<i64, ClientVersionInfo>>>,
 ) -> anyhow::Result<()> {
     let tls_acceptor = tls::build_master_tls_acceptor(
         Path::new(&config.tls_cert),
@@ -453,6 +478,7 @@ pub async fn start_master_api(
         event_tx,
         pending_responses,
         pending_client_requests,
+        client_versions,
     };
 
     let app = build_internal_router(state);

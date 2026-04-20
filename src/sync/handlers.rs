@@ -666,6 +666,110 @@ pub async fn handle_install_status(state: &SharedInstallState) -> ClientResponse
 }
 
 // ---------------------------------------------------------------------------
+// Version / force-update handlers
+// ---------------------------------------------------------------------------
+
+/// Return the client's current build / version information.
+pub async fn handle_get_version() -> ClientResponse {
+    ClientResponse::Version {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        build_hash: env!("BUILD_HASH").to_string(),
+        git_commit: env!("GIT_COMMIT").to_string(),
+        build_timestamp: env!("BUILD_TIMESTAMP").to_string(),
+        platform: update_platform().to_string(),
+    }
+}
+
+/// Handle a force-update request from the master.
+///
+/// Checks the configured update manifest. If a newer build is available,
+/// spawns a background task to download, verify, apply, and restart —
+/// and returns `UpdateTriggered` immediately so the response reaches
+/// the master before this process restarts. If already up to date,
+/// returns `AlreadyUpToDate`.
+pub async fn handle_force_update(update_url: String) -> ClientResponse {
+    let current_build = env!("BUILD_HASH").to_string();
+
+    let update = match crate::update::check_for_update(&update_url, &current_build).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            info!(build = %current_build, "Force-update: already up to date");
+            return ClientResponse::AlreadyUpToDate { current_build };
+        }
+        Err(e) => {
+            error!(error = %e, "Force-update: manifest check failed");
+            return ClientResponse::Error {
+                message: format!("Update check failed: {}", e),
+            };
+        }
+    };
+
+    let target_build = update.manifest.build_hash.clone();
+    let target_version = update.manifest.version.clone();
+    let download_size = update.platform.size;
+
+    info!(
+        current = %current_build,
+        target = %target_build,
+        "Force-update triggered by master — spawning background apply/restart"
+    );
+
+    // Spawn the download + apply + restart asynchronously so we can return
+    // the UpdateTriggered response to master before restart() replaces this process.
+    let binary_url = update.platform.url.clone();
+    let binary_sha = update.platform.sha256.clone();
+    tokio::spawn(async move {
+        // Give the caller a moment to receive the UpdateTriggered response
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        match crate::update::download_and_verify(&binary_url, &binary_sha).await {
+            Ok(temp_path) => match crate::update::apply_update(&temp_path) {
+                Ok(_) => {
+                    info!("Force-update applied, restarting...");
+                    crate::update::restart();
+                }
+                Err(e) => {
+                    error!(error = %e, "Force-update: apply_update failed");
+                    let _ = std::fs::remove_file(&temp_path);
+                }
+            },
+            Err(e) => {
+                error!(error = %e, "Force-update: download failed");
+            }
+        }
+    });
+
+    ClientResponse::UpdateTriggered {
+        current_build,
+        target_build,
+        target_version,
+        download_size,
+    }
+}
+
+/// Detect the current platform key (mirrors crate::update::current_platform).
+fn update_platform() -> &'static str {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    { "linux-x86_64" }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    { "linux-aarch64" }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    { "windows-x86_64" }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    { "macos-x86_64" }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    { "macos-aarch64" }
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+    )))]
+    { "unknown" }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
