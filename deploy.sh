@@ -1,78 +1,134 @@
 #!/bin/bash
-set -e
+# =============================================================================
+# deploy.sh — Deploy R3 from your dev machine (bash / Git Bash / WSL)
+#
+# This script:
+#   1. Checks for uncommitted changes and auto-commits
+#   2. Pushes to GitHub
+#   3. SSHs to the build server (r3.pugbot.net) and runs deploy-remote.sh
+#   4. The build server pulls, builds, and publishes the update
+#   5. Game servers auto-update from the published manifest
+#
+# Usage:
+#   ./deploy.sh                     # auto-commit with default message
+#   ./deploy.sh "fix censor bug"    # auto-commit with custom message
+#   ./deploy.sh --no-commit         # skip commit (must be pushed already)
+#
+# Prerequisites:
+#   - SSH key auth to root@10.10.0.4 (r3.pugbot.net)
+#   - Build server set up via setup-build-server.sh
+# =============================================================================
+set -euo pipefail
 
-SERVER="root@10.10.0.2"
-APP_USER="rusty"
-APP_DIR="/home/rusty/big-brother-bot"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# ---- Config ----
+BUILD_SERVER="root@10.10.0.4"
+BUILD_DIR="/opt/r3-build"
+REQUIRED_BRANCH="main"
 
-echo "=== Building UI ==="
-cd "$SCRIPT_DIR/ui"
-npm run build
-cd "$SCRIPT_DIR"
+# ---- Colors ----
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
 
+step()  { echo -e "\n${CYAN}${BOLD}=== $1 ===${NC}"; }
+ok()    { echo -e "  ${GREEN}✓${NC} $1"; }
+warn()  { echo -e "  ${YELLOW}!${NC} $1"; }
+fail()  { echo -e "  ${RED}✗${NC} $1"; }
+
+die() {
+    fail "$1"
+    exit 1
+}
+
+# ---- Parse args ----
+COMMIT_MSG=""
+NO_COMMIT=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-commit) NO_COMMIT=true; shift ;;
+        --help|-h)
+            echo 'Usage: ./deploy.sh ["commit message"] [--no-commit]'
+            echo '  "message"     Custom commit message (default: "deploy: vX.Y.Z")'
+            echo '  --no-commit   Skip auto-commit, just push and build'
+            exit 0
+            ;;
+        *) COMMIT_MSG="$1"; shift ;;
+    esac
+done
+
+echo -e "${CYAN}${BOLD}"
+echo "  ╔══════════════════════════════════════╗"
+echo "  ║       R3 Deploy Pipeline             ║"
+echo "  ╚══════════════════════════════════════╝"
+echo -e "${NC}"
+
+# ---- Pre-flight: Verify git repo ----
+if [ ! -d ".git" ]; then
+    die "Not in a git repository. Run from the R3 project root."
+fi
+
+# ---- Pre-flight: Check branch ----
+step "Pre-flight checks"
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$BRANCH" != "$REQUIRED_BRANCH" ]; then
+    warn "On branch '$BRANCH' (expected '$REQUIRED_BRANCH')"
+    read -p "  Deploy from '$BRANCH' anyway? [y/N] " -r REPLY < /dev/tty
+    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+        die "Aborted. Switch to $REQUIRED_BRANCH first."
+    fi
+fi
+ok "Branch: $BRANCH"
+
+# ---- Pre-flight: Check SSH connectivity ----
+if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$BUILD_SERVER" "echo ok" &>/dev/null; then
+    die "Cannot SSH to $BUILD_SERVER — set up SSH key auth first (see setup-build-server.sh)"
+fi
+ok "SSH to $BUILD_SERVER: connected"
+
+# ---- Step: Auto-commit ----
+step "Git commit & push"
+
+if [ "$NO_COMMIT" = false ]; then
+    # Check for changes (staged + unstaged + untracked)
+    if [ -n "$(git status --porcelain)" ]; then
+        # Get version from Cargo.toml
+        VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
+        if [ -z "$COMMIT_MSG" ]; then
+            COMMIT_MSG="deploy: v${VERSION}"
+        else
+            COMMIT_MSG="deploy: v${VERSION} — ${COMMIT_MSG}"
+        fi
+
+        git add -A
+        git commit -m "$COMMIT_MSG"
+        ok "Committed: $COMMIT_MSG"
+    else
+        ok "Working tree clean, nothing to commit"
+    fi
+else
+    ok "Skipping commit (--no-commit)"
+fi
+
+# ---- Step: Push to GitHub ----
+git push origin "$BRANCH" || die "git push failed — resolve conflicts first"
+COMMIT=$(git rev-parse --short=8 HEAD)
+ok "Pushed $COMMIT to origin/$BRANCH"
+
+# ---- Step: Build & publish on update server ----
+step "Building on r3.pugbot.net"
 echo ""
-echo "=== Uploading to server ==="
-scp -o StrictHostKeyChecking=no -r src "$SERVER:$APP_DIR/src"
-scp -o StrictHostKeyChecking=no Cargo.toml "$SERVER:$APP_DIR/Cargo.toml"
-ssh -o StrictHostKeyChecking=no $SERVER "rm -rf $APP_DIR/ui/build"
-scp -o StrictHostKeyChecking=no -r ui/build "$SERVER:$APP_DIR/ui/build"
-ssh -o StrictHostKeyChecking=no $SERVER "chown -R $APP_USER:$APP_USER $APP_DIR/src $APP_DIR/Cargo.toml $APP_DIR/ui"
 
+# Source cargo env on the remote in case it's not in the default login shell PATH
+ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=60 \
+    "$BUILD_SERVER" "bash ${BUILD_DIR}/deploy-remote.sh" \
+    || die "Remote build failed — SSH to $BUILD_SERVER and check ${BUILD_DIR}/deploy-remote.sh"
+
+# ---- Done ----
 echo ""
-echo "=== Building on server ==="
-ssh -o StrictHostKeyChecking=no $SERVER "su - $APP_USER -c 'cd $APP_DIR && cargo build --release 2>&1 | tail -5'"
-
+echo -e "${GREEN}${BOLD}  Deploy complete!${NC} Game servers will auto-update."
 echo ""
-echo "=== Restarting R3 ==="
-ssh -o StrictHostKeyChecking=no $SERVER "su - $APP_USER -c 'screen -S b3 -X quit 2>/dev/null; sleep 1; cd $APP_DIR && screen -dmS b3 ./target/release/rusty-rules-referee b3.toml' && sleep 2 && su - $APP_USER -c 'screen -ls'"
-
-echo ""
-echo "=== Pushing update to r3.pugbot.net ==="
-UPDATE_SERVER="root@10.10.0.4"
-UPDATE_BASE="/home/bcmx/domains/r3.pugbot.net/public_html/api/updates"
-BINARY_PATH="$APP_DIR/target/release/rusty-rules-referee"
-PLATFORM="linux-x86_64"
-
-# Extract build info from the newly built binary on the game server
-BUILD_HASH=$(ssh -o StrictHostKeyChecking=no $SERVER "su - $APP_USER -c '$BINARY_PATH --build-hash'" 2>/dev/null | tail -1)
-SHA256=$(ssh -o StrictHostKeyChecking=no $SERVER "sha256sum $BINARY_PATH" | awk '{print $1}')
-FILE_SIZE=$(ssh -o StrictHostKeyChecking=no $SERVER "stat -c%s $BINARY_PATH")
-VERSION=$(echo "$BUILD_HASH" | cut -d'-' -f1)
-GIT_COMMIT=$(echo "$BUILD_HASH" | cut -d'-' -f2)
-RELEASED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-echo "  Build: $BUILD_HASH"
-echo "  SHA256: $SHA256"
-echo "  Size: $FILE_SIZE"
-
-# Create directories on update server
-ssh -o StrictHostKeyChecking=no $UPDATE_SERVER "mkdir -p ${UPDATE_BASE}/binaries"
-
-# Push binary from game server to update server
-ssh -o StrictHostKeyChecking=no $SERVER "scp -o StrictHostKeyChecking=no $BINARY_PATH ${UPDATE_SERVER}:${UPDATE_BASE}/binaries/r3-${PLATFORM}"
-
-# Generate and upload latest.json
-MANIFEST="{
-  \"version\": \"${VERSION}\",
-  \"build_hash\": \"${BUILD_HASH}\",
-  \"git_commit\": \"${GIT_COMMIT}\",
-  \"released_at\": \"${RELEASED_AT}\",
-  \"platforms\": {
-    \"${PLATFORM}\": {
-      \"url\": \"https://r3.pugbot.net/api/updates/binaries/r3-${PLATFORM}\",
-      \"sha256\": \"${SHA256}\",
-      \"size\": ${FILE_SIZE}
-    }
-  }
-}"
-echo "$MANIFEST" | ssh -o StrictHostKeyChecking=no $UPDATE_SERVER "cat > ${UPDATE_BASE}/latest.json"
-
-# Set permissions
-ssh -o StrictHostKeyChecking=no $UPDATE_SERVER "chmod 644 ${UPDATE_BASE}/latest.json ${UPDATE_BASE}/binaries/r3-${PLATFORM}"
-
-echo "  Manifest: https://r3.pugbot.net/api/updates/latest.json"
-echo "  Binary:   https://r3.pugbot.net/api/updates/binaries/r3-${PLATFORM}"
-
-echo ""
-echo "=== Done! R3 is running and update published ==="
