@@ -115,6 +115,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/ban", post(api::servers::server_ban))
         .route("/servers/:id/say", post(api::servers::server_say))
         .route("/servers/:id/message", post(api::servers::server_message))
+        .route("/servers/:id/config", get(api::servers::get_server_config))
+        .route("/servers/:id/config", put(api::servers::update_server_config))
         // First-run setup wizard
         .route("/setup/status", get(api::setup::setup_status))
         .route("/setup/complete", post(api::setup::complete_setup))

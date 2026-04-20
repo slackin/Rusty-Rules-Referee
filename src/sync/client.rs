@@ -30,14 +30,18 @@ pub enum ConnectionState {
 /// The client sync manager.
 pub struct ClientSyncManager {
     config: ClientSection,
+    config_path: String,
     storage: Arc<dyn Storage>,
     queue: SyncQueue,
     server_id: Arc<RwLock<Option<i64>>>,
     state: Arc<RwLock<ConnectionState>>,
+    local_config_version: i64,
     /// Channel to receive events from the main bot loop for forwarding.
     event_rx: mpsc::Receiver<Event>,
     /// Channel to receive commands from the master.
     command_tx: mpsc::Sender<SyncMessage>,
+    /// Notify the main loop that the config file has been updated on disk.
+    config_updated_tx: watch::Sender<bool>,
 }
 
 /// Handle returned to the main loop for interacting with the sync manager.
@@ -50,6 +54,8 @@ pub struct SyncHandle {
     pub state: Arc<RwLock<ConnectionState>>,
     /// Server ID assigned by master.
     pub server_id: Arc<RwLock<Option<i64>>>,
+    /// Watch channel that fires when the sync manager writes a config update to disk.
+    pub config_updated: watch::Receiver<bool>,
 }
 
 impl ClientSyncManager {
@@ -57,21 +63,26 @@ impl ClientSyncManager {
     pub fn new(
         config: ClientSection,
         storage: Arc<dyn Storage>,
+        config_path: String,
     ) -> (Self, SyncHandle) {
         let (event_tx, event_rx) = mpsc::channel::<Event>(1024);
         let (command_tx, command_rx) = mpsc::channel::<SyncMessage>(256);
+        let (config_updated_tx, config_updated_rx) = watch::channel(false);
         let state = Arc::new(RwLock::new(ConnectionState::Disconnected));
         let server_id = Arc::new(RwLock::new(None));
         let queue = SyncQueue::new(storage.clone(), None);
 
         let manager = Self {
             config,
+            config_path,
             storage,
             queue,
             server_id: server_id.clone(),
             state: state.clone(),
+            local_config_version: 0,
             event_rx,
             command_tx,
+            config_updated_tx,
         };
 
         let handle = SyncHandle {
@@ -79,6 +90,7 @@ impl ClientSyncManager {
             command_rx,
             state,
             server_id,
+            config_updated: config_updated_rx,
         };
 
         (manager, handle)
@@ -119,7 +131,8 @@ impl ClientSyncManager {
             match self.register(&http_client, &base_url, &fingerprint).await {
                 Ok(response) => {
                     *self.server_id.write().await = Some(response.server_id);
-                    info!(server_id = response.server_id, "Registered with master");
+                    self.local_config_version = response.config_version;
+                    info!(server_id = response.server_id, config_version = response.config_version, "Registered with master");
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to register with master, will retry");
@@ -233,6 +246,24 @@ impl ClientSyncManager {
                                             SyncMessage::GlobalPenalty(ban.clone())
                                         ).await;
                                     }
+
+                                    // Check for config version mismatch
+                                    if hb_resp.config_version > self.local_config_version {
+                                        info!(
+                                            local = self.local_config_version,
+                                            remote = hb_resp.config_version,
+                                            "Config version mismatch detected, pulling update"
+                                        );
+                                        match self.pull_and_apply_config(&http_client, &base_url, server_id).await {
+                                            Ok(()) => {
+                                                self.local_config_version = hb_resp.config_version;
+                                                info!(version = hb_resp.config_version, "Config updated from master");
+                                            }
+                                            Err(e) => {
+                                                warn!(error = %e, "Failed to pull config update from master");
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -281,5 +312,70 @@ impl ClientSyncManager {
 
         let response = resp.json::<RegisterResponse>().await?;
         Ok(response)
+    }
+
+    /// Pull the latest config from master and apply it to the local TOML file.
+    async fn pull_and_apply_config(
+        &self,
+        client: &reqwest::Client,
+        base_url: &str,
+        server_id: i64,
+    ) -> anyhow::Result<()> {
+        let resp = client
+            .get(format!("{}/internal/config/{}", base_url, server_id))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            anyhow::bail!("Config pull failed with status {}", resp.status());
+        }
+
+        let config_sync = resp.json::<ConfigSync>().await?;
+        if config_sync.config_json.is_empty() {
+            debug!("Config JSON is empty, nothing to apply");
+            return Ok(());
+        }
+
+        let server_config: ServerConfigPayload =
+            serde_json::from_str(&config_sync.config_json)?;
+
+        // Read the current TOML config, update [server] section, and write back
+        let config_path = &self.config_path;
+        let content = std::fs::read_to_string(config_path)?;
+        let mut doc: toml::Value = toml::from_str(&content)?;
+
+        if let Some(server) = doc.get_mut("server") {
+            if let Some(table) = server.as_table_mut() {
+                table.insert(
+                    "public_ip".to_string(),
+                    toml::Value::String(server_config.address),
+                );
+                table.insert(
+                    "port".to_string(),
+                    toml::Value::Integer(server_config.port as i64),
+                );
+                table.insert(
+                    "rcon_password".to_string(),
+                    toml::Value::String(server_config.rcon_password),
+                );
+                if let Some(log) = server_config.game_log {
+                    table.insert(
+                        "game_log".to_string(),
+                        toml::Value::String(log),
+                    );
+                } else {
+                    table.remove("game_log");
+                }
+            }
+        }
+
+        let output = toml::to_string_pretty(&doc)?;
+        std::fs::write(config_path, &output)?;
+        info!(path = %config_path, "Config file updated on disk");
+
+        // Signal the main loop that config has been updated
+        let _ = self.config_updated_tx.send(true);
+
+        Ok(())
     }
 }

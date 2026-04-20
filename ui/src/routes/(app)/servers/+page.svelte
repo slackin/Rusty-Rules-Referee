@@ -1,6 +1,6 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
-	import { Server, Wifi, WifiOff, Users, Map, Trash2, Terminal, MessageSquare, RefreshCw } from 'lucide-svelte';
+	import { Server, Wifi, WifiOff, Users, Map, Trash2, Terminal, MessageSquare, RefreshCw, AlertTriangle } from 'lucide-svelte';
 
 	let servers = $state([]);
 	let loading = $state(true);
@@ -81,6 +81,10 @@
 	}
 
 	$effect(() => { loadServers(); });
+
+	function isUnconfigured(server) {
+		return !server.address || server.address === '0.0.0.0' || server.port === 0;
+	}
 </script>
 
 <div class="mx-auto max-w-6xl space-y-6">
@@ -130,11 +134,24 @@
 									<a href="/servers/{server.id}" class="text-base font-semibold text-surface-100 hover:text-accent transition-colors">
 										{server.name}
 									</a>
-									<span class="rounded-full px-2 py-0.5 text-xs font-medium {server.online ? 'bg-emerald-500/10 text-emerald-400' : 'bg-surface-800 text-surface-500'}">
-										{server.online ? 'Online' : 'Offline'}
-									</span>
+									{#if isUnconfigured(server)}
+										<span class="rounded-full px-2 py-0.5 text-xs font-medium bg-amber-500/10 text-amber-400 flex items-center gap-1">
+											<AlertTriangle class="h-3 w-3" />
+											Needs Setup
+										</span>
+									{:else}
+										<span class="rounded-full px-2 py-0.5 text-xs font-medium {server.online ? 'bg-emerald-500/10 text-emerald-400' : 'bg-surface-800 text-surface-500'}">
+											{server.online ? 'Online' : 'Offline'}
+										</span>
+									{/if}
 								</div>
-								<div class="mt-1 text-sm text-surface-500">{server.address}:{server.port}</div>
+								<div class="mt-1 text-sm text-surface-500">
+									{#if isUnconfigured(server)}
+										<a href="/servers/{server.id}" class="text-amber-400 hover:text-amber-300 transition-colors">Configure game server &rarr;</a>
+									{:else}
+										{server.address}:{server.port}
+									{/if}
+								</div>
 							</div>
 						</div>
 

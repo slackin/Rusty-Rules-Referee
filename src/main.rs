@@ -793,6 +793,58 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
 
     let client_config = config.client.as_ref().expect("client config validated").clone();
 
+    // Check if game server is configured yet
+    let server_configured = config.server.is_configured();
+
+    // Connect to local SQLite cache database
+    let db: Arc<dyn storage::Storage> =
+        Arc::from(storage::create_storage(&config.referee.database).await?);
+    info!("Local cache database connected");
+
+    // Set up the sync manager (always needed)
+    let (sync_manager, mut sync_handle) = sync::client::ClientSyncManager::new(
+        client_config.clone(),
+        db.clone(),
+        config_path.clone(),
+    );
+
+    // Spawn the sync manager
+    tokio::spawn(async move {
+        if let Err(e) = sync_manager.run().await {
+            error!(error = %e, "Client sync manager failed");
+        }
+    });
+
+    if !server_configured {
+        info!("Game server not configured — waiting for configuration from master...");
+        info!("Configure this server from the master's web dashboard.");
+
+        // Start auto-update checker if enabled
+        if config.update.enabled {
+            let update_config = config.update.clone();
+            tokio::spawn(async move {
+                rusty_rules_referee::update::run_update_loop(update_config, BUILD_HASH).await;
+            });
+        }
+
+        // Wait for config push from master — sync manager will write config and signal restart
+        loop {
+            if sync_handle.config_updated.changed().await.is_ok() {
+                info!("Game server configuration received from master — restarting...");
+                // Re-read the config file that the sync manager updated
+                let new_config = RefereeConfig::from_file(std::path::Path::new(&config_path))?;
+                if new_config.server.is_configured() {
+                    info!("Configuration is valid, restarting client with game server connection");
+                    // Recursive call with the new config — clean restart of the full client
+                    return Box::pin(run_client(new_config, config_path)).await;
+                }
+                warn!("Received config update but game server still not configured, continuing to wait...");
+            }
+        }
+    }
+
+    // --- Game server is configured — proceed with full client startup ---
+
     // Set up event registry
     let event_registry = Arc::new(EventRegistry::new());
 
@@ -800,11 +852,6 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
     let rcon_addr: SocketAddr = format!("{}:{}", config.rcon_ip(), config.rcon_port()).parse()?;
     let rcon = Arc::new(RconClient::new(rcon_addr, &config.server.rcon_password));
     info!(addr = %rcon_addr, "RCON client configured");
-
-    // Connect to local SQLite cache database
-    let db: Arc<dyn storage::Storage> =
-        Arc::from(storage::create_storage(&config.referee.database).await?);
-    info!("Local cache database connected");
 
     // Create game state
     let game = Arc::new(RwLock::new(Game::new("iourt43")));
@@ -863,19 +910,6 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
 
     plugins.startup_all(&config.plugins).await?;
     info!("All plugins started");
-
-    // Set up the sync manager
-    let (sync_manager, mut sync_handle) = sync::client::ClientSyncManager::new(
-        client_config,
-        db.clone(),
-    );
-
-    // Spawn the sync manager
-    tokio::spawn(async move {
-        if let Err(e) = sync_manager.run().await {
-            error!(error = %e, "Client sync manager failed");
-        }
-    });
 
     // Spawn a task to handle commands from master
     let cmd_ctx = ctx.clone();

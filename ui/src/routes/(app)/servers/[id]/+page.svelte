@@ -1,12 +1,21 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
 	import { page } from '$app/stores';
-	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw } from 'lucide-svelte';
+	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
 	let server = $state(null);
 	let loading = $state(true);
 	let error = $state('');
+
+	// Server config
+	let configLoading = $state(false);
+	let configSaving = $state(false);
+	let configResult = $state(null);
+	let configAddress = $state('');
+	let configPort = $state(27960);
+	let configRconPassword = $state('');
+	let configGameLog = $state('');
 
 	// RCON
 	let rconCommand = $state('');
@@ -34,6 +43,46 @@
 			error = e.message || 'Failed to load server';
 		}
 		loading = false;
+	}
+
+	async function loadConfig() {
+		configLoading = true;
+		try {
+			const res = await api.serverConfig(serverId);
+			if (res.config) {
+				configAddress = res.config.address || '';
+				configPort = res.config.port || 27960;
+				configRconPassword = res.config.rcon_password || '';
+				configGameLog = res.config.game_log || '';
+			}
+		} catch (e) {
+			// Config may not exist yet — that's fine
+		}
+		configLoading = false;
+	}
+
+	async function saveConfig() {
+		configSaving = true;
+		configResult = null;
+		try {
+			const payload = {
+				address: configAddress,
+				port: Number(configPort),
+				rcon_password: configRconPassword,
+			};
+			if (configGameLog.trim()) payload.game_log = configGameLog;
+			const res = await api.updateServerConfig(serverId, payload);
+			configResult = { ok: true, message: res.message || 'Configuration saved and pushed' };
+			// Reload server info to reflect updated address/port
+			loadServer();
+		} catch (e) {
+			configResult = { ok: false, message: e.message || 'Failed to save' };
+		}
+		configSaving = false;
+	}
+
+	function isUnconfigured() {
+		return server && (!server.address || server.address === '0.0.0.0' || server.port === 0);
 	}
 
 	async function sendRcon() {
@@ -84,7 +133,7 @@
 		actionSending = false;
 	}
 
-	$effect(() => { loadServer(); });
+	$effect(() => { loadServer(); loadConfig(); });
 </script>
 
 <div class="mx-auto max-w-5xl space-y-6">
@@ -146,6 +195,60 @@
 					</div>
 				</div>
 			{/if}
+		</div>
+
+		{#if isUnconfigured()}
+			<!-- Unconfigured banner -->
+			<div class="rounded-xl border border-amber-500/30 bg-amber-500/5 p-6">
+				<h2 class="mb-2 flex items-center gap-2 text-base font-semibold text-amber-400">
+					<Settings class="h-4 w-4" />
+					Game Server Configuration Required
+				</h2>
+				<p class="text-sm text-surface-400">This client has connected but the game server details haven't been configured yet. Fill in the details below to push the configuration to the client.</p>
+			</div>
+		{/if}
+
+		<!-- Server Configuration -->
+		<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
+			<h2 class="mb-4 flex items-center gap-2 text-base font-semibold text-surface-100">
+				<Settings class="h-4 w-4 text-surface-400" />
+				Game Server Settings
+			</h2>
+
+			{#if configResult}
+				<div class="mb-4 rounded-lg px-3 py-2 text-sm {configResult.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}">
+					{configResult.message}
+				</div>
+			{/if}
+
+			<div class="grid gap-4 sm:grid-cols-2">
+				<div>
+					<label for="cfg-address" class="mb-1 block text-xs font-medium text-surface-400">Server IP Address</label>
+					<input id="cfg-address" type="text" bind:value={configAddress} placeholder="e.g. 203.0.113.10" class="input text-sm" />
+				</div>
+				<div>
+					<label for="cfg-port" class="mb-1 block text-xs font-medium text-surface-400">Game Port</label>
+					<input id="cfg-port" type="number" bind:value={configPort} placeholder="27960" class="input text-sm" />
+				</div>
+				<div>
+					<label for="cfg-rcon" class="mb-1 block text-xs font-medium text-surface-400">RCON Password</label>
+					<input id="cfg-rcon" type="password" bind:value={configRconPassword} placeholder="RCON password" class="input text-sm" />
+				</div>
+				<div>
+					<label for="cfg-log" class="mb-1 block text-xs font-medium text-surface-400">Game Log Path <span class="text-surface-600">(optional)</span></label>
+					<input id="cfg-log" type="text" bind:value={configGameLog} placeholder="/path/to/games.log" class="input text-sm" />
+				</div>
+			</div>
+
+			<div class="mt-4 flex items-center gap-3">
+				<button onclick={saveConfig} class="btn-primary flex items-center gap-2" disabled={configSaving || !configAddress.trim() || !configRconPassword.trim()}>
+					<Save class="h-4 w-4" />
+					{configSaving ? 'Saving...' : 'Save & Push to Client'}
+				</button>
+				{#if configSaving}
+					<div class="h-4 w-4 animate-spin rounded-full border-2 border-accent/20 border-t-accent"></div>
+				{/if}
+			</div>
 		</div>
 
 		{#if server.online}

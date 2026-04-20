@@ -12,7 +12,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use crate::sync::protocol::{RemoteAction, RemoteCommand, SyncMessage};
+use crate::sync::protocol::{RemoteAction, RemoteCommand, SyncMessage, ServerConfigPayload, ConfigSync};
 use crate::web::state::AppState;
 
 // ---- Response types ----
@@ -266,4 +266,113 @@ pub async fn server_message(
         Ok(()) => Json(CommandResponse { ok: true, message: "Message sent".to_string() }).into_response(),
         Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
     }
+}
+
+// ---- Server config management ----
+
+#[derive(Debug, Serialize)]
+pub struct ServerConfigResponse {
+    pub server_id: i64,
+    pub config: Option<ServerConfigPayload>,
+    pub config_version: i64,
+}
+
+/// GET /api/v1/servers/:id/config — get a server's game server configuration.
+pub async fn get_server_config(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> Result<Json<ServerConfigResponse>, StatusCode> {
+    let server = state.storage.get_server(server_id).await.map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let config: Option<ServerConfigPayload> = server
+        .config_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok());
+
+    Ok(Json(ServerConfigResponse {
+        server_id: server.id,
+        config,
+        config_version: server.config_version,
+    }))
+}
+
+/// PUT /api/v1/servers/:id/config — update a server's game server configuration.
+pub async fn update_server_config(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(payload): Json<ServerConfigPayload>,
+) -> impl IntoResponse {
+    // Validate
+    if payload.address.is_empty() || payload.address == "0.0.0.0" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CommandResponse { ok: false, message: "Game server address is required".to_string() }),
+        ).into_response();
+    }
+    if payload.port == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CommandResponse { ok: false, message: "Game server port is required".to_string() }),
+        ).into_response();
+    }
+    if payload.rcon_password.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CommandResponse { ok: false, message: "RCON password is required".to_string() }),
+        ).into_response();
+    }
+
+    let mut server = match state.storage.get_server(server_id).await {
+        Ok(s) => s,
+        Err(_) => {
+            return (StatusCode::NOT_FOUND, Json(CommandResponse {
+                ok: false,
+                message: "Server not found".to_string(),
+            })).into_response();
+        }
+    };
+
+    let config_json = match serde_json::to_string(&payload) {
+        Ok(j) => j,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(CommandResponse {
+                ok: false,
+                message: format!("Failed to serialize config: {}", e),
+            })).into_response();
+        }
+    };
+
+    server.config_json = Some(config_json.clone());
+    server.config_version += 1;
+    server.address = payload.address.clone();
+    server.port = payload.port;
+
+    if let Err(e) = state.storage.save_server(&server).await {
+        error!(error = %e, "Failed to save server config");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(CommandResponse {
+            ok: false,
+            message: "Failed to save configuration".to_string(),
+        })).into_response();
+    }
+
+    // Push to connected client if online
+    if let Some(clients) = state.connected_clients.as_ref() {
+        let clients_guard = clients.read().await;
+        if let Some(client) = clients_guard.get(&server_id) {
+            let msg = SyncMessage::ConfigUpdate(ConfigSync {
+                server_id,
+                config_json,
+                config_version: server.config_version,
+            });
+            let _ = client.tx.send(msg).await;
+            info!(server_id, "Config update pushed to connected client");
+        }
+    }
+
+    info!(server_id, version = server.config_version, "Server config updated");
+
+    Json(CommandResponse {
+        ok: true,
+        message: "Configuration saved and pushed".to_string(),
+    }).into_response()
 }

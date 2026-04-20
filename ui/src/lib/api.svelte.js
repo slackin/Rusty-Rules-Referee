@@ -196,6 +196,9 @@ export const api = {
 		request(`/servers/${id}/say`, { method: 'POST', body: JSON.stringify({ message }) }),
 	serverMessage: (id, cid, message) =>
 		request(`/servers/${id}/message`, { method: 'POST', body: JSON.stringify({ cid, message }) }),
+	serverConfig: (id) => request(`/servers/${id}/config`),
+	updateServerConfig: (id, config) =>
+		request(`/servers/${id}/config`, { method: 'PUT', body: JSON.stringify(config) }),
 
 	// Pairing (master mode)
 	enablePairing: (expiry_minutes = 30) =>

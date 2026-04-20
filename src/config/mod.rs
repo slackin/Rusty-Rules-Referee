@@ -92,6 +92,17 @@ fn default_delay() -> f64 {
     0.33
 }
 
+impl ServerSection {
+    /// Returns `true` if the game server connection is actually configured
+    /// (i.e. not just placeholder values from a client-mode install).
+    pub fn is_configured(&self) -> bool {
+        !self.public_ip.is_empty()
+            && self.public_ip != "0.0.0.0"
+            && self.port > 0
+            && !self.rcon_password.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PluginConfig {
     pub name: String,

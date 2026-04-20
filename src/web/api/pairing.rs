@@ -44,8 +44,14 @@ pub struct EnableResponse {
 pub struct PairRequest {
     pub token: String,
     pub server_name: String,
+    #[serde(default = "default_pair_address")]
     pub address: String,
+    #[serde(default)]
     pub port: u16,
+}
+
+fn default_pair_address() -> String {
+    "0.0.0.0".to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -415,6 +421,12 @@ pub async fn pair_client(
         "Client bot paired via quick-connect"
     );
 
+    let display_addr = if body.address == "0.0.0.0" && body.port == 0 {
+        "pending configuration".to_string()
+    } else {
+        format!("{}:{}", body.address, body.port)
+    };
+
     let _ = state
         .storage
         .save_audit_entry(&crate::core::AuditEntry {
@@ -422,8 +434,8 @@ pub async fn pair_client(
             admin_user_id: None,
             action: "client_paired".to_string(),
             detail: format!(
-                "Client '{}' ({}:{}) paired via quick-connect, assigned server_id={}",
-                body.server_name, body.address, body.port, server_id
+                "Client '{}' ({}) paired via quick-connect, assigned server_id={}",
+                body.server_name, display_addr, server_id
             ),
             ip_address: None,
             created_at: chrono::Utc::now(),

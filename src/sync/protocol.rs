@@ -132,6 +132,17 @@ pub struct ConfigSync {
     pub config_version: i64,
 }
 
+/// Game server configuration payload pushed from master to client.
+/// This is what gets serialized into the `config_json` DB column.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfigPayload {
+    pub address: String,
+    pub port: u16,
+    pub rcon_password: String,
+    #[serde(default)]
+    pub game_log: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket messages (bidirectional)
 // ---------------------------------------------------------------------------
