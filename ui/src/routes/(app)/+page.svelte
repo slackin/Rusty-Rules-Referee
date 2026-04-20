@@ -2,8 +2,36 @@
 	import { api } from '$lib/api.svelte.js';
 	import { getServerStatus, getOnlinePlayers, getRecentEvents, getRecentChat, getRecentVotes, isInitialized } from '$lib/live.svelte.js';
 	import { getAuth } from '$lib/auth.svelte.js';
+	import { isMaster } from '$lib/mode.svelte.js';
 	import { stripColors, timeAgo } from '$lib/utils.js';
-	import { Users, Map, Clock, Activity, Zap, Shield, Ban, AlertTriangle, MessageSquare, Vote, StickyNote, ExternalLink, Search, ArrowRight, SkipForward, X, ChevronDown, ChevronUp, UserX, ShieldBan, Eye, Send } from 'lucide-svelte';
+	import { Users, Map, Clock, Activity, Zap, Shield, Ban, AlertTriangle, MessageSquare, Vote, StickyNote, ExternalLink, Search, ArrowRight, SkipForward, X, ChevronDown, ChevronUp, UserX, ShieldBan, Eye, Send, Server, Wifi, WifiOff, Link } from 'lucide-svelte';
+
+	// Master dashboard state
+	let masterServers = $state([]);
+	let masterLoading = $state(true);
+	let masterError = $state('');
+
+	async function loadMasterData() {
+		try {
+			masterServers = await api.servers();
+			masterError = '';
+		} catch (e) {
+			masterError = e.message || 'Failed to load servers';
+		}
+		masterLoading = false;
+	}
+
+	$effect(() => {
+		if (isMaster()) {
+			loadMasterData();
+			const interval = setInterval(loadMasterData, 15000);
+			return () => clearInterval(interval);
+		}
+	});
+
+	let onlineCount = $derived(masterServers.filter(s => s.online).length);
+	let totalPlayers = $derived(masterServers.reduce((sum, s) => sum + (s.online ? s.player_count : 0), 0));
+	let totalCapacity = $derived(masterServers.reduce((sum, s) => sum + (s.online ? s.max_clients : 0), 0));
 
 	let status = $derived(getServerStatus());
 	let players = $derived(getOnlinePlayers());
@@ -159,6 +187,108 @@
 	}
 </script>
 
+{#if isMaster()}
+<!-- ═══════════════ MASTER DASHBOARD ═══════════════ -->
+<div class="space-y-6 animate-fade-in">
+	<div>
+		<h1 class="text-2xl font-semibold text-surface-100">Master Dashboard</h1>
+		<p class="mt-1 text-sm text-surface-500">Overview of all connected game servers</p>
+	</div>
+
+	{#if masterLoading}
+		<div class="flex items-center justify-center py-20">
+			<div class="h-8 w-8 animate-spin rounded-full border-2 border-accent/20 border-t-accent"></div>
+		</div>
+	{:else}
+		{#if masterError}
+			<div class="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">{masterError}</div>
+		{/if}
+
+		<!-- Summary cards -->
+		<div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+			<div class="card p-5">
+				<div class="flex items-center justify-between">
+					<div>
+						<p class="text-xs font-medium uppercase tracking-wider text-surface-500">Servers Online</p>
+						<p class="mt-1 text-2xl font-semibold text-surface-100">{onlineCount} <span class="text-sm text-surface-500">/ {masterServers.length}</span></p>
+					</div>
+					<div class="rounded-xl bg-surface-800/50 p-3 text-emerald-400">
+						<Server class="h-5 w-5" />
+					</div>
+				</div>
+			</div>
+			<div class="card p-5">
+				<div class="flex items-center justify-between">
+					<div>
+						<p class="text-xs font-medium uppercase tracking-wider text-surface-500">Total Players</p>
+						<p class="mt-1 text-2xl font-semibold text-surface-100">{totalPlayers} <span class="text-sm text-surface-500">/ {totalCapacity}</span></p>
+					</div>
+					<div class="rounded-xl bg-surface-800/50 p-3 text-blue-400">
+						<Users class="h-5 w-5" />
+					</div>
+				</div>
+			</div>
+			<div class="card p-5">
+				<div class="flex items-center justify-between">
+					<div>
+						<p class="text-xs font-medium uppercase tracking-wider text-surface-500">Quick-Connect</p>
+						<p class="mt-1 text-lg font-semibold text-surface-100"><a href="/pairing" class="text-accent hover:underline">Manage Pairing</a></p>
+					</div>
+					<div class="rounded-xl bg-surface-800/50 p-3 text-amber-400">
+						<Link class="h-5 w-5" />
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Server list -->
+		{#if masterServers.length === 0}
+			<div class="rounded-xl border border-surface-800 bg-surface-900 p-12 text-center">
+				<Server class="mx-auto h-12 w-12 text-surface-600" />
+				<h2 class="mt-4 text-lg font-semibold text-surface-300">No servers registered</h2>
+				<p class="mt-2 text-sm text-surface-500">Use <a href="/pairing" class="text-accent hover:underline">Pairing</a> to connect game server bots.</p>
+			</div>
+		{:else}
+			<div class="space-y-3">
+				<h2 class="text-sm font-medium uppercase tracking-wider text-surface-500">Servers</h2>
+				{#each masterServers as server (server.id)}
+					<a href="/servers/{server.id}" class="flex items-center gap-4 rounded-xl border border-surface-800 bg-surface-900 p-4 transition-colors hover:border-surface-700 hover:bg-surface-800/50">
+						<div class="flex h-9 w-9 items-center justify-center rounded-lg {server.online ? 'bg-emerald-500/10' : 'bg-surface-800'}">
+							{#if server.online}
+								<Wifi class="h-4 w-4 text-emerald-400" />
+							{:else}
+								<WifiOff class="h-4 w-4 text-surface-500" />
+							{/if}
+						</div>
+						<div class="flex-1 min-w-0">
+							<div class="font-medium text-surface-100 truncate">{server.name}</div>
+							<div class="text-xs text-surface-500">{server.address}:{server.port}</div>
+						</div>
+						{#if server.online}
+							<div class="flex items-center gap-4 text-sm text-surface-400">
+								{#if server.current_map}
+									<span class="flex items-center gap-1.5">
+										<Map class="h-3.5 w-3.5" />
+										{server.current_map}
+									</span>
+								{/if}
+								<span class="flex items-center gap-1.5">
+									<Users class="h-3.5 w-3.5" />
+									{server.player_count}/{server.max_clients}
+								</span>
+							</div>
+						{:else}
+							<span class="text-xs text-surface-600">Offline</span>
+						{/if}
+					</a>
+				{/each}
+			</div>
+		{/if}
+	{/if}
+</div>
+
+{:else}
+<!-- ═══════════════ STANDALONE DASHBOARD ═══════════════ -->
 <div class="space-y-6 animate-fade-in">
 	<div>
 		<h1 class="text-2xl font-semibold">{status?.hostname ? stripColors(status.hostname) : 'Dashboard'}</h1>
@@ -619,3 +749,6 @@
 		{actionResult.msg}
 	</div>
 {/if}
+
+{/if}
+<!-- end master/standalone switch -->

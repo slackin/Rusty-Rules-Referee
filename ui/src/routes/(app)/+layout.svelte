@@ -4,10 +4,11 @@
 	import { api } from '$lib/api.svelte.js';
 	import { connectWs, disconnectWs } from '$lib/ws.js';
 	import { initLiveStore } from '$lib/live.svelte.js';
+	import { fetchMode, isMaster } from '$lib/mode.svelte.js';
 	import {
 		LayoutDashboard, Users, Shield, Gavel, Terminal, BarChart3, Settings,
 		UserCog, LogOut, Menu, X, ChevronDown, KeyRound, ScrollText, MessageSquare,
-		Map, BookOpen, Sliders, History
+		Map, BookOpen, Sliders, History, Server, Link
 	} from 'lucide-svelte';
 
 	let { children } = $props();
@@ -22,7 +23,7 @@
 	let pwSuccess = $state('');
 	let pwLoading = $state(false);
 
-	const nav = [
+	const standaloneNav = [
 		{ href: '/', label: 'Dashboard', icon: LayoutDashboard },
 		{ href: '/players', label: 'Players', icon: Users },
 		{ href: '/player-history', label: 'Player History', icon: History },
@@ -38,6 +39,18 @@
 		{ href: '/admin-users', label: 'Admin Users', icon: UserCog }
 	];
 
+	const masterNav = [
+		{ href: '/', label: 'Dashboard', icon: LayoutDashboard },
+		{ href: '/servers', label: 'Servers', icon: Server },
+		{ href: '/pairing', label: 'Pairing', icon: Link },
+		{ href: '/penalties', label: 'Penalties', icon: Gavel },
+		{ href: '/audit-log', label: 'Audit Log', icon: ScrollText },
+		{ href: '/config', label: 'Configuration', icon: Settings },
+		{ href: '/admin-users', label: 'Admin Users', icon: UserCog }
+	];
+
+	let nav = $derived(isMaster() ? masterNav : standaloneNav);
+
 	onMount(async () => {
 		currentPath = window.location.pathname;
 		const ok = await checkAuth();
@@ -45,6 +58,7 @@
 			window.location.href = '/login';
 			return;
 		}
+		await fetchMode();
 		connectWs();
 		const cleanupLive = initLiveStore();
 		return () => { cleanupLive(); disconnectWs(); };
@@ -99,7 +113,7 @@
 					</div>
 					<div>
 						<div class="text-sm font-semibold text-surface-100">R3 Admin</div>
-						<div class="text-xs text-surface-500">Server Control</div>
+						<div class="text-xs text-surface-500">{isMaster() ? 'Master Control' : 'Server Control'}</div>
 					</div>
 					<button class="ml-auto lg:hidden" onclick={() => sidebarOpen = false}>
 						<X class="h-5 w-5 text-surface-400" />

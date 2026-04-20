@@ -181,4 +181,25 @@ export const api = {
 	setupStatus: () => request('/setup/status'),
 	completeSetup: (data) =>
 		request('/setup/complete', { method: 'POST', body: JSON.stringify(data) }),
+
+	// Multi-server management (master mode)
+	servers: () => request('/servers').then(r => r.servers),
+	server: (id) => request(`/servers/${id}`),
+	deleteServer: (id) => request(`/servers/${id}`, { method: 'DELETE' }),
+	serverRcon: (id, command) =>
+		request(`/servers/${id}/rcon`, { method: 'POST', body: JSON.stringify({ command }) }),
+	serverKick: (id, cid, reason) =>
+		request(`/servers/${id}/kick`, { method: 'POST', body: JSON.stringify({ cid, reason }) }),
+	serverBan: (id, cid, reason, duration_minutes) =>
+		request(`/servers/${id}/ban`, { method: 'POST', body: JSON.stringify({ cid, reason, duration_minutes }) }),
+	serverSay: (id, message) =>
+		request(`/servers/${id}/say`, { method: 'POST', body: JSON.stringify({ message }) }),
+	serverMessage: (id, cid, message) =>
+		request(`/servers/${id}/message`, { method: 'POST', body: JSON.stringify({ cid, message }) }),
+
+	// Pairing (master mode)
+	enablePairing: (expiry_minutes = 30) =>
+		request('/pairing/enable', { method: 'POST', body: JSON.stringify({ expiry_minutes }) }),
+	disablePairing: () =>
+		request('/pairing/disable', { method: 'POST' }),
 };
