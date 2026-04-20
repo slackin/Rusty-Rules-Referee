@@ -164,10 +164,10 @@
 		scanResults = null;
 		try {
 			const resp = await api.scanServerConfigs(serverId);
-			if (resp.ConfigFiles) {
-				scanResults = resp.ConfigFiles.files || [];
-			} else if (resp.Error) {
-				scanError = resp.Error.message || 'Scan failed';
+			if (resp.response_type === 'ConfigFiles') {
+				scanResults = resp.data?.files || [];
+			} else if (resp.response_type === 'Error') {
+				scanError = resp.data?.message || 'Scan failed';
 			}
 		} catch (e) {
 			scanError = e.message || 'Failed to scan for config files';
@@ -181,11 +181,11 @@
 		browseError = '';
 		try {
 			const resp = await api.browseServerFiles(serverId, path);
-			if (resp.DirectoryListing) {
-				browseEntries = resp.DirectoryListing.entries || [];
-				browsePath = resp.DirectoryListing.path || path;
-			} else if (resp.Error) {
-				browseError = resp.Error.message || 'Browse failed';
+			if (resp.response_type === 'DirectoryListing') {
+				browseEntries = resp.data?.entries || [];
+				browsePath = resp.data?.path || path;
+			} else if (resp.response_type === 'Error') {
+				browseError = resp.data?.message || 'Browse failed';
 			}
 		} catch (e) {
 			browseError = e.message || 'Failed to browse files';
@@ -213,16 +213,16 @@
 		parsedConfig = null;
 		try {
 			const resp = await api.parseServerConfig(serverId, selectedConfigPath);
-			if (resp.ParsedConfig) {
-				parsedConfig = resp.ParsedConfig;
+			if (resp.response_type === 'ParsedConfig') {
+				parsedConfig = resp.data;
 				// Pre-fill the config form
-				if (parsedConfig.address) configAddress = parsedConfig.address;
-				if (parsedConfig.port) configPort = parsedConfig.port;
-				if (parsedConfig.rcon_password) configRconPassword = parsedConfig.rcon_password;
-				if (parsedConfig.game_log) configGameLog = parsedConfig.game_log;
+				if (parsedConfig.settings?.public_ip) configAddress = parsedConfig.settings.public_ip;
+				if (parsedConfig.settings?.port) configPort = parsedConfig.settings.port;
+				if (parsedConfig.settings?.rcon_password) configRconPassword = parsedConfig.settings.rcon_password;
+				if (parsedConfig.settings?.game_log) configGameLog = parsedConfig.settings.game_log;
 				setupStep = 2;
-			} else if (resp.Error) {
-				parseError = resp.Error.message || 'Parse failed';
+			} else if (resp.response_type === 'Error') {
+				parseError = resp.data?.message || 'Parse failed';
 			}
 		} catch (e) {
 			parseError = e.message || 'Failed to parse config file';

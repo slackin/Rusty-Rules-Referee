@@ -107,6 +107,19 @@ async fn send_to_server(
 
 // ---- Endpoints ----
 
+/// Check if a server is online: either via WebSocket connection or recent heartbeat (REST polling).
+fn is_server_online(ws_connected: bool, last_seen: Option<chrono::DateTime<chrono::Utc>>) -> bool {
+    if ws_connected {
+        return true;
+    }
+    // REST-polling clients send heartbeats every ~10s; consider online if seen in last 60s
+    if let Some(ts) = last_seen {
+        let age = chrono::Utc::now() - ts;
+        return age.num_seconds() < 60;
+    }
+    false
+}
+
 /// GET /api/v1/servers — list all registered servers with live status.
 pub async fn list_servers(
     State(state): State<AppState>,
@@ -126,7 +139,7 @@ pub async fn list_servers(
     let servers = servers
         .into_iter()
         .map(|s| {
-            let online = connected_ids.contains(&s.id);
+            let online = is_server_online(connected_ids.contains(&s.id), s.last_seen);
             ServerInfo {
                 id: s.id,
                 name: s.name,
@@ -152,11 +165,12 @@ pub async fn get_server(
 ) -> Result<Json<ServerInfo>, StatusCode> {
     let s = state.storage.get_server(server_id).await.map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let online = if let Some(c) = state.connected_clients.as_ref() {
+    let ws_connected = if let Some(c) = state.connected_clients.as_ref() {
         c.read().await.contains_key(&server_id)
     } else {
         false
     };
+    let online = is_server_online(ws_connected, s.last_seen);
 
     Ok(Json(ServerInfo {
         id: s.id,
