@@ -79,6 +79,11 @@ fn create_parser(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install the ring crypto provider for rustls before anything else
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
