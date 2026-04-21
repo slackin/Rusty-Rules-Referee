@@ -175,6 +175,8 @@ pub enum ClientRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         update_url: Option<String>,
     },
+    /// Validate a game-log path on the client filesystem.
+    CheckGameLog { path: String },
 }
 
 /// Responses from a client bot back to the master.
@@ -226,6 +228,23 @@ pub enum ClientResponse {
     /// Force-update found no newer build available.
     AlreadyUpToDate {
         current_build: String,
+    },
+    /// Result of a game-log path check.
+    GameLogCheck {
+        path: String,
+        /// Resolved absolute path (canonicalized) if the file exists.
+        resolved_path: Option<String>,
+        /// True when the file exists, is a regular file, and is readable.
+        ok: bool,
+        exists: bool,
+        is_file: bool,
+        readable: bool,
+        /// File size in bytes, if known.
+        size: Option<u64>,
+        /// Seconds since the file was last modified, if known.
+        modified_secs_ago: Option<u64>,
+        /// Human-readable explanation (success or error message).
+        message: String,
     },
     /// Error response.
     Error { message: String },

@@ -1053,6 +1053,23 @@ pub async fn browse_files(
     })).into_response()
 }
 
+/// POST /api/v1/config/check-game-log — verify the given path on the local
+/// filesystem (for standalone or master's own embedded server). Delegates to
+/// the same routine the client bots use so feedback is consistent.
+pub async fn check_game_log(
+    AdminOnly(_claims): AdminOnly,
+    State(_state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let resp = crate::sync::handlers::handle_check_game_log(&path).await;
+    Json(serde_json::to_value(&resp).unwrap_or_default()).into_response()
+}
+
 fn json_to_toml(v: &serde_json::Value) -> Option<toml::Value> {
     match v {
         serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),

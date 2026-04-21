@@ -43,6 +43,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/config/server-cfg", post(api::config::analyze_server_cfg))
         .route("/config/server-cfg/save", post(api::config::save_server_cfg))
         .route("/config/browse", post(api::config::browse_files))
+        .route("/config/check-game-log", post(api::config::check_game_log))
         // Plugins
         .route("/plugins", get(api::plugins::list_plugins))
         // Players
@@ -126,6 +127,7 @@ pub fn build_router(state: AppState) -> Router {
         // Client version & forced update
         .route("/servers/:id/version", get(api::servers::get_server_version))
         .route("/servers/:id/force-update", post(api::servers::force_server_update))
+        .route("/servers/:id/check-game-log", post(api::servers::check_server_game_log))
         // First-run setup wizard
         .route("/setup/status", get(api::setup::setup_status))
         .route("/setup/complete", post(api::setup::complete_setup))

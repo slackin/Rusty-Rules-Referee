@@ -220,6 +220,10 @@ export const api = {
 	serverVersion: (id) => request(`/servers/${id}/version`),
 	forceServerUpdate: (id) =>
 		request(`/servers/${id}/force-update`, { method: 'POST' }),
+	checkServerGameLog: (id, path) =>
+		request(`/servers/${id}/check-game-log`, { method: 'POST', body: JSON.stringify({ path }) }),
+	checkGameLog: (path) =>
+		request(`/config/check-game-log`, { method: 'POST', body: JSON.stringify({ path }) }),
 
 	// Pairing (master mode)
 	enablePairing: (expiry_minutes = 30) =>

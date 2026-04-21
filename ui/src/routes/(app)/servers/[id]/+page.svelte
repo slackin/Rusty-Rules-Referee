@@ -116,6 +116,29 @@
 		configSaving = false;
 	}
 
+	// --- Game log path check ---
+	let gameLogChecking = $state(false);
+	let gameLogCheck = $state(null); // { ok, message, ... } from ClientResponse::GameLogCheck
+
+	async function checkGameLog() {
+		const p = (configGameLog || '').trim();
+		if (!p) {
+			gameLogCheck = { ok: false, message: 'Enter a path first.' };
+			return;
+		}
+		gameLogChecking = true;
+		gameLogCheck = null;
+		try {
+			const res = await api.checkServerGameLog(serverId, p);
+			// The response is wrapped as { response_type: "GameLogCheck", data: {...} }
+			// or may be returned flat depending on serde tag handling.
+			gameLogCheck = res?.data || res;
+		} catch (e) {
+			gameLogCheck = { ok: false, message: e.message || 'Check failed (is the client connected?)' };
+		}
+		gameLogChecking = false;
+	}
+
 	// --- Install flow ---
 	async function startInstall() {
 		if (!installPath.trim()) return;
@@ -816,7 +839,19 @@
 						</div>
 						<div>
 							<label for="cfg-log" class="mb-1 block text-xs font-medium text-surface-400">Game Log Path <span class="text-surface-600">(optional)</span></label>
-							<input id="cfg-log" type="text" bind:value={configGameLog} placeholder="/path/to/games.log" class="input text-sm" />
+							<div class="flex items-stretch gap-2">
+								<input id="cfg-log" type="text" bind:value={configGameLog} placeholder="/path/to/games.log" class="input text-sm flex-1" />
+								<button type="button" onclick={checkGameLog} disabled={gameLogChecking || !configGameLog.trim()} class="btn-secondary flex items-center gap-1.5 whitespace-nowrap text-xs">
+									{#if gameLogChecking}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<FileSearch class="h-3.5 w-3.5" />{/if}
+									Check
+								</button>
+							</div>
+							{#if gameLogCheck}
+								<div class="mt-1.5 rounded-md px-2.5 py-1.5 text-xs flex items-start gap-2 {gameLogCheck.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}">
+									{#if gameLogCheck.ok}<Check class="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />{:else}<AlertTriangle class="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />{/if}
+									<span>{gameLogCheck.message}</span>
+								</div>
+							{/if}
 						</div>
 					</div>
 
@@ -860,7 +895,19 @@
 					</div>
 					<div>
 						<label for="cfg-log" class="mb-1 block text-xs font-medium text-surface-400">Game Log Path <span class="text-surface-600">(optional)</span></label>
-						<input id="cfg-log" type="text" bind:value={configGameLog} placeholder="/path/to/games.log" class="input text-sm" />
+						<div class="flex items-stretch gap-2">
+							<input id="cfg-log" type="text" bind:value={configGameLog} placeholder="/path/to/games.log" class="input text-sm flex-1" />
+							<button type="button" onclick={checkGameLog} disabled={gameLogChecking || !configGameLog.trim()} class="btn-secondary flex items-center gap-1.5 whitespace-nowrap text-xs">
+								{#if gameLogChecking}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<FileSearch class="h-3.5 w-3.5" />{/if}
+								Check
+							</button>
+						</div>
+						{#if gameLogCheck}
+							<div class="mt-1.5 rounded-md px-2.5 py-1.5 text-xs flex items-start gap-2 {gameLogCheck.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}">
+								{#if gameLogCheck.ok}<Check class="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />{:else}<AlertTriangle class="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />{/if}
+								<span>{gameLogCheck.message}</span>
+							</div>
+						{/if}
 					</div>
 				</div>
 

@@ -66,6 +66,27 @@
 	let updateMsgType = $state('');
 	let update = $state({});
 
+	// Game log path check
+	let gameLogChecking = $state(false);
+	let gameLogCheck = $state(null);
+
+	async function checkGameLog() {
+		const p = (server.game_log || '').trim();
+		if (!p) {
+			gameLogCheck = { ok: false, message: 'Enter a path first.' };
+			return;
+		}
+		gameLogChecking = true;
+		gameLogCheck = null;
+		try {
+			const res = await api.checkGameLog(p);
+			gameLogCheck = res?.data || res;
+		} catch (e) {
+			gameLogCheck = { ok: false, message: e.message || 'Check failed' };
+		}
+		gameLogChecking = false;
+	}
+
 	async function browseDir(path) {
 		browseLoading = true;
 		browseError = '';
@@ -984,7 +1005,19 @@
 				</div>
 				<div>
 					<label for="game_log" class="mb-1.5 block text-xs font-medium text-surface-400">Game Log Path <span class="text-surface-600 font-normal">(optional)</span></label>
-					<input id="game_log" type="text" class="input font-mono" bind:value={server.game_log} placeholder="/path/to/games.log" />
+					<div class="flex items-stretch gap-2">
+						<input id="game_log" type="text" class="input font-mono flex-1" bind:value={server.game_log} placeholder="/path/to/games.log" />
+						<button type="button" onclick={checkGameLog} disabled={gameLogChecking || !server.game_log?.trim()} class="btn-secondary flex items-center gap-1.5 whitespace-nowrap text-xs">
+							{#if gameLogChecking}<RefreshCw class="h-3.5 w-3.5 animate-spin" />{:else}<FileSearch class="h-3.5 w-3.5" />{/if}
+							Check
+						</button>
+					</div>
+					{#if gameLogCheck}
+						<div class="mt-1.5 rounded-md px-2.5 py-1.5 text-xs flex items-start gap-2 {gameLogCheck.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}">
+							{#if gameLogCheck.ok}<CircleCheck class="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />{:else}<TriangleAlert class="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />{/if}
+							<span>{gameLogCheck.message}</span>
+						</div>
+					{/if}
 					<p class="mt-1 text-xs text-surface-600">Path to the server's game log file</p>
 				</div>
 				<div>

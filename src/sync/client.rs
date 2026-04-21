@@ -330,6 +330,9 @@ impl ClientSyncManager {
                                                     },
                                                 }
                                             }
+                                            ClientRequest::CheckGameLog { path } => {
+                                                handlers::handle_check_game_log(&path).await
+                                            }
                                         };
 
                                         let submission = ClientResponseSubmission {

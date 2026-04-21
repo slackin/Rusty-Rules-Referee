@@ -747,6 +747,127 @@ pub async fn handle_force_update(update_url: String, channel: String) -> ClientR
     }
 }
 
+/// Check whether a configured game-log path is valid and readable on the
+/// client's filesystem. Returns rich diagnostic fields so the dashboard can
+/// show a precise error (missing, not a file, permission denied, stale).
+pub async fn handle_check_game_log(path: &str) -> ClientResponse {
+    use std::fs;
+    use std::time::SystemTime;
+
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return ClientResponse::GameLogCheck {
+            path: path.to_string(),
+            resolved_path: None,
+            ok: false,
+            exists: false,
+            is_file: false,
+            readable: false,
+            size: None,
+            modified_secs_ago: None,
+            message: "Game log path is empty".to_string(),
+        };
+    }
+
+    let p = PathBuf::from(trimmed);
+
+    // metadata() follows symlinks — good enough for log files.
+    let meta = match fs::metadata(&p) {
+        Ok(m) => m,
+        Err(e) => {
+            let exists = p.exists();
+            let message = if e.kind() == std::io::ErrorKind::NotFound || !exists {
+                format!("File does not exist: {}", trimmed)
+            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                format!("Permission denied reading {}: {}", trimmed, e)
+            } else {
+                format!("Cannot stat {}: {}", trimmed, e)
+            };
+            return ClientResponse::GameLogCheck {
+                path: path.to_string(),
+                resolved_path: None,
+                ok: false,
+                exists,
+                is_file: false,
+                readable: false,
+                size: None,
+                modified_secs_ago: None,
+                message,
+            };
+        }
+    };
+
+    let is_file = meta.is_file();
+    let size = Some(meta.len());
+    let modified_secs_ago = meta
+        .modified()
+        .ok()
+        .and_then(|m| SystemTime::now().duration_since(m).ok())
+        .map(|d| d.as_secs());
+
+    let resolved_path = p
+        .canonicalize()
+        .ok()
+        .map(|c| c.to_string_lossy().to_string());
+
+    if !is_file {
+        return ClientResponse::GameLogCheck {
+            path: path.to_string(),
+            resolved_path,
+            ok: false,
+            exists: true,
+            is_file: false,
+            readable: false,
+            size,
+            modified_secs_ago,
+            message: format!("Path exists but is not a regular file: {}", trimmed),
+        };
+    }
+
+    // Actually open the file to verify we can read it (covers ACLs that
+    // metadata alone won't reveal).
+    let readable = fs::File::open(&p).is_ok();
+    if !readable {
+        return ClientResponse::GameLogCheck {
+            path: path.to_string(),
+            resolved_path,
+            ok: false,
+            exists: true,
+            is_file: true,
+            readable: false,
+            size,
+            modified_secs_ago,
+            message: format!("File exists but is not readable (check permissions): {}", trimmed),
+        };
+    }
+
+    let freshness = match modified_secs_ago {
+        Some(s) if s < 60 => "updated in the last minute".to_string(),
+        Some(s) if s < 3600 => format!("last updated {} minute(s) ago", s / 60),
+        Some(s) if s < 86400 => format!("last updated {} hour(s) ago", s / 3600),
+        Some(s) => format!("last updated {} day(s) ago — is the game server running?", s / 86400),
+        None => "modification time unknown".to_string(),
+    };
+
+    let size_human = size.map(|b| {
+        if b < 1024 { format!("{} B", b) }
+        else if b < 1024 * 1024 { format!("{:.1} KB", b as f64 / 1024.0) }
+        else { format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)) }
+    }).unwrap_or_else(|| "unknown".to_string());
+
+    ClientResponse::GameLogCheck {
+        path: path.to_string(),
+        resolved_path,
+        ok: true,
+        exists: true,
+        is_file: true,
+        readable: true,
+        size,
+        modified_secs_ago,
+        message: format!("OK — {}, {}", size_human, freshness),
+    }
+}
+
 /// Detect the current platform key (mirrors crate::update::current_platform).
 fn update_platform() -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

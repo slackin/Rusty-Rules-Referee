@@ -444,6 +444,11 @@ pub struct InstallServerRequest {
     pub install_path: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CheckGameLogRequest {
+    pub path: String,
+}
+
 /// Helper: send a ClientRequest to a server via the polling infrastructure and await the response.
 async fn send_client_request(
     state: &AppState,
@@ -660,5 +665,24 @@ pub async fn force_server_update(
             warn!(server_id, error = %msg, "Force-update request failed");
             (status, Json(CommandResponse { ok: false, message: msg })).into_response()
         }
+    }
+}
+
+/// POST /api/v1/servers/:id/check-game-log — ask the client to verify that
+/// the given game log path exists and is readable on its filesystem.
+pub async fn check_server_game_log(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<CheckGameLogRequest>,
+) -> impl IntoResponse {
+    info!(server_id, path = %req.path, "Checking game log on client");
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::CheckGameLog { path: req.path },
+        std::time::Duration::from_secs(15),
+    ).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
     }
 }
