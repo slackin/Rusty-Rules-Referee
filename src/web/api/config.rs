@@ -625,6 +625,100 @@ async fn do_migrate(
         info!(count = rows.len(), "Migrated xlr_history");
     }
 
+    // --- servers (multi-server registrations) ---
+    if let Ok(rows) = sqlx::query(
+        "SELECT id, name, address, port, status, current_map, player_count, max_clients, \
+         last_seen, config_json, config_version, cert_fingerprint, update_channel, \
+         created_at, updated_at FROM servers"
+    ).fetch_all(sqlite).await {
+        for row in &rows {
+            let id: i64 = row.get("id");
+            let name: String = row.get("name");
+            let address: String = row.get("address");
+            let port: i64 = row.get("port");
+            let status: String = row.get("status");
+            let current_map: Option<String> = row.get("current_map");
+            let player_count: i64 = row.get("player_count");
+            let max_clients: i64 = row.get("max_clients");
+            let last_seen: Option<String> = row.get("last_seen");
+            let config_json: Option<String> = row.get("config_json");
+            let config_version: i64 = row.get("config_version");
+            let cert_fingerprint: Option<String> = row.get("cert_fingerprint");
+            let update_channel: String = row.try_get("update_channel").unwrap_or_else(|_| "beta".to_string());
+            let created_at: String = row.get("created_at");
+            let updated_at: String = row.get("updated_at");
+            sqlx::query(
+                "INSERT INTO servers (id, name, address, port, status, current_map, player_count, max_clients, \
+                 last_seen, config_json, config_version, cert_fingerprint, update_channel, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON DUPLICATE KEY UPDATE name=VALUES(name), address=VALUES(address), port=VALUES(port), \
+                 status=VALUES(status), current_map=VALUES(current_map), player_count=VALUES(player_count), \
+                 max_clients=VALUES(max_clients), last_seen=VALUES(last_seen), config_json=VALUES(config_json), \
+                 config_version=VALUES(config_version), cert_fingerprint=VALUES(cert_fingerprint), \
+                 update_channel=VALUES(update_channel), updated_at=VALUES(updated_at)"
+            )
+            .bind(id).bind(&name).bind(&address).bind(port).bind(&status)
+            .bind(&current_map).bind(player_count).bind(max_clients)
+            .bind(&last_seen).bind(&config_json).bind(config_version)
+            .bind(&cert_fingerprint).bind(&update_channel)
+            .bind(&created_at).bind(&updated_at)
+            .execute(mysql).await.map_err(|err| e(&format!("Write server id={}", id), err))?;
+        }
+        info!(count = rows.len(), "Migrated servers");
+    }
+
+    // --- map_configs ---
+    if let Ok(rows) = sqlx::query(
+        "SELECT id, map_name, gametype, capturelimit, timelimit, fraglimit, g_gear, g_gravity, \
+         g_friendlyfire, g_followstrict, g_waverespawns, g_bombdefusetime, g_bombexplodetime, \
+         g_swaproles, g_maxrounds, g_matchmode, g_respawndelay, startmessage, skiprandom, bot, \
+         custom_commands, created_at, updated_at FROM map_configs"
+    ).fetch_all(sqlite).await {
+        for row in &rows {
+            sqlx::query(
+                "INSERT INTO map_configs (id, map_name, gametype, capturelimit, timelimit, fraglimit, \
+                 g_gear, g_gravity, g_friendlyfire, g_followstrict, g_waverespawns, g_bombdefusetime, \
+                 g_bombexplodetime, g_swaproles, g_maxrounds, g_matchmode, g_respawndelay, startmessage, \
+                 skiprandom, bot, custom_commands, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON DUPLICATE KEY UPDATE gametype=VALUES(gametype), capturelimit=VALUES(capturelimit), \
+                 timelimit=VALUES(timelimit), fraglimit=VALUES(fraglimit), g_gear=VALUES(g_gear), \
+                 g_gravity=VALUES(g_gravity), g_friendlyfire=VALUES(g_friendlyfire), \
+                 g_followstrict=VALUES(g_followstrict), g_waverespawns=VALUES(g_waverespawns), \
+                 g_bombdefusetime=VALUES(g_bombdefusetime), g_bombexplodetime=VALUES(g_bombexplodetime), \
+                 g_swaproles=VALUES(g_swaproles), g_maxrounds=VALUES(g_maxrounds), \
+                 g_matchmode=VALUES(g_matchmode), g_respawndelay=VALUES(g_respawndelay), \
+                 startmessage=VALUES(startmessage), skiprandom=VALUES(skiprandom), bot=VALUES(bot), \
+                 custom_commands=VALUES(custom_commands), updated_at=VALUES(updated_at)"
+            )
+            .bind(row.get::<i64, _>("id"))
+            .bind(row.get::<String, _>("map_name"))
+            .bind(row.get::<String, _>("gametype"))
+            .bind(row.get::<Option<i64>, _>("capturelimit"))
+            .bind(row.get::<Option<i64>, _>("timelimit"))
+            .bind(row.get::<Option<i64>, _>("fraglimit"))
+            .bind(row.get::<String, _>("g_gear"))
+            .bind(row.get::<Option<i64>, _>("g_gravity"))
+            .bind(row.get::<Option<i64>, _>("g_friendlyfire"))
+            .bind(row.get::<Option<i64>, _>("g_followstrict"))
+            .bind(row.get::<Option<i64>, _>("g_waverespawns"))
+            .bind(row.get::<Option<i64>, _>("g_bombdefusetime"))
+            .bind(row.get::<Option<i64>, _>("g_bombexplodetime"))
+            .bind(row.get::<Option<i64>, _>("g_swaproles"))
+            .bind(row.get::<Option<i64>, _>("g_maxrounds"))
+            .bind(row.get::<Option<i64>, _>("g_matchmode"))
+            .bind(row.get::<Option<i64>, _>("g_respawndelay"))
+            .bind(row.get::<String, _>("startmessage"))
+            .bind(row.get::<i64, _>("skiprandom"))
+            .bind(row.get::<i64, _>("bot"))
+            .bind(row.get::<String, _>("custom_commands"))
+            .bind(row.get::<String, _>("created_at"))
+            .bind(row.get::<String, _>("updated_at"))
+            .execute(mysql).await.map_err(|err| e("Write map_configs", err))?;
+        }
+        info!(count = rows.len(), "Migrated map_configs");
+    }
+
     Ok(())
 }
 
