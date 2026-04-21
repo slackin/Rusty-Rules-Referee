@@ -284,6 +284,71 @@ pub fn restart() -> ! {
 }
 
 // ---------------------------------------------------------------------------
+// Startup update check (one-shot, runs before other init)
+// ---------------------------------------------------------------------------
+
+/// One-shot update check intended to run at the very start of process
+/// startup — BEFORE storage migrations or any other fallible init runs.
+/// If an update is available, it is downloaded, verified, applied, and the
+/// process restarts immediately. This guarantees that a broken build can
+/// always be superseded by a newer one on the configured channel, even
+/// when later initialization steps (e.g. DB migrations) would otherwise
+/// crash the process before the normal background update loop kicks in.
+///
+/// Best-effort: network/download/apply errors are logged and swallowed so
+/// that normal startup can proceed when the update server is unreachable.
+pub async fn startup_update_check(config: &UpdateSection, current_build_hash: &str) {
+    if !config.enabled {
+        return;
+    }
+
+    info!(
+        url = %config.url,
+        channel = %config.channel,
+        build = current_build_hash,
+        "Startup update check..."
+    );
+
+    let update = match check_for_update(&config.url, &config.channel, current_build_hash).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            info!("Startup update check: up to date");
+            return;
+        }
+        Err(e) => {
+            warn!(error = %e, "Startup update check failed (continuing with current build)");
+            return;
+        }
+    };
+
+    info!(
+        current = current_build_hash,
+        available = %update.manifest.build_hash,
+        version = %update.manifest.version,
+        "Startup update check: newer build available — applying before init"
+    );
+
+    let temp_path = match download_and_verify(&update.platform.url, &update.platform.sha256).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "Startup update: download/verify failed — continuing with current build");
+            return;
+        }
+    };
+
+    match apply_update(&temp_path) {
+        Ok(_) => {
+            info!("Startup update applied, restarting into new binary...");
+            restart();
+        }
+        Err(e) => {
+            warn!(error = %e, "Startup update: apply failed — continuing with current build");
+            let _ = std::fs::remove_file(&temp_path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Background update loop
 // ---------------------------------------------------------------------------
 

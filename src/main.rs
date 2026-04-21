@@ -152,6 +152,13 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    // Run the update check BEFORE any fallible init (storage migrations,
+    // mode-specific setup, etc). If a newer build is available on the
+    // configured channel, we download + apply + restart here, so a shipped
+    // fix can always supersede a broken build on the next restart — even
+    // if this binary would otherwise crash during startup.
+    rusty_rules_referee::update::startup_update_check(&config.update, BUILD_HASH).await;
+
     match mode {
         RunMode::Standalone => run_standalone(config, config_path).await,
         RunMode::Master => run_master(config, config_path).await,
