@@ -1181,18 +1181,55 @@ pub async fn handle_get_server_cfg(game_log: Option<&str>) -> ClientResponse {
             message: "Cannot determine server directory (game_log not set)".to_string(),
         };
     };
-    let cfg_path = dir.join("server.cfg");
-    let contents = match tokio::fs::read_to_string(&cfg_path).await {
-        Ok(c) => c,
-        Err(e) => {
-            return ClientResponse::Error {
-                message: format!("Cannot read {}: {}", cfg_path.display(), e),
-            };
+
+    // Preferred: {q3ut4}/server.cfg next to games.log.
+    let preferred = dir.join("server.cfg");
+    if let Ok(contents) = tokio::fs::read_to_string(&preferred).await {
+        return ClientResponse::ServerCfg {
+            path: preferred.to_string_lossy().to_string(),
+            contents,
+        };
+    }
+
+    // Fallback: scan the directory for any *.cfg file, preferring
+    // names containing "server", then fall back to the first .cfg.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            let p = ent.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("cfg") {
+                candidates.push(p);
+            }
         }
-    };
-    ClientResponse::ServerCfg {
-        path: cfg_path.to_string_lossy().to_string(),
-        contents,
+    }
+    candidates.sort();
+    let chosen = candidates
+        .iter()
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_ascii_lowercase().contains("server"))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .or_else(|| candidates.first().cloned());
+
+    match chosen {
+        Some(path) => match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => ClientResponse::ServerCfg {
+                path: path.to_string_lossy().to_string(),
+                contents,
+            },
+            Err(e) => ClientResponse::Error {
+                message: format!("Cannot read {}: {}", path.display(), e),
+            },
+        },
+        None => ClientResponse::Error {
+            message: format!(
+                "No server.cfg found in {} (also tried any *.cfg)",
+                dir.display()
+            ),
+        },
     }
 }
 

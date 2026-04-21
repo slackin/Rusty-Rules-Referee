@@ -14,6 +14,12 @@
 		loading = true; error = ''; msg = '';
 		try {
 			const r = await api.serverGetServerCfg(serverId);
+			if (r?.response_type === 'Error' || r?.Error) {
+				error = r.message || r.Error?.message || 'Failed to load server.cfg';
+				cfgPath = '';
+				contents = '';
+				return;
+			}
 			const d = r?.data ?? r?.ServerCfg ?? {};
 			cfgPath = d.path || '';
 			contents = d.contents || '';
@@ -26,6 +32,10 @@
 		saving = true; msg = '';
 		try {
 			const r = await api.serverSaveServerCfg(serverId, cfgPath, contents);
+			if (r?.response_type === 'Error' || r?.Error) {
+				msg = r.message || r.Error?.message || 'Save failed';
+				return;
+			}
 			msg = (r?.data ?? r?.Ok)?.message || 'Saved';
 		} catch (e) { msg = e.message; }
 		finally { saving = false; }
