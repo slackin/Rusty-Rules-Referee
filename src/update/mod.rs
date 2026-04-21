@@ -212,21 +212,58 @@ pub async fn download_and_verify(
 
 /// Replace the current binary with the downloaded update.
 pub fn apply_update(temp_path: &PathBuf) -> anyhow::Result<PathBuf> {
-    let current_exe = std::env::current_exe()?;
+    use anyhow::Context;
 
-    // On Unix: rename temp over current binary (atomic on same filesystem)
+    let current_exe = std::env::current_exe().context("current_exe() failed")?;
+
+    if !temp_path.exists() {
+        anyhow::bail!("temp update file missing: {}", temp_path.display());
+    }
+    if !current_exe.exists() {
+        anyhow::bail!("current_exe does not exist on disk: {}", current_exe.display());
+    }
+
     // Keep a backup just in case
     let backup_path = current_exe.with_extension("old");
     if backup_path.exists() {
-        std::fs::remove_file(&backup_path)?;
+        std::fs::remove_file(&backup_path)
+            .with_context(|| format!("removing stale backup {}", backup_path.display()))?;
     }
 
     // Move current → .old backup
-    std::fs::rename(&current_exe, &backup_path)?;
+    std::fs::rename(&current_exe, &backup_path).with_context(|| {
+        format!(
+            "rename {} → {}",
+            current_exe.display(),
+            backup_path.display()
+        )
+    })?;
 
-    // Move temp → current
-    match std::fs::rename(temp_path, &current_exe) {
+    // Move temp → current. Fall back to copy+remove if rename fails
+    // (e.g. when temp and exe live on different filesystems — EXDEV).
+    let install_result = std::fs::rename(temp_path, &current_exe).or_else(|rename_err| {
+        warn!(
+            error = %rename_err,
+            "rename {} → {} failed; falling back to copy",
+            temp_path.display(),
+            current_exe.display(),
+        );
+        std::fs::copy(temp_path, &current_exe).map(|_| ()).and_then(|_| {
+            let _ = std::fs::remove_file(temp_path);
+            Ok(())
+        })
+    });
+
+    match install_result {
         Ok(()) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &current_exe,
+                    std::fs::Permissions::from_mode(0o755),
+                );
+            }
             info!(path = %current_exe.display(), "Binary updated successfully");
             // Clean up backup
             let _ = std::fs::remove_file(&backup_path);
@@ -236,7 +273,11 @@ pub fn apply_update(temp_path: &PathBuf) -> anyhow::Result<PathBuf> {
             // Rollback: restore backup
             error!(error = %e, "Failed to install update, rolling back");
             let _ = std::fs::rename(&backup_path, &current_exe);
-            Err(e.into())
+            Err(anyhow::Error::from(e).context(format!(
+                "installing {} → {}",
+                temp_path.display(),
+                current_exe.display()
+            )))
         }
     }
 }
