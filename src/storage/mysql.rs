@@ -332,6 +332,7 @@ impl MysqlStorage {
                 config_json TEXT,
                 config_version BIGINT NOT NULL DEFAULT 0,
                 cert_fingerprint VARCHAR(128),
+                update_channel VARCHAR(32) NOT NULL DEFAULT 'beta',
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_servers_status (status)
@@ -340,6 +341,13 @@ impl MysqlStorage {
         .execute(&mut *conn)
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
+        // Add update_channel column to existing servers tables (migration 008)
+        let _ = sqlx::query(
+            "ALTER TABLE servers ADD COLUMN update_channel VARCHAR(32) NOT NULL DEFAULT 'beta'"
+        )
+        .execute(&mut *conn)
+        .await;
 
         // Add multi-server columns to penalties/chat_messages if not present
         let _ = sqlx::query("ALTER TABLE penalties ADD COLUMN server_id BIGINT REFERENCES servers(id)")

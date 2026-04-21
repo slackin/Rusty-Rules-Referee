@@ -49,6 +49,7 @@ impl SqliteStorage {
             include_str!("../../migrations/005_auth_column.sql"),
             include_str!("../../migrations/006_multiserver.sql"),
             include_str!("../../migrations/007_map_configs.sql"),
+            include_str!("../../migrations/008_server_update_channel.sql"),
         ];
         for schema in migrations {
             // Strip SQL comment lines before splitting into statements
