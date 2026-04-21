@@ -82,6 +82,18 @@
 		finally { loading = false; }
 	}
 
+	// ClientResponse is serialized as { response_type: "Ok", data: { message, data: {...} } }
+	// so the actual payload lives at r.data.data.
+	function extractConfig(r) {
+		return (
+			r?.data?.data?.config ||
+			r?.data?.config ||
+			r?.Ok?.data?.config ||
+			r?.config ||
+			null
+		);
+	}
+
 	async function selectMap(name) {
 		if (!name) return;
 		msg = ''; error = '';
@@ -89,7 +101,7 @@
 		editing = null; original = null;
 		try {
 			const r = await api.serverEnsureMapConfig(serverId, name);
-			const cfg = r?.data?.config || r?.Ok?.data?.config || r?.config || null;
+			const cfg = extractConfig(r);
 			if (cfg) {
 				editing = structuredClone(cfg);
 				original = structuredClone(cfg);
@@ -147,7 +159,7 @@
 		resetting = true; msg = ''; error = '';
 		try {
 			const r = await api.serverResetMapConfig(serverId, selectedMap);
-			const cfg = r?.data?.config || r?.Ok?.data?.config || r?.config || null;
+			const cfg = extractConfig(r);
 			if (cfg) {
 				editing = structuredClone(cfg);
 				original = structuredClone(cfg);
