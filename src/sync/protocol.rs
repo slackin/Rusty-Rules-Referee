@@ -159,6 +159,10 @@ pub struct ServerConfigPayload {
     pub rcon_password: String,
     #[serde(default)]
     pub game_log: Option<String>,
+    /// Optional absolute path to the game server's primary `server.cfg`
+    /// file, used by the server.cfg editor on the client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_cfg_path: Option<String>,
     /// Optional RCON IP override (if RCON is reachable on a different IP).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rcon_ip: Option<String>,

@@ -84,6 +84,12 @@ pub struct ServerSection {
     pub rcon_password: String,
     #[serde(default)]
     pub game_log: Option<String>,
+    /// Optional absolute path to the game server's primary `server.cfg`
+    /// file (as selected during setup). When set, admin tooling (e.g.
+    /// the server.cfg editor) will prefer this path over auto-discovery
+    /// from the `game_log` home directory.
+    #[serde(default)]
+    pub server_cfg_path: Option<String>,
     #[serde(default = "default_delay")]
     pub delay: f64,
 }

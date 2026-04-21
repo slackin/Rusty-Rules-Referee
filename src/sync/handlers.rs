@@ -315,6 +315,7 @@ pub async fn handle_parse_config_file(path: &str) -> ClientResponse {
         port,
         rcon_password,
         game_log,
+        server_cfg_path: Some(path.to_string()),
         rcon_ip: None,
         rcon_port: None,
         delay: None,
@@ -1173,16 +1174,52 @@ pub async fn handle_set_mapcycle(
     }
 }
 
-/// GetServerCfg — read the currently active `server.cfg` (or first `*.cfg`)
-/// from the game server's directory.
-pub async fn handle_get_server_cfg(game_log: Option<&str>) -> ClientResponse {
+/// GetServerCfg — read the currently active `server.cfg`.
+///
+/// Resolution order:
+///   1. The explicit `server.server_cfg_path` chosen during setup, if it
+///      exists on disk.
+///   2. `{game_log_dir}/server.cfg` (the home-folder copy UrT writes to).
+///   3. Any other `*.cfg` under the game-log directory, preferring filenames
+///      that contain "server".
+pub async fn handle_get_server_cfg(
+    game_log: Option<&str>,
+    server_cfg_path: Option<&str>,
+) -> ClientResponse {
+    // 1. Explicit configured path wins.
+    if let Some(cfg) = server_cfg_path.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t) }
+    }) {
+        let p = PathBuf::from(cfg);
+        match tokio::fs::read_to_string(&p).await {
+            Ok(contents) => {
+                return ClientResponse::ServerCfg {
+                    path: p.to_string_lossy().to_string(),
+                    contents,
+                };
+            }
+            Err(e) => {
+                // Configured path was unreadable — surface that rather than
+                // silently falling back, so the user can fix the setting.
+                return ClientResponse::Error {
+                    message: format!(
+                        "Configured server_cfg_path {} is not readable: {}",
+                        p.display(),
+                        e
+                    ),
+                };
+            }
+        }
+    }
+
+    // 2 + 3. Fall back to games.log-derived home directory.
     let Some(dir) = game_dir_from_log(game_log) else {
         return ClientResponse::Error {
-            message: "Cannot determine server directory (game_log not set)".to_string(),
+            message: "Cannot determine server directory (set server.server_cfg_path or server.game_log)".to_string(),
         };
     };
 
-    // Preferred: {q3ut4}/server.cfg next to games.log.
     let preferred = dir.join("server.cfg");
     if let Ok(contents) = tokio::fs::read_to_string(&preferred).await {
         return ClientResponse::ServerCfg {
@@ -1191,8 +1228,6 @@ pub async fn handle_get_server_cfg(game_log: Option<&str>) -> ClientResponse {
         };
     }
 
-    // Fallback: scan the directory for any *.cfg file, preferring
-    // names containing "server", then fall back to the first .cfg.
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
         while let Ok(Some(ent)) = rd.next_entry().await {

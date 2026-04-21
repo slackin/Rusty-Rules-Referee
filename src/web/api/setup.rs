@@ -49,6 +49,11 @@ pub struct CompleteSetupRequest {
     /// Optional: game log path (standalone/client).
     #[serde(default)]
     pub game_log: Option<String>,
+    /// Optional: absolute path to the primary server.cfg file chosen
+    /// during setup. Persisted so admin tooling (server.cfg editor) can
+    /// target it directly.
+    #[serde(default)]
+    pub server_cfg_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -160,7 +165,8 @@ pub async fn complete_setup(
         || body.server_ip.is_some()
         || body.server_port.is_some()
         || body.rcon_password.is_some()
-        || body.game_log.is_some();
+        || body.game_log.is_some()
+        || body.server_cfg_path.is_some();
 
     if has_config_changes {
         if let Ok(content) = std::fs::read_to_string(&state.config_path) {
@@ -191,6 +197,12 @@ pub async fn complete_setup(
                         server.insert(
                             "game_log".to_string(),
                             toml::Value::String(log.clone()),
+                        );
+                    }
+                    if let Some(cfg) = &body.server_cfg_path {
+                        server.insert(
+                            "server_cfg_path".to_string(),
+                            toml::Value::String(cfg.clone()),
                         );
                     }
                 }

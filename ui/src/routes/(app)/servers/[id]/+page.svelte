@@ -16,6 +16,7 @@
 	let configPort = $state(27960);
 	let configRconPassword = $state('');
 	let configGameLog = $state('');
+	let configServerCfgPath = $state('');
 
 	// Setup wizard state
 	let setupMethod = $state(null); // 'install' | 'scan' | 'manual' | null
@@ -95,6 +96,7 @@
 				configPort = res.config.port || 27960;
 				configRconPassword = res.config.rcon_password || '';
 				configGameLog = res.config.game_log || '';
+				configServerCfgPath = res.config.server_cfg_path || '';
 			}
 		} catch (e) {
 			// Config may not exist yet — that's fine
@@ -112,6 +114,7 @@
 				rcon_password: configRconPassword,
 			};
 			if (configGameLog.trim()) payload.game_log = configGameLog;
+			if (configServerCfgPath.trim()) payload.server_cfg_path = configServerCfgPath.trim();
 			const res = await api.updateServerConfig(serverId, payload);
 			configResult = { ok: true, message: res.message || 'Configuration saved and pushed' };
 			// Reset setup wizard state on successful save
@@ -278,6 +281,7 @@
 				if (parsedConfig.settings?.port) configPort = parsedConfig.settings.port;
 				if (parsedConfig.settings?.rcon_password) configRconPassword = parsedConfig.settings.rcon_password;
 				if (parsedConfig.settings?.game_log) configGameLog = parsedConfig.settings.game_log;
+				if (selectedConfigPath) configServerCfgPath = selectedConfigPath;
 				setupStep = 2;
 			} else if (resp.response_type === 'Error') {
 				parseError = resp.data?.message || 'Parse failed';
@@ -956,6 +960,10 @@
 								</div>
 							{/if}
 						</div>
+						<div class="sm:col-span-2">
+							<label for="cfg-servercfg" class="mb-1 block text-xs font-medium text-surface-400">server.cfg Path <span class="text-surface-600">(optional — used by the server.cfg editor)</span></label>
+							<input id="cfg-servercfg" type="text" bind:value={configServerCfgPath} placeholder="/path/to/q3ut4/server.cfg" class="input text-sm" />
+						</div>
 					</div>
 
 					<div class="mt-4 flex items-center gap-3">
@@ -1011,6 +1019,10 @@
 								<span>{gameLogCheck.message}</span>
 							</div>
 						{/if}
+					</div>
+					<div class="sm:col-span-2">
+						<label for="cfg-servercfg-2" class="mb-1 block text-xs font-medium text-surface-400">server.cfg Path <span class="text-surface-600">(optional — used by the server.cfg editor)</span></label>
+						<input id="cfg-servercfg-2" type="text" bind:value={configServerCfgPath} placeholder="/path/to/q3ut4/server.cfg" class="input text-sm" />
 					</div>
 				</div>
 

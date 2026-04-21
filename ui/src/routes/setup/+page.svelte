@@ -82,6 +82,7 @@
 				if (serverPort) data.server_port = serverPort;
 				if (rconPassword) data.rcon_password = rconPassword;
 				if (gameLog.trim()) data.game_log = gameLog.trim();
+				if (selectedCfgPath.trim()) data.server_cfg_path = selectedCfgPath.trim();
 			}
 			await api.completeSetup(data);
 			success = true;

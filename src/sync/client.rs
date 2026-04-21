@@ -465,7 +465,11 @@ impl ClientSyncManager {
                                             }
                                             ClientRequest::GetServerCfg => {
                                                 let game_log = self.local_game_log().await;
-                                                handlers::handle_get_server_cfg(game_log.as_deref()).await
+                                                let cfg_path = self.local_server_cfg_path().await;
+                                                handlers::handle_get_server_cfg(
+                                                    game_log.as_deref(),
+                                                    cfg_path.as_deref(),
+                                                ).await
                                             }
                                             ClientRequest::SaveConfigFile { path, contents } => {
                                                 handlers::handle_save_config_file(&path, &contents).await
@@ -526,6 +530,17 @@ impl ClientSyncManager {
         let doc: toml::Value = toml::from_str(&content).ok()?;
         doc.get("server")?
             .get("game_log")?
+            .as_str()
+            .map(|s| s.to_string())
+    }
+
+    /// Read the current `server.server_cfg_path` value (the explicit path
+    /// to the primary server.cfg chosen during setup), if set.
+    async fn local_server_cfg_path(&self) -> Option<String> {
+        let content = tokio::fs::read_to_string(&self.config_path).await.ok()?;
+        let doc: toml::Value = toml::from_str(&content).ok()?;
+        doc.get("server")?
+            .get("server_cfg_path")?
             .as_str()
             .map(|s| s.to_string())
     }
@@ -608,6 +623,14 @@ impl ClientSyncManager {
                     );
                 } else {
                     table.remove("game_log");
+                }
+                if let Some(cfg) = server_config.server_cfg_path {
+                    table.insert(
+                        "server_cfg_path".to_string(),
+                        toml::Value::String(cfg),
+                    );
+                } else {
+                    table.remove("server_cfg_path");
                 }
                 if let Some(rcon_ip) = server_config.rcon_ip {
                     table.insert("rcon_ip".to_string(), toml::Value::String(rcon_ip));
