@@ -624,8 +624,14 @@ if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: activ
 fi
 
 # ---- Start ----
-info "Starting R3 (${RUN_MODE} mode)..."
-systemctl start ${SERVICE_NAME}.service
+# Use restart so that a reinstall over an existing install picks up the new binary.
+if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+    info "Restarting R3 (${RUN_MODE} mode) to load new binary..."
+    systemctl restart ${SERVICE_NAME}.service
+else
+    info "Starting R3 (${RUN_MODE} mode)..."
+    systemctl start ${SERVICE_NAME}.service
+fi
 sleep 2
 
 if systemctl is-active --quiet ${SERVICE_NAME}.service; then

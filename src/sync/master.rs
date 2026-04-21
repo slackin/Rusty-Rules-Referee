@@ -107,11 +107,19 @@ async fn handle_register(
         })?;
 
     let server_id = if let Some(existing) = existing {
-        // Update existing registration
+        // Update existing registration.
+        // NOTE: client-mode bots register with empty address / port 0 because the
+        // game server config is managed by the master and pushed down. Only
+        // overwrite address/port when the client reports real values, otherwise
+        // a reconnect would wipe a config saved via the master UI.
         let mut server = existing;
         server.name = req.server_name;
-        server.address = req.address;
-        server.port = req.port;
+        if !req.address.is_empty() && req.address != "0.0.0.0" {
+            server.address = req.address;
+        }
+        if req.port != 0 {
+            server.port = req.port;
+        }
         server.status = "online".to_string();
         server.last_seen = Some(chrono::Utc::now());
         state.storage.save_server(&server).await.map_err(|e| {
