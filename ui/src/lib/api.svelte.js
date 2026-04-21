@@ -220,6 +220,8 @@ export const api = {
 	serverVersion: (id) => request(`/servers/${id}/version`),
 	forceServerUpdate: (id) =>
 		request(`/servers/${id}/force-update`, { method: 'POST' }),
+	restartServer: (id) =>
+		request(`/servers/${id}/restart`, { method: 'POST' }),
 	setServerUpdateChannel: (id, channel) =>
 		request(`/servers/${id}/update-channel`, { method: 'PUT', body: JSON.stringify({ channel }) }),
 	checkServerGameLog: (id, path) =>

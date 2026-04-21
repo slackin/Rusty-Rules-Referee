@@ -406,6 +406,9 @@ impl ClientSyncManager {
                                             ClientRequest::CheckGameLog { path } => {
                                                 handlers::handle_check_game_log(&path).await
                                             }
+                                            ClientRequest::Restart => {
+                                                handlers::handle_restart().await
+                                            }
                                         };
 
                                         let submission = ClientResponseSubmission {

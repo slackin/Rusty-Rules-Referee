@@ -697,6 +697,27 @@ pub async fn force_server_update(
     }
 }
 
+/// POST /api/v1/servers/:id/restart — ask the client bot to re-exec its
+/// own process (a clean restart, no update).
+pub async fn restart_server(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> impl IntoResponse {
+    info!(server_id, "Restart requested for client");
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::Restart,
+        std::time::Duration::from_secs(15),
+    ).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => {
+            warn!(server_id, error = %msg, "Restart request failed");
+            (status, Json(CommandResponse { ok: false, message: msg })).into_response()
+        }
+    }
+}
+
 /// POST /api/v1/servers/:id/check-game-log — ask the client to verify that
 /// the given game log path exists and is readable on its filesystem.
 pub async fn check_server_game_log(

@@ -127,6 +127,7 @@ pub fn build_router(state: AppState) -> Router {
         // Client version & forced update
         .route("/servers/:id/version", get(api::servers::get_server_version))
         .route("/servers/:id/force-update", post(api::servers::force_server_update))
+        .route("/servers/:id/restart", post(api::servers::restart_server))
         .route("/servers/:id/update-channel", put(api::servers::set_server_update_channel))
         .route("/servers/:id/check-game-log", post(api::servers::check_server_game_log))
         // First-run setup wizard

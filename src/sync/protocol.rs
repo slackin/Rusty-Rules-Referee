@@ -185,6 +185,10 @@ pub enum ClientRequest {
     },
     /// Validate a game-log path on the client filesystem.
     CheckGameLog { path: String },
+    /// Restart the client bot process. The current process will exit and
+    /// re-exec itself (assumes a process supervisor or re-exec logic keeps it
+    /// running, same as after an update).
+    Restart,
 }
 
 /// Responses from a client bot back to the master.
@@ -235,6 +239,10 @@ pub enum ClientResponse {
     },
     /// Force-update found no newer build available.
     AlreadyUpToDate {
+        current_build: String,
+    },
+    /// Restart request accepted; the client will exit/re-exec shortly.
+    Restarting {
         current_build: String,
     },
     /// Result of a game-log path check.

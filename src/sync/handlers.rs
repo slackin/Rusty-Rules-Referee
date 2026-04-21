@@ -747,6 +747,21 @@ pub async fn handle_force_update(update_url: String, channel: String) -> ClientR
     }
 }
 
+/// Handle a restart request from the master. Spawns a background task that
+/// waits briefly (so the Restarting response can be delivered) and then
+/// re-execs the current binary.
+pub async fn handle_restart() -> ClientResponse {
+    let current_build = env!("BUILD_HASH").to_string();
+    info!(build = %current_build, "Restart requested by master");
+    tokio::spawn(async {
+        // Give the caller a moment to receive the Restarting response
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        info!("Restarting client process now");
+        crate::update::restart();
+    });
+    ClientResponse::Restarting { current_build }
+}
+
 /// Check whether a configured game-log path is valid and readable on the
 /// client's filesystem. Returns rich diagnostic fields so the dashboard can
 /// show a precise error (missing, not a file, permission denied, stale).

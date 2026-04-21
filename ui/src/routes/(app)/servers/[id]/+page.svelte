@@ -1,7 +1,7 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
 	import { page } from '$app/stores';
-	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save, Download, FileSearch, Wrench, FolderOpen, Check, AlertTriangle, Loader2, Folder, FileText, ChevronRight } from 'lucide-svelte';
+	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save, Download, FileSearch, Wrench, FolderOpen, Check, AlertTriangle, Loader2, Folder, FileText, ChevronRight, Power } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
 	let server = $state(null);
@@ -67,6 +67,10 @@
 	let versionError = $state('');
 	let forceUpdating = $state(false);
 	let forceUpdateResult = $state(null);
+
+	// Restart
+	let restarting = $state(false);
+	let restartResult = $state(null);
 
 	// Update channel
 	let channelSaving = $state(false);
@@ -390,6 +394,21 @@
 		forceUpdating = false;
 	}
 
+	async function restartClient() {
+		if (!confirm('Restart this client bot?\n\nThe client will exit and re-exec itself. It will briefly be offline.')) return;
+		restarting = true;
+		restartResult = null;
+		try {
+			const res = await api.restartServer(serverId);
+			restartResult = { ok: true, data: res };
+			setTimeout(() => loadVersion(), 10000);
+		} catch (e) {
+			restartResult = { ok: false, message: e.message || 'Restart failed' };
+			console.error('[R3] restartClient failed', e);
+		}
+		restarting = false;
+	}
+
 	async function changeUpdateChannel(newChannel) {
 		if (!server || newChannel === server.update_channel) return;
 		const previous = server.update_channel;
@@ -561,6 +580,20 @@
 							Force Update
 						{/if}
 					</button>
+					<button
+						onclick={restartClient}
+						disabled={restarting || !server.online}
+						class="flex items-center gap-2 rounded-lg bg-surface-800 px-4 py-2 text-sm font-medium text-white hover:bg-surface-700 transition-colors disabled:opacity-50 border border-surface-700"
+						title={!server.online ? 'Client must be online to restart' : 'Restart the client bot process (no update)'}
+					>
+						{#if restarting}
+							<Loader2 class="h-4 w-4 animate-spin" />
+							Restarting...
+						{:else}
+							<Power class="h-4 w-4" />
+							Restart
+						{/if}
+					</button>
 				</div>
 
 				<!-- Release channel selector -->
@@ -609,6 +642,21 @@
 							{/if}
 						{:else}
 							{forceUpdateResult.message}
+						{/if}
+					</div>
+				{/if}
+				{#if restartResult}
+					<div class="mt-3 rounded-lg px-3 py-2 text-xs {restartResult.ok ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}">
+						{#if restartResult.ok}
+							{#if restartResult.data?.response_type === 'Restarting'}
+								Restart triggered on client ({restartResult.data.data.current_build}). It will reconnect in a few seconds.
+							{:else if restartResult.data?.response_type === 'Error'}
+								Client error: {restartResult.data.data.message}
+							{:else}
+								Restart request accepted.
+							{/if}
+						{:else}
+							{restartResult.message}
 						{/if}
 					</div>
 				{/if}
