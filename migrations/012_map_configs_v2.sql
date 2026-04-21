@@ -46,9 +46,15 @@ CREATE TABLE IF NOT EXISTS map_config_defaults (
     skiprandom INTEGER NOT NULL DEFAULT 0,
     bot INTEGER NOT NULL DEFAULT 0,
     custom_commands TEXT NOT NULL DEFAULT '',
+    source VARCHAR(16) NOT NULL DEFAULT 'user',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Best-effort ALTER for deployments where the table was created by an
+-- earlier revision of this migration (pre-source-column). Ignored on
+-- fresh installs where the column is already present.
+ALTER TABLE map_config_defaults ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'user';
 
 -- Seeded rows for the well-known stock Urban Terror 4.3 maps.
 -- supported_gametypes is a CSV of gametype ids:

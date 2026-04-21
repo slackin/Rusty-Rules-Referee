@@ -411,6 +411,7 @@ impl MysqlStorage {
                 skiprandom INT NOT NULL DEFAULT 0,
                 bot INT NOT NULL DEFAULT 0,
                 custom_commands TEXT NOT NULL,
+                source VARCHAR(16) NOT NULL DEFAULT 'user',
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
@@ -418,6 +419,14 @@ impl MysqlStorage {
         .execute(&mut *conn)
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
+        // Best-effort: add source column for existing deployments that
+        // created map_config_defaults before this column was introduced.
+        let _ = sqlx::query(
+            "ALTER TABLE map_config_defaults ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'user'"
+        )
+        .execute(&mut *conn)
+        .await;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS sync_queue (
