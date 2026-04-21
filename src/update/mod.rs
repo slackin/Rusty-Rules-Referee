@@ -101,7 +101,15 @@ pub async fn check_for_update(
         .timeout(Duration::from_secs(30))
         .build()?;
 
-    let resp = client.get(&manifest_url).send().await?;
+    // Bypass any HTTP/CDN caches so we always see the freshly published
+    // manifest — the update server overwrites latest.json in place.
+    let resp = client
+        .get(&manifest_url)
+        .header("Cache-Control", "no-cache")
+        .header("Pragma", "no-cache")
+        .query(&[("_ts", chrono::Utc::now().timestamp().to_string())])
+        .send()
+        .await?;
     if !resp.status().is_success() {
         anyhow::bail!("Update server returned HTTP {}", resp.status());
     }
