@@ -38,7 +38,7 @@
 	{#if server}
 		<div class="mb-4">
 			<h1 class="text-2xl font-bold">{server.name || `Server #${serverId}`}</h1>
-			<p class="text-sm text-gray-500">
+			<p class="text-sm text-surface-500">
 				{server.address}:{server.port} · {server.online ? 'online' : 'offline'}
 				{#if server.current_map}· {server.current_map}{/if}
 				{#if server.player_count != null}· {server.player_count}/{server.max_clients}{/if}
@@ -46,12 +46,12 @@
 		</div>
 	{/if}
 
-	<nav class="flex flex-wrap gap-1 border-b mb-4">
+	<nav class="flex flex-wrap gap-1 border-b border-surface-800 mb-4">
 		{#each tabs as t}
 			{@const active = t.href === currentTab}
 			<a
 				href={`/servers/${serverId}/${t.href}`}
-				class="px-3 py-2 text-sm flex items-center gap-1 border-b-2 {active ? 'border-blue-500 text-blue-600 font-semibold' : 'border-transparent text-gray-600 hover:text-gray-900'}"
+				class="px-3 py-2 text-sm flex items-center gap-1 border-b-2 {active ? 'border-accent text-accent font-semibold' : 'border-transparent text-surface-400 hover:text-surface-100'}"
 			>
 				<svelte:component this={t.icon} size={16} />
 				{t.label}

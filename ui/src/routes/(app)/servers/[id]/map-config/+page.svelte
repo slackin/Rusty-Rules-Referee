@@ -13,7 +13,7 @@
 		loading = true; error = '';
 		try {
 			const r = await api.serverMaps(serverId);
-			maps = r.MapList?.maps || [];
+			maps = (r?.data ?? r?.MapList)?.maps || [];
 		} catch (e) { error = e.message; }
 		finally { loading = false; }
 	}
@@ -24,26 +24,26 @@
 		msg = '';
 		try {
 			const r = await api.serverChangeMap(serverId, m);
-			msg = r.Ok?.message || 'Map change requested';
+			msg = (r?.data ?? r?.Ok)?.message || 'Map change requested';
 		} catch (e) { msg = e.message; }
 		finally { changing = ''; }
 	}
 </script>
 
 <h2 class="text-xl font-semibold mb-3">Available Maps</h2>
-<p class="text-sm text-gray-500 mb-3">
+<p class="text-sm text-surface-500 mb-3">
 	This view also serves as the map-config landing page. Click a map to change to it now;
 	per-map config editing will land here next.
 </p>
-{#if error}<div class="text-red-600 mb-2">{error}</div>{/if}
-{#if msg}<div class="text-blue-600 mb-2">{msg}</div>{/if}
+{#if error}<div class="text-red-400 mb-2">{error}</div>{/if}
+{#if msg}<div class="text-accent mb-2">{msg}</div>{/if}
 
 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
 	{#each maps as m}
-		<button class="btn btn-sm" disabled={!!changing} onclick={() => change(m)}>
+		<button class="btn btn-secondary btn-sm" disabled={!!changing} onclick={() => change(m)}>
 			{changing === m ? '…' : m}
 		</button>
 	{:else}
-		<div class="text-gray-400">{loading ? 'Loading…' : 'No maps found'}</div>
+		<div class="text-surface-500">{loading ? 'Loading…' : 'No maps found'}</div>
 	{/each}
 </div>

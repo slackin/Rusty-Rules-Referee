@@ -4,7 +4,7 @@
 	import { RefreshCw, VolumeX, Volume2 } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
-	let status = $state(null);
+	let live = $state(null);
 	let loading = $state(false);
 	let error = $state('');
 	let busyCid = $state('');
@@ -13,7 +13,10 @@
 		loading = true;
 		error = '';
 		try {
-			status = await api.serverLive(serverId);
+			const resp = await api.serverLive(serverId);
+			// ClientResponse is serialized as { response_type, data }.
+			// Fall back to the legacy untagged shape just in case.
+			live = resp?.data ?? resp?.LiveStatus ?? null;
 		} catch (e) {
 			error = e.message || 'Failed to load live status';
 		} finally {
@@ -44,50 +47,52 @@
 
 <div class="flex justify-between items-center mb-3">
 	<h2 class="text-xl font-semibold">Live Players</h2>
-	<button onclick={load} class="btn btn-sm" disabled={loading}>
+	<button onclick={load} class="btn btn-secondary btn-sm" disabled={loading}>
 		<RefreshCw size={14} class={loading ? 'animate-spin' : ''} /> Refresh
 	</button>
 </div>
 
-{#if error}<div class="text-red-600 mb-2">{error}</div>{/if}
+{#if error}<div class="text-red-400 mb-2">{error}</div>{/if}
 
-{#if status}
-	<div class="mb-4 text-sm text-gray-500">
-		Map: <b>{status.LiveStatus?.map || '—'}</b> ·
-		Players: {status.LiveStatus?.player_count || 0}/{status.LiveStatus?.max_clients || 0}
+{#if live}
+	<div class="mb-4 text-sm text-surface-400">
+		Map: <b class="text-surface-200">{live.map || '—'}</b> ·
+		Players: {live.player_count ?? 0}/{live.max_clients ?? 0}
 	</div>
 
-	<table class="min-w-full text-sm">
-		<thead class="bg-gray-50">
-			<tr>
-				<th class="p-2 text-left">CID</th>
-				<th class="p-2 text-left">Name</th>
-				<th class="p-2 text-left">Team</th>
-				<th class="p-2 text-right">Score</th>
-				<th class="p-2 text-right">Ping</th>
-				<th class="p-2 text-left">Actions</th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each (status.LiveStatus?.players || []) as p}
-				<tr class="border-t hover:bg-gray-50">
-					<td class="p-2 font-mono">{p.cid}</td>
-					<td class="p-2">{p.name}</td>
-					<td class="p-2">{p.team}</td>
-					<td class="p-2 text-right">{p.score}</td>
-					<td class="p-2 text-right">{p.ping}</td>
-					<td class="p-2">
-						<button class="btn btn-xs" disabled={busyCid === p.cid} onclick={() => mute(p.cid)}>
-							<VolumeX size={14} /> Mute
-						</button>
-						<button class="btn btn-xs ml-1" disabled={busyCid === p.cid} onclick={() => unmute(p.cid)}>
-							<Volume2 size={14} /> Unmute
-						</button>
-					</td>
+	<div class="card overflow-hidden">
+		<table class="w-full text-sm">
+			<thead>
+				<tr class="border-b border-surface-800 text-left text-xs font-medium uppercase tracking-wider text-surface-500">
+					<th class="px-4 py-3">CID</th>
+					<th class="px-4 py-3">Name</th>
+					<th class="px-4 py-3">Team</th>
+					<th class="px-4 py-3 text-right">Score</th>
+					<th class="px-4 py-3 text-right">Ping</th>
+					<th class="px-4 py-3">Actions</th>
 				</tr>
-			{:else}
-				<tr><td colspan="6" class="p-4 text-center text-gray-400">No players online</td></tr>
-			{/each}
-		</tbody>
-	</table>
+			</thead>
+			<tbody class="divide-y divide-surface-800/50">
+				{#each (live.players || []) as p}
+					<tr class="hover:bg-surface-800/30 transition-colors">
+						<td class="px-4 py-2 font-mono text-surface-300">{p.cid}</td>
+						<td class="px-4 py-2 text-surface-200">{p.name}</td>
+						<td class="px-4 py-2 text-surface-400">{p.team ?? '—'}</td>
+						<td class="px-4 py-2 text-right text-surface-300">{p.score}</td>
+						<td class="px-4 py-2 text-right text-surface-300">{p.ping}</td>
+						<td class="px-4 py-2">
+							<button class="btn btn-secondary btn-sm" disabled={busyCid === p.cid} onclick={() => mute(p.cid)}>
+								<VolumeX size={14} /> Mute
+							</button>
+							<button class="btn btn-secondary btn-sm ml-1" disabled={busyCid === p.cid} onclick={() => unmute(p.cid)}>
+								<Volume2 size={14} /> Unmute
+							</button>
+						</td>
+					</tr>
+				{:else}
+					<tr><td colspan="6" class="px-4 py-6 text-center text-surface-500">No players online</td></tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
 {/if}

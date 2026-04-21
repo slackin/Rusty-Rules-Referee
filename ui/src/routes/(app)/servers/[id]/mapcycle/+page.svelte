@@ -15,8 +15,9 @@
 		loading = true; error = ''; msg = '';
 		try {
 			const r = await api.serverGetMapcycle(serverId);
-			mapcyclePath = r.Mapcycle?.path || '';
-			maps = r.Mapcycle?.maps || [];
+			const d = r?.data ?? r?.Mapcycle ?? {};
+			mapcyclePath = d.path || '';
+			maps = d.maps || [];
 			text = maps.join('\n');
 		} catch (e) { error = e.message; }
 		finally { loading = false; }
@@ -31,7 +32,7 @@
 			.filter(Boolean);
 		try {
 			const r = await api.serverSetMapcycle(serverId, list);
-			msg = r.Ok?.message || 'Saved';
+			msg = (r?.data ?? r?.Ok)?.message || 'Saved';
 			await load();
 		} catch (e) { msg = e.message; }
 		finally { saving = false; }
@@ -39,14 +40,14 @@
 </script>
 
 <h2 class="text-xl font-semibold mb-3">Mapcycle</h2>
-<p class="text-sm text-gray-500 mb-3">File: <code>{mapcyclePath}</code> — one map per line.</p>
-{#if error}<div class="text-red-600 mb-2">{error}</div>{/if}
-{#if msg}<div class="text-blue-600 mb-2">{msg}</div>{/if}
+<p class="text-sm text-surface-500 mb-3">File: <code class="text-surface-300">{mapcyclePath}</code> — one map per line.</p>
+{#if error}<div class="text-red-400 mb-2">{error}</div>{/if}
+{#if msg}<div class="text-accent mb-2">{msg}</div>{/if}
 
-<textarea class="textarea textarea-bordered w-full font-mono" rows="20" bind:value={text} disabled={loading}></textarea>
+<textarea class="input font-mono" rows="20" bind:value={text} disabled={loading}></textarea>
 <div class="mt-3">
 	<button class="btn btn-primary" onclick={save} disabled={saving || loading}>
 		{saving ? 'Saving…' : 'Save Mapcycle'}
 	</button>
-	<button class="btn ml-2" onclick={load} disabled={loading}>Reload</button>
+	<button class="btn btn-secondary ml-2" onclick={load} disabled={loading}>Reload</button>
 </div>

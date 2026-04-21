@@ -50,48 +50,50 @@
 </script>
 
 <h2 class="text-xl font-semibold mb-3">Plugins</h2>
-<p class="text-sm text-gray-500 mb-4">
+<p class="text-sm text-surface-500 mb-4">
 	Changes are saved to the master and pushed to this server's bot on its next heartbeat.
 	The bot will restart automatically to apply new plugin settings.
 </p>
 
-{#if error}<div class="text-red-600 mb-2">{error}</div>{/if}
-{#if saveMsg}<div class="text-blue-600 mb-2">{saveMsg}</div>{/if}
+{#if error}<div class="text-red-400 mb-2">{error}</div>{/if}
+{#if saveMsg}<div class="text-accent mb-2">{saveMsg}</div>{/if}
 
-<table class="min-w-full text-sm">
-	<thead class="bg-gray-50">
-		<tr>
-			<th class="p-2 text-left">Plugin</th>
-			<th class="p-2">Enabled</th>
-			<th class="p-2 text-left">Settings</th>
-			<th class="p-2"></th>
-		</tr>
-	</thead>
-	<tbody>
-		{#each plugins as p}
-			<tr class="border-t align-top">
-				<td class="p-2 font-mono">{p.name}</td>
-				<td class="p-2 text-center">
-					<input type="checkbox" checked={p.enabled} onchange={() => toggle(p)} />
-				</td>
-				<td class="p-2">
-					{#if editing === p.name}
-						<textarea class="textarea textarea-bordered w-full font-mono" rows="8" bind:value={editText}></textarea>
-					{:else}
-						<pre class="text-xs bg-gray-50 p-2 rounded max-h-24 overflow-auto">{JSON.stringify(p.settings ?? {}, null, 2)}</pre>
-					{/if}
-				</td>
-				<td class="p-2">
-					{#if editing === p.name}
-						<button class="btn btn-sm btn-primary" onclick={saveEdit}>Save</button>
-						<button class="btn btn-sm" onclick={() => editing = null}>Cancel</button>
-					{:else}
-						<button class="btn btn-sm" onclick={() => beginEdit(p)}>Edit</button>
-					{/if}
-				</td>
+<div class="card overflow-hidden">
+	<table class="w-full text-sm">
+		<thead>
+			<tr class="border-b border-surface-800 text-left text-xs font-medium uppercase tracking-wider text-surface-500">
+				<th class="px-4 py-3">Plugin</th>
+				<th class="px-4 py-3 text-center">Enabled</th>
+				<th class="px-4 py-3">Settings</th>
+				<th class="px-4 py-3"></th>
 			</tr>
-		{:else}
-			<tr><td colspan="4" class="p-4 text-center text-gray-400">{loading ? 'Loading…' : 'No plugin config has been pushed yet'}</td></tr>
-		{/each}
-	</tbody>
-</table>
+		</thead>
+		<tbody class="divide-y divide-surface-800/50">
+			{#each plugins as p}
+				<tr class="align-top hover:bg-surface-800/30 transition-colors">
+					<td class="px-4 py-3 font-mono text-surface-200">{p.name}</td>
+					<td class="px-4 py-3 text-center">
+						<input type="checkbox" checked={p.enabled} onchange={() => toggle(p)} />
+					</td>
+					<td class="px-4 py-3">
+						{#if editing === p.name}
+							<textarea class="input font-mono" rows="8" bind:value={editText}></textarea>
+						{:else}
+							<pre class="text-xs bg-surface-950/50 border border-surface-800 text-surface-300 p-2 rounded max-h-24 overflow-auto">{JSON.stringify(p.settings ?? {}, null, 2)}</pre>
+						{/if}
+					</td>
+					<td class="px-4 py-3">
+						{#if editing === p.name}
+							<button class="btn btn-primary btn-sm" onclick={saveEdit}>Save</button>
+							<button class="btn btn-secondary btn-sm ml-1" onclick={() => editing = null}>Cancel</button>
+						{:else}
+							<button class="btn btn-secondary btn-sm" onclick={() => beginEdit(p)}>Edit</button>
+						{/if}
+					</td>
+				</tr>
+			{:else}
+				<tr><td colspan="4" class="px-4 py-6 text-center text-surface-500">{loading ? 'Loading…' : 'No plugin config has been pushed yet'}</td></tr>
+			{/each}
+		</tbody>
+	</table>
+</div>

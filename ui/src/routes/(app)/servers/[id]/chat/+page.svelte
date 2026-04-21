@@ -21,16 +21,16 @@
 </script>
 
 <h2 class="text-xl font-semibold mb-3">Chat (this server)</h2>
-{#if error}<div class="text-red-600 mb-2">{error}</div>{/if}
+{#if error}<div class="text-red-400 mb-2">{error}</div>{/if}
 
-<div class="bg-gray-50 rounded p-2 text-sm font-mono max-h-[70vh] overflow-y-auto">
+<div class="card p-3 text-sm font-mono max-h-[70vh] overflow-y-auto">
 	{#each rows as m}
 		<div class="py-0.5">
-			<span class="text-gray-400">{new Date(m.time_add).toLocaleTimeString()}</span>
-			<span class="font-bold ml-2">{m.client_name || `#${m.client_id}`}:</span>
-			<span class="ml-1">{m.message}</span>
+			<span class="text-surface-500">{new Date(m.time_add).toLocaleTimeString()}</span>
+			<span class="font-bold ml-2 text-surface-200">{m.client_name || `#${m.client_id}`}:</span>
+			<span class="ml-1 text-surface-300">{m.message}</span>
 		</div>
 	{:else}
-		<div class="text-gray-400 p-2">{loading ? 'Loading…' : 'No chat history yet'}</div>
+		<div class="text-surface-500 p-2">{loading ? 'Loading…' : 'No chat history yet'}</div>
 	{/each}
 </div>
