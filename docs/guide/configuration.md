@@ -121,6 +121,35 @@ refresh_interval_hours = 24
 | `enabled`                | `true`                                               | Enables background refresh and import endpoints.                            |
 | `sources`                | `["https://maps.pugbot.net/q3ut4/", "https://urt.li/q3ut4/"]` | List of URLs serving Apache/nginx-style HTML directory indexes of `.pk3` files. |
 | `refresh_interval_hours` | `24`                                                 | How often the master re-scrapes all sources.                                |
+| `download_dir`           | _(auto-discovered)_                                  | Optional explicit target directory for imported `.pk3` files. See below.    |
+
+### Where imported `.pk3` files are written
+
+By default the bot auto-discovers a writable `q3ut4/` directory by trying the
+following candidates in order, picking the first one that both exists and the
+bot process can write to:
+
+1. The parent directory of `server.game_log` (your UrT server's
+   `fs_homepath/q3ut4/`, derived from the log path).
+2. `{fs_homepath}/q3ut4/` as reported by the running game server via RCON.
+3. `{fs_basepath}/q3ut4/` as reported by the running game server via RCON.
+
+This covers the common case where the bot and game server run under the same
+OS user. If your deployment sandboxes the bot (e.g. a systemd unit with
+`ProtectHome=yes`, a read-only bind mount, or the bot running as a service
+user separate from the game server), set `download_dir` explicitly to a
+directory that:
+
+- already exists,
+- is writable by the user running `r3-bot`, **and**
+- is loaded by the game server at startup (either because it _is_ one of
+  `fs_homepath/q3ut4` / `fs_basepath/q3ut4`, or because the server is
+  started with `+set fs_game` pointing at it).
+
+If neither auto-discovery nor `download_dir` yields a writable directory, the
+**Import** button in the UI returns an error listing every path that was
+tried and the exact filesystem error for each — no manual `chmod` or `chown`
+is required to recover; just point `download_dir` at a writable location.
 
 Each source URL must return an HTML directory listing that contains `.pk3`
 file links — the scraper parses the standard Apache/nginx format and captures

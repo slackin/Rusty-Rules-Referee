@@ -1367,8 +1367,67 @@ pub async fn handle_delete_map_config(
 ///     supplies its configured `map_repo.sources` hosts).
 ///   * Target directory must resolve from `game_log`; no arbitrary paths.
 ///   * Downloads go to `<target>.part` then atomic-rename on success.
-pub async fn handle_download_map_pk3(
+/// Extract the current value from a Q3-style cvar RCON response such as
+/// `"fs_homepath" is:"/home/rusty/.q3a^7" default:"..."`. Returns `None` if
+/// no value is present or the response is empty. Strips trailing `^7`.
+fn parse_cvar_value(raw: &str) -> Option<String> {
+    let re = regex::Regex::new(r#"is:\"([^"]*?)(?:\^7)?\""#).ok()?;
+    let caps = re.captures(raw)?;
+    let v = caps.get(1)?.as_str().trim().to_string();
+    if v.is_empty() { None } else { Some(v) }
+}
+
+/// Try to prove the given directory is writable by the current process by
+/// creating (and immediately deleting) a unique zero-byte probe file inside
+/// it. Returns `Ok(())` on success, or the underlying IO error otherwise.
+async fn probe_writable_dir(dir: &Path) -> std::io::Result<()> {
+    let probe = dir.join(format!(
+        ".r3-write-probe-{}",
+        std::process::id()
+    ));
+    let f = tokio::fs::File::create(&probe).await?;
+    drop(f);
+    let _ = tokio::fs::remove_file(&probe).await;
+    Ok(())
+}
+
+/// Build the ordered list of candidate `q3ut4/` directories to try for a
+/// `.pk3` import. Earlier entries take priority. Queries the game server
+/// for `fs_homepath` / `fs_basepath` when a `BotContext` is available.
+async fn resolve_download_candidates(
+    ctx: Option<&BotContext>,
     game_log: Option<&str>,
+    override_dir: Option<&str>,
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut push = |p: PathBuf| {
+        if !out.iter().any(|existing| existing == &p) {
+            out.push(p);
+        }
+    };
+
+    if let Some(d) = override_dir.map(str::trim).filter(|s| !s.is_empty()) {
+        push(PathBuf::from(d));
+    }
+    if let Some(d) = game_dir_from_log(game_log) {
+        push(d);
+    }
+    if let Some(ctx) = ctx {
+        for cvar in ["fs_homepath", "fs_basepath"] {
+            if let Ok(raw) = ctx.get_cvar(cvar).await {
+                if let Some(val) = parse_cvar_value(&raw) {
+                    push(PathBuf::from(val).join("q3ut4"));
+                }
+            }
+        }
+    }
+    out
+}
+
+pub async fn handle_download_map_pk3(
+    ctx: Option<&BotContext>,
+    game_log: Option<&str>,
+    override_dir: Option<&str>,
     url: &str,
     filename: &str,
     allowed_hosts: &[String],
@@ -1424,17 +1483,50 @@ pub async fn handle_download_map_pk3(
         }
     }
 
-    // Resolve target directory.
-    let Some(dir) = game_dir_from_log(game_log) else {
+    // Resolve target directory. We try a prioritized list of candidates
+    // (admin override -> game_log parent -> fs_homepath/q3ut4 ->
+    // fs_basepath/q3ut4) and pick the first one that both exists and
+    // passes a write-probe. This sidesteps the common deployment where the
+    // bot process runs as a different OS user than the UrT server, or is
+    // sandboxed by systemd (`ProtectHome=yes`, read-only mounts) such that
+    // the primary `fs_homepath/q3ut4` is not writable.
+    let candidates = resolve_download_candidates(ctx, game_log, override_dir).await;
+    if candidates.is_empty() {
         return ClientResponse::Error {
-            message: "Cannot determine game server directory (game_log not set)".into(),
-        };
-    };
-    if !dir.exists() {
-        return ClientResponse::Error {
-            message: format!("Game server directory {} does not exist", dir.display()),
+            message: "Cannot determine game server directory (game_log not set, \
+                      and no fs_homepath/fs_basepath available). Set \
+                      `map_repo.download_dir` in the client's TOML config to a \
+                      writable q3ut4 directory.".into(),
         };
     }
+    let mut tried: Vec<String> = Vec::new();
+    let mut chosen: Option<PathBuf> = None;
+    for c in &candidates {
+        if !c.exists() {
+            tried.push(format!("{} (missing)", c.display()));
+            continue;
+        }
+        match probe_writable_dir(c).await {
+            Ok(()) => {
+                chosen = Some(c.clone());
+                break;
+            }
+            Err(e) => {
+                tried.push(format!("{} ({})", c.display(), e));
+            }
+        }
+    }
+    let Some(dir) = chosen else {
+        return ClientResponse::Error {
+            message: format!(
+                "No writable q3ut4 directory found. Tried: {}. Set \
+                 `map_repo.download_dir` in the client's TOML config to an \
+                 existing directory the bot user can write to (the game \
+                 server will still load maps from it).",
+                tried.join("; ")
+            ),
+        };
+    };
     let final_path = dir.join(filename);
     let part_path = dir.join(format!("{}.part", filename));
     if final_path.exists() {

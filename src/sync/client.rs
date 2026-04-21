@@ -491,8 +491,15 @@ impl ClientSyncManager {
                                             }
                                             ClientRequest::DownloadMapPk3 { url, filename, allowed_hosts } => {
                                                 let game_log = self.local_game_log().await;
+                                                let override_dir = self.local_map_repo_download_dir().await;
+                                                let ctx_arc = {
+                                                    let gs = self.game_state.read().await;
+                                                    gs.ctx.clone()
+                                                };
                                                 handlers::handle_download_map_pk3(
+                                                    ctx_arc.as_deref(),
                                                     game_log.as_deref(),
+                                                    override_dir.as_deref(),
                                                     &url,
                                                     &filename,
                                                     &allowed_hosts,
@@ -550,6 +557,18 @@ impl ClientSyncManager {
         let doc: toml::Value = toml::from_str(&content).ok()?;
         doc.get("server")?
             .get("server_cfg_path")?
+            .as_str()
+            .map(|s| s.to_string())
+    }
+
+    /// Read the optional `map_repo.download_dir` override from the on-disk
+    /// TOML config. Used as the highest-priority candidate when importing
+    /// a `.pk3` from the map repository.
+    async fn local_map_repo_download_dir(&self) -> Option<String> {
+        let content = tokio::fs::read_to_string(&self.config_path).await.ok()?;
+        let doc: toml::Value = toml::from_str(&content).ok()?;
+        doc.get("map_repo")?
+            .get("download_dir")?
             .as_str()
             .map(|s| s.to_string())
     }

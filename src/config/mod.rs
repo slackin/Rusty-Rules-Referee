@@ -291,6 +291,15 @@ pub struct MapRepoSection {
     /// (manual `POST /api/v1/map-repo/refresh` still works).
     #[serde(default = "default_map_repo_refresh_hours")]
     pub refresh_interval_hours: u32,
+    /// Optional explicit target directory for imported `.pk3` files. When
+    /// unset (the default), the bot auto-discovers a writable directory by
+    /// trying in order: the parent of `server.game_log`, then `fs_homepath`
+    /// and `fs_basepath` reported by the game server. Set this only if the
+    /// auto-discovered location is not writable by the bot process (e.g.
+    /// when the bot runs under systemd with `ProtectHome=yes` or a
+    /// read-only mount). The directory must already exist.
+    #[serde(default)]
+    pub download_dir: Option<String>,
 }
 
 impl Default for MapRepoSection {
@@ -299,6 +308,7 @@ impl Default for MapRepoSection {
             enabled: default_map_repo_enabled(),
             sources: default_map_repo_sources(),
             refresh_interval_hours: default_map_repo_refresh_hours(),
+            download_dir: None,
         }
     }
 }

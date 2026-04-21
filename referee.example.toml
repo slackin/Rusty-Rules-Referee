@@ -49,6 +49,14 @@ sources = [
     "https://urt.li/q3ut4/",
 ]
 refresh_interval_hours = 24   # How often the master refreshes the cache.
+# download_dir = "/home/urt/.q3a/q3ut4"  # Optional explicit target for imported
+                                        # .pk3 files. Leave unset and the bot
+                                        # will auto-discover a writable dir
+                                        # (game_log parent, fs_homepath/q3ut4,
+                                        # fs_basepath/q3ut4). Set this only if
+                                        # none of those are writable by the
+                                        # bot process (e.g. systemd
+                                        # ProtectHome=yes, read-only mount).
 
 # Plugins to load (order matters for dependencies)
 

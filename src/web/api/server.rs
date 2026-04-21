@@ -313,8 +313,12 @@ pub async fn import_map(
     };
     let allowed_hosts = state.config.map_repo.sources.clone();
     let game_log = state.config.server.game_log.clone();
+    let override_dir = state.config.map_repo.download_dir.clone();
+    let ctx_ref = state.ctx.as_deref();
     let resp = crate::sync::handlers::handle_download_map_pk3(
+        ctx_ref,
         game_log.as_deref(),
+        override_dir.as_deref(),
         &entry.source_url,
         &entry.filename,
         &allowed_hosts,
