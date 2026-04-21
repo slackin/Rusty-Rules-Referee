@@ -960,6 +960,28 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // Give the sync manager live access to game state so heartbeats can
     // report current map, player count, and max clients to the master.
     sync_handle.attach_game_state(game.clone(), clients.clone()).await;
+    // Also attach the full BotContext so master-initiated handlers have
+    // RCON/storage/game state access.
+    sync_handle.attach_bot_context(ctx.clone()).await;
+
+    // Watch for config pushes from the master and exit the process cleanly
+    // so systemd (or the supervisor) restarts us with the freshly-written
+    // referee.toml. This is the simplest way to fully rebuild the plugin
+    // registry with new settings without a complex live-reload path.
+    {
+        let mut config_watch = sync_handle.config_updated.clone();
+        tokio::spawn(async move {
+            loop {
+                if config_watch.changed().await.is_err() {
+                    break;
+                }
+                warn!("Configuration updated by master — exiting for restart");
+                // Give the sync manager a moment to flush writes, then exit.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                std::process::exit(0);
+            }
+        });
+    }
 
     // Set up plugins (all execute locally)
     let mut plugins = PluginRegistry::new();

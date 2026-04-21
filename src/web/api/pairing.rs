@@ -188,6 +188,7 @@ pub async fn enable_pairing(
             detail: format!("Quick-connect enabled for {} minutes", body.expiry_minutes),
             ip_address: None,
             created_at: chrono::Utc::now(),
+            server_id: None,
         })
         .await;
 
@@ -223,6 +224,7 @@ pub async fn disable_pairing(
             detail: "Quick-connect disabled".to_string(),
             ip_address: None,
             created_at: chrono::Utc::now(),
+            server_id: None,
         })
         .await;
 
@@ -440,6 +442,7 @@ pub async fn pair_client(
             ),
             ip_address: None,
             created_at: chrono::Utc::now(),
+            server_id: None,
         })
         .await;
 

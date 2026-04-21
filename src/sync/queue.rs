@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use crate::storage::Storage;
 

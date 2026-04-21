@@ -257,6 +257,7 @@ pub async fn kick_player(
                 detail: format!("Kicked player cid={} reason={}", cid, reason),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
             Json(serde_json::json!({"status": "ok"})).into_response()
         }
@@ -293,6 +294,7 @@ pub async fn ban_player(
                 detail: format!("Banned player cid={} duration={:?} reason={}", cid, body.duration, reason),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
             Json(serde_json::json!({"status": "ok"})).into_response()
         }
@@ -344,6 +346,7 @@ pub async fn mute_player(
                 detail: format!("Muted player cid={} duration={}s reason={}", cid, duration, reason),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
             Json(serde_json::json!({"status": "ok", "duration": duration})).into_response()
         }
@@ -372,6 +375,7 @@ pub async fn unmute_player(
                 detail: format!("Unmuted player cid={}", cid),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
             Json(serde_json::json!({"status": "ok"})).into_response()
         }
@@ -523,6 +527,7 @@ pub async fn update_player_group(
         detail: format!("Changed player id={} to group '{}' (level={})", id, group.name, group.level),
         ip_address: None,
         created_at: chrono::Utc::now(),
+        server_id: None,
     }).await;
 
     Json(serde_json::json!({"status": "ok", "group_name": group.name, "group_bits": client.group_bits})).into_response()

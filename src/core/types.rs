@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// User group (permission level).
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +37,9 @@ pub struct Penalty {
     pub time_add: DateTime<Utc>,
     pub time_edit: DateTime<Utc>,
     pub time_expire: Option<DateTime<Utc>>,
+    /// Originating server (NULL for global/legacy rows).
+    #[serde(default)]
+    pub server_id: Option<i64>,
 }
 
 /// An alias record — tracks a name that a client has used.
@@ -71,6 +74,9 @@ pub struct AuditEntry {
     pub detail: String,
     pub ip_address: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Originating server (NULL for global/legacy rows).
+    #[serde(default)]
+    pub server_id: Option<i64>,
 }
 
 /// A persisted chat message.
@@ -82,6 +88,9 @@ pub struct ChatMessage {
     pub channel: String,
     pub message: String,
     pub time_add: DateTime<Utc>,
+    /// Originating server (NULL for global/legacy rows).
+    #[serde(default)]
+    pub server_id: Option<i64>,
 }
 
 /// A persisted vote history entry.
@@ -150,8 +159,9 @@ pub struct SyncQueueEntry {
 }
 
 /// Per-map server configuration applied on map change.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapConfig {
+    #[serde(default)]
     pub id: i64,
     pub map_name: String,
     pub gametype: String,
@@ -173,6 +183,12 @@ pub struct MapConfig {
     pub skiprandom: i32,
     pub bot: i32,
     pub custom_commands: String,
+    #[serde(default = "default_now")]
     pub created_at: DateTime<Utc>,
+    #[serde(default = "default_now")]
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_now() -> DateTime<Utc> {
+    Utc::now()
 }

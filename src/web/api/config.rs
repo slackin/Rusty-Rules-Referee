@@ -116,6 +116,7 @@ pub async fn update_config(
         detail: "Configuration updated via web UI".to_string(),
         ip_address: None,
         created_at: chrono::Utc::now(),
+        server_id: None,
     }).await;
 
     Json(serde_json::json!({"status": "ok", "message": "Configuration saved. Some changes may require a restart."})).into_response()
@@ -245,6 +246,7 @@ pub async fn migrate_to_mysql(
         detail: format!("Migrated database from SQLite to MySQL ({}:{})", body.host, port),
         ip_address: None,
         created_at: chrono::Utc::now(),
+        server_id: None,
     }).await;
 
     info!(mysql = %mysql_url, "Database migration from SQLite to MySQL completed");
@@ -1048,6 +1050,7 @@ pub async fn save_server_cfg(
         detail: format!("Updated server config: {}", path_str),
         ip_address: None,
         created_at: chrono::Utc::now(),
+        server_id: None,
     }).await;
 
     Json(serde_json::json!({

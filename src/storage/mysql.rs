@@ -360,6 +360,23 @@ impl MysqlStorage {
             .execute(&mut *conn)
             .await;
 
+        // 009_server_scoping — best-effort ALTER statements (ignore duplicates)
+        for stmt in [
+            "ALTER TABLE audit_log ADD COLUMN server_id BIGINT REFERENCES servers(id)",
+            "ALTER TABLE map_configs ADD COLUMN server_id BIGINT REFERENCES servers(id)",
+            "ALTER TABLE xlr_playerstats ADD COLUMN server_id BIGINT REFERENCES servers(id)",
+            "ALTER TABLE xlr_weaponstats ADD COLUMN server_id BIGINT REFERENCES servers(id)",
+            "ALTER TABLE xlr_mapstats ADD COLUMN server_id BIGINT REFERENCES servers(id)",
+            "CREATE INDEX idx_audit_log_server ON audit_log(server_id)",
+            "CREATE INDEX idx_map_configs_server ON map_configs(server_id)",
+            "CREATE UNIQUE INDEX idx_map_configs_server_map ON map_configs(server_id, map_name)",
+            "CREATE INDEX idx_xlr_playerstats_server ON xlr_playerstats(server_id)",
+            "CREATE INDEX idx_xlr_weaponstats_server ON xlr_weaponstats(server_id)",
+            "CREATE INDEX idx_xlr_mapstats_server ON xlr_mapstats(server_id)",
+        ] {
+            let _ = sqlx::query(stmt).execute(&mut *conn).await;
+        }
+
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS sync_queue (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -455,6 +472,7 @@ fn row_to_penalty(row: &MySqlRow) -> Penalty {
         time_add: parse_dt(row.get("time_add")),
         time_edit: parse_dt(row.get("time_edit")),
         time_expire: te.map(|n| n.and_utc()),
+        server_id: row.try_get("server_id").ok(),
     }
 }
 
@@ -499,6 +517,7 @@ fn row_to_audit_entry(row: &MySqlRow) -> AuditEntry {
         detail: row.get("detail"),
         ip_address: row.get("ip_address"),
         created_at: parse_dt(row.get("created_at")),
+        server_id: row.try_get("server_id").ok(),
     }
 }
 
@@ -510,6 +529,7 @@ fn row_to_chat_message(row: &MySqlRow) -> ChatMessage {
         channel: row.get("channel"),
         message: row.get("message"),
         time_add: parse_dt(row.get("time_add")),
+        server_id: row.try_get("server_id").ok(),
     }
 }
 

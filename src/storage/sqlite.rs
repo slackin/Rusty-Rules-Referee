@@ -50,6 +50,7 @@ impl SqliteStorage {
             include_str!("../../migrations/006_multiserver.sql"),
             include_str!("../../migrations/007_map_configs.sql"),
             include_str!("../../migrations/008_server_update_channel.sql"),
+            include_str!("../../migrations/009_server_scoping.sql"),
         ];
         for schema in migrations {
             // Strip SQL comment lines before splitting into statements
@@ -71,7 +72,9 @@ impl SqliteStorage {
                     Err(e) => {
                         // Ignore "duplicate column" errors from ALTER TABLE
                         let msg = e.to_string();
-                        if msg.contains("duplicate column") {
+                        if msg.contains("duplicate column")
+                            || msg.contains("already exists")
+                        {
                             continue;
                         }
                         return Err(StorageError::QueryFailed(format!("Migration error: {}", e)));
@@ -152,6 +155,7 @@ fn row_to_penalty(row: &SqliteRow) -> Penalty {
         time_add: parse_dt(row.get("time_add")),
         time_edit: parse_dt(row.get("time_edit")),
         time_expire: te.map(|s| parse_dt(&s)),
+        server_id: row.try_get("server_id").ok(),
     }
 }
 
@@ -196,6 +200,7 @@ fn row_to_audit_entry(row: &SqliteRow) -> AuditEntry {
         detail: row.get("detail"),
         ip_address: row.get("ip_address"),
         created_at: parse_dt(row.get("created_at")),
+        server_id: row.try_get("server_id").ok(),
     }
 }
 
@@ -207,6 +212,7 @@ fn row_to_chat_message(row: &SqliteRow) -> ChatMessage {
         channel: row.get("channel"),
         message: row.get("message"),
         time_add: parse_dt(row.get("time_add")),
+        server_id: row.try_get("server_id").ok(),
     }
 }
 
@@ -1429,6 +1435,7 @@ mod tests {
             time_add: Utc::now(),
             time_edit: Utc::now(),
             time_expire: None,
+            server_id: None,
         };
         let pen_id = storage.save_penalty(&penalty).await.unwrap();
         assert!(pen_id > 0);
@@ -1531,6 +1538,7 @@ mod tests {
             time_add: Utc::now(),
             time_edit: Utc::now(),
             time_expire: None,
+            server_id: None,
         };
         storage.save_penalty(&ban).await.unwrap();
 
@@ -1562,6 +1570,7 @@ mod tests {
             time_add: Utc::now(),
             time_edit: Utc::now(),
             time_expire: Some(Utc::now() + chrono::Duration::hours(1)),
+            server_id: None,
         };
         storage.save_penalty(&tempban).await.unwrap();
 
@@ -1583,6 +1592,7 @@ mod tests {
             time_add: Utc::now() - chrono::Duration::hours(2),
             time_edit: Utc::now() - chrono::Duration::hours(2),
             time_expire: Some(Utc::now() - chrono::Duration::hours(1)),
+            server_id: None,
         };
         storage.save_penalty(&expired).await.unwrap();
 

@@ -112,6 +112,7 @@ pub async fn apply_latest_update(
         ),
         ip_address: None,
         created_at: chrono::Utc::now(),
+        server_id: None,
     }).await;
 
     // Download and verify

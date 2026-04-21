@@ -51,6 +51,7 @@ pub async fn rcon_command(
         detail: format!("RCON: {}", cmd),
         ip_address: None,
         created_at: chrono::Utc::now(),
+        server_id: None,
     }).await;
 
     match state.require_ctx() {
@@ -170,6 +171,7 @@ pub async fn change_map(
                 detail: format!("Changed map to {}", map_name),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
 
             let _ = ctx.say(&format!("^7Changing map to ^2{}^7...", map_name)).await;
@@ -187,6 +189,7 @@ pub async fn change_map(
                 detail: format!("Set next map to {}", map_name),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
 
             match ctx.set_cvar("g_nextmap", map_name).await {
@@ -216,6 +219,7 @@ pub async fn restart_bot(
         detail: "Bot restart triggered via web UI".to_string(),
         ip_address: None,
         created_at: chrono::Utc::now(),
+        server_id: None,
     }).await;
 
     info!("Bot restart requested via web UI by user {}", claims.user_id);

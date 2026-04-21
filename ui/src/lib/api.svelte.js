@@ -229,6 +229,39 @@ export const api = {
 	checkGameLog: (path) =>
 		request(`/config/check-game-log`, { method: 'POST', body: JSON.stringify({ path }) }),
 
+	// Phase 3 — per-server live control (standalone parity)
+	serverLive: (id) => request(`/servers/${id}/live`),
+	serverPlayers: (id) => request(`/servers/${id}/players`),
+	serverPlayerMute: (id, cid) =>
+		request(`/servers/${id}/players/${cid}/mute`, { method: 'POST' }),
+	serverPlayerUnmute: (id, cid) =>
+		request(`/servers/${id}/players/${cid}/unmute`, { method: 'POST' }),
+	serverMaps: (id) => request(`/servers/${id}/maps`),
+	serverChangeMap: (id, map) =>
+		request(`/servers/${id}/map`, { method: 'POST', body: JSON.stringify({ map }) }),
+	serverGetMapcycle: (id) => request(`/servers/${id}/mapcycle`),
+	serverSetMapcycle: (id, maps) =>
+		request(`/servers/${id}/mapcycle`, { method: 'PUT', body: JSON.stringify({ maps }) }),
+	serverGetServerCfg: (id) => request(`/servers/${id}/server-cfg`),
+	serverSaveServerCfg: (id, path, contents) =>
+		request(`/servers/${id}/server-cfg`, { method: 'PUT', body: JSON.stringify({ path, contents }) }),
+	serverListMapConfigs: (id) => request(`/servers/${id}/map-configs`),
+	serverSaveMapConfig: (id, config) =>
+		request(`/servers/${id}/map-configs`, { method: 'POST', body: JSON.stringify(config) }),
+	serverDeleteMapConfig: (id, mapConfigId) =>
+		request(`/servers/${id}/map-configs/${mapConfigId}`, { method: 'DELETE' }),
+	serverPenalties: (id, limit = 100, offset = 0) =>
+		request(`/servers/${id}/penalties?limit=${limit}&offset=${offset}`),
+	serverChat: (id, limit = 100, beforeId = null) => {
+		const q = beforeId ? `?limit=${limit}&before_id=${beforeId}` : `?limit=${limit}`;
+		return request(`/servers/${id}/chat${q}`);
+	},
+	serverAuditLog: (id, limit = 100, offset = 0) =>
+		request(`/servers/${id}/audit-log?limit=${limit}&offset=${offset}`),
+	serverListPlugins: (id) => request(`/servers/${id}/plugins`),
+	serverUpdatePlugin: (id, name, body) =>
+		request(`/servers/${id}/plugins/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
+
 	// Pairing (master mode)
 	enablePairing: (expiry_minutes = 30) =>
 		request('/pairing/enable', { method: 'POST', body: JSON.stringify({ expiry_minutes }) }),

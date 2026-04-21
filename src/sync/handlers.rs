@@ -14,6 +14,9 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use super::protocol::*;
+use crate::core::context::BotContext;
+use crate::core::MapConfig;
+use crate::storage::Storage;
 
 // ---------------------------------------------------------------------------
 // Install state (shared across poll requests)
@@ -312,6 +315,11 @@ pub async fn handle_parse_config_file(path: &str) -> ClientResponse {
         port,
         rcon_password,
         game_log,
+        rcon_ip: None,
+        rcon_port: None,
+        delay: None,
+        bot: None,
+        plugins: None,
     };
 
     info!(path, settings_count = all_settings.len(), "Parsed config file");
@@ -914,4 +922,364 @@ fn home_dir() -> Option<PathBuf> {
         .ok()
         .map(PathBuf::from)
         .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
+}
+
+// ---------------------------------------------------------------------------
+// Live server-control handlers (per-server parity with standalone UI)
+//
+// These all require a live BotContext — when the client hasn't finished
+// initialising, the handlers return `ClientResponse::Error`. The master
+// treats that as "server configuring" and typically reports it to the UI.
+// ---------------------------------------------------------------------------
+
+fn unavailable(what: &str) -> ClientResponse {
+    ClientResponse::Error {
+        message: format!("{} is unavailable — bot not fully initialised", what),
+    }
+}
+
+/// Convert the in-memory `Clients` list into transport `LivePlayer`s.
+async fn snapshot_players(ctx: &BotContext) -> Vec<LivePlayer> {
+    let groups = ctx.storage.get_groups().await.unwrap_or_default();
+    let connected = ctx.clients.get_all().await;
+    connected
+        .into_iter()
+        .map(|c| {
+            let level = c.max_level();
+            let group_name = groups
+                .iter()
+                .filter(|g| g.level <= level)
+                .max_by_key(|g| g.level)
+                .map(|g| g.name.clone());
+            let _ = group_name; // currently unused in payload — keep for future
+            LivePlayer {
+                cid: c.cid.clone().unwrap_or_default(),
+                name: c.current_name.clone().unwrap_or_else(|| c.name.clone()),
+                guid: Some(c.guid.clone()),
+                ip: c.ip.map(|ip| ip.to_string()),
+                team: Some(format!("{:?}", c.team)),
+                score: c.score,
+                ping: c.ping as i32,
+                db_id: Some(c.id),
+                level: Some(level),
+            }
+        })
+        .collect()
+}
+
+/// GetPlayers — return the current in-memory scoreboard.
+pub async fn handle_get_players(ctx: Option<&BotContext>) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("GetPlayers"); };
+    let players = snapshot_players(ctx).await;
+    ClientResponse::Players { players }
+}
+
+/// GetLiveStatus — map, game type, hostname, scoreboard.
+pub async fn handle_get_live_status(ctx: Option<&BotContext>) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("GetLiveStatus"); };
+    let game = ctx.game.read().await;
+    let map = game.map_name.clone().filter(|s| !s.is_empty());
+    let game_type = game.game_type.clone().filter(|s| !s.is_empty());
+    let hostname = game.hostname.clone().filter(|s| !s.is_empty());
+    let max_clients = game.max_clients.unwrap_or(0);
+    drop(game);
+
+    let players = snapshot_players(ctx).await;
+    let player_count = players.len() as u32;
+
+    ClientResponse::LiveStatus {
+        map,
+        game_type,
+        hostname,
+        player_count,
+        max_clients,
+        players,
+        extra: serde_json::Value::Null,
+    }
+}
+
+/// ListMaps — `fdir *.bsp` on the game server.
+pub async fn handle_list_maps(ctx: Option<&BotContext>) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("ListMaps"); };
+    let raw = match ctx.rcon.send("fdir *.bsp").await {
+        Ok(r) => r,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("RCON fdir failed: {}", e),
+            };
+        }
+    };
+    let maps: Vec<String> = raw
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.ends_with(".bsp") {
+                let name = trimmed
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(trimmed)
+                    .trim_end_matches(".bsp");
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+            None
+        })
+        .collect();
+    ClientResponse::MapList { maps }
+}
+
+/// ChangeMap — validate the map name then issue `map <name>`.
+pub async fn handle_change_map(ctx: Option<&BotContext>, map: &str) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("ChangeMap"); };
+    if !map.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return ClientResponse::Error {
+            message: format!("Invalid map name: {}", map),
+        };
+    }
+    match ctx.rcon.send(&format!("map {}", map)).await {
+        Ok(_) => ClientResponse::Ok {
+            message: format!("Map changed to {}", map),
+            data: None,
+        },
+        Err(e) => ClientResponse::Error {
+            message: format!("RCON map change failed: {}", e),
+        },
+    }
+}
+
+/// MutePlayer — issue `mute <cid>` via RCON.
+pub async fn handle_mute_player(ctx: Option<&BotContext>, cid: &str) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("MutePlayer"); };
+    if !cid.chars().all(|c| c.is_ascii_digit()) {
+        return ClientResponse::Error {
+            message: "Invalid client id".into(),
+        };
+    }
+    match ctx.rcon.send(&format!("mute {}", cid)).await {
+        Ok(_) => ClientResponse::Ok {
+            message: format!("Muted {}", cid),
+            data: None,
+        },
+        Err(e) => ClientResponse::Error {
+            message: format!("RCON mute failed: {}", e),
+        },
+    }
+}
+
+/// UnmutePlayer — UrT's `mute` is a toggle; sending it again unmutes.
+pub async fn handle_unmute_player(ctx: Option<&BotContext>, cid: &str) -> ClientResponse {
+    handle_mute_player(ctx, cid).await
+}
+
+/// Resolve the directory holding the game server's runtime files (where
+/// mapcycle.txt and server.cfg live) from the configured game_log path.
+fn game_dir_from_log(game_log: Option<&str>) -> Option<PathBuf> {
+    let log = game_log?;
+    let p = PathBuf::from(log);
+    p.parent().map(|d| d.to_path_buf())
+}
+
+async fn resolve_mapcycle_name(ctx: &BotContext) -> String {
+    match ctx.get_cvar("g_mapcycle").await {
+        Ok(v) => {
+            // Format: "g_mapcycle" is:"mapcycle.txt^7", the default
+            let re = regex::Regex::new(r#"is:\"([^"]+?)(?:\^7)?\""#).ok();
+            let parsed = re
+                .and_then(|r| r.captures(&v).map(|c| c[1].to_string()))
+                .filter(|s| !s.is_empty());
+            parsed.unwrap_or_else(|| "mapcycle.txt".to_string())
+        }
+        Err(_) => "mapcycle.txt".to_string(),
+    }
+}
+
+/// GetMapcycle — read the mapcycle file from the game server's directory.
+pub async fn handle_get_mapcycle(
+    ctx: Option<&BotContext>,
+    game_log: Option<&str>,
+) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("GetMapcycle"); };
+    let cycle_name = resolve_mapcycle_name(ctx).await;
+    let Some(dir) = game_dir_from_log(game_log) else {
+        return ClientResponse::Error {
+            message: "Cannot determine server directory (game_log not set)".to_string(),
+        };
+    };
+    let cycle_path = dir.join(&cycle_name);
+    let content = match tokio::fs::read_to_string(&cycle_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Cannot read mapcycle {}: {}", cycle_path.display(), e),
+            };
+        }
+    };
+    let mut maps = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with('{')
+            || trimmed.starts_with('}')
+        {
+            continue;
+        }
+        if let Some(name) = trimmed.split_whitespace().next() {
+            maps.push(name.to_string());
+        }
+    }
+    ClientResponse::Mapcycle {
+        path: Some(cycle_path.to_string_lossy().to_string()),
+        maps,
+    }
+}
+
+/// SetMapcycle — overwrite the mapcycle file.
+pub async fn handle_set_mapcycle(
+    ctx: Option<&BotContext>,
+    game_log: Option<&str>,
+    maps: &[String],
+) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("SetMapcycle"); };
+    let valid = regex::Regex::new(r"^[a-zA-Z0-9_\-]+$").expect("static regex");
+    for m in maps {
+        if !valid.is_match(m) {
+            return ClientResponse::Error {
+                message: format!("Invalid map name: {}", m),
+            };
+        }
+    }
+    let cycle_name = resolve_mapcycle_name(ctx).await;
+    let Some(dir) = game_dir_from_log(game_log) else {
+        return ClientResponse::Error {
+            message: "Cannot determine server directory (game_log not set)".to_string(),
+        };
+    };
+    let cycle_path = dir.join(&cycle_name);
+    let content = format!("{}\n", maps.join("\n"));
+    match tokio::fs::write(&cycle_path, &content).await {
+        Ok(_) => {
+            info!(path = %cycle_path.display(), maps = maps.len(), "Mapcycle written by master");
+            ClientResponse::Ok {
+                message: format!("Wrote {} maps to {}", maps.len(), cycle_path.display()),
+                data: None,
+            }
+        }
+        Err(e) => ClientResponse::Error {
+            message: format!("Cannot write mapcycle {}: {}", cycle_path.display(), e),
+        },
+    }
+}
+
+/// GetServerCfg — read the currently active `server.cfg` (or first `*.cfg`)
+/// from the game server's directory.
+pub async fn handle_get_server_cfg(game_log: Option<&str>) -> ClientResponse {
+    let Some(dir) = game_dir_from_log(game_log) else {
+        return ClientResponse::Error {
+            message: "Cannot determine server directory (game_log not set)".to_string(),
+        };
+    };
+    let cfg_path = dir.join("server.cfg");
+    let contents = match tokio::fs::read_to_string(&cfg_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Cannot read {}: {}", cfg_path.display(), e),
+            };
+        }
+    };
+    ClientResponse::ServerCfg {
+        path: cfg_path.to_string_lossy().to_string(),
+        contents,
+    }
+}
+
+/// SaveConfigFile — write arbitrary contents to a `.cfg` file under an
+/// allowed game-server directory. Path is validated via
+/// `is_allowed_config_path` (reused from the existing scan feature).
+pub async fn handle_save_config_file(path: &str, contents: &str) -> ClientResponse {
+    let p = PathBuf::from(path);
+    if !is_allowed_config_path(&p) {
+        return ClientResponse::Error {
+            message: format!("Refusing to write outside game-server directories: {}", path),
+        };
+    }
+    if p.extension().and_then(|e| e.to_str()) != Some("cfg") {
+        return ClientResponse::Error {
+            message: "Only .cfg files can be written".to_string(),
+        };
+    }
+    match tokio::fs::write(&p, contents.as_bytes()).await {
+        Ok(_) => {
+            info!(path = %p.display(), bytes = contents.len(), "Config file written by master");
+            ClientResponse::Ok {
+                message: format!("Wrote {} bytes to {}", contents.len(), p.display()),
+                data: None,
+            }
+        }
+        Err(e) => ClientResponse::Error {
+            message: format!("Cannot write {}: {}", p.display(), e),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Map-config DB handlers (proxy into client's local storage)
+// ---------------------------------------------------------------------------
+
+/// ListMapConfigs — return the client's local map_configs rows as JSON.
+pub async fn handle_list_map_configs(storage: Option<&Arc<dyn Storage>>) -> ClientResponse {
+    let Some(storage) = storage else { return unavailable("ListMapConfigs"); };
+    match storage.get_map_configs().await {
+        Ok(rows) => ClientResponse::MapConfigs {
+            entries: serde_json::to_value(&rows).unwrap_or(serde_json::Value::Null),
+        },
+        Err(e) => ClientResponse::Error {
+            message: format!("Storage error: {}", e),
+        },
+    }
+}
+
+/// SaveMapConfig — upsert a map_config row from a JSON payload.
+pub async fn handle_save_map_config(
+    storage: Option<&Arc<dyn Storage>>,
+    config: serde_json::Value,
+) -> ClientResponse {
+    let Some(storage) = storage else { return unavailable("SaveMapConfig"); };
+    let mc: MapConfig = match serde_json::from_value(config) {
+        Ok(m) => m,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Invalid MapConfig payload: {}", e),
+            };
+        }
+    };
+    match storage.save_map_config(&mc).await {
+        Ok(id) => ClientResponse::Ok {
+            message: format!("Saved map_config #{} ({})", id, mc.map_name),
+            data: Some(serde_json::json!({"id": id})),
+        },
+        Err(e) => ClientResponse::Error {
+            message: format!("Storage error: {}", e),
+        },
+    }
+}
+
+/// DeleteMapConfig — delete a map_config row by id.
+pub async fn handle_delete_map_config(
+    storage: Option<&Arc<dyn Storage>>,
+    id: i64,
+) -> ClientResponse {
+    let Some(storage) = storage else { return unavailable("DeleteMapConfig"); };
+    match storage.delete_map_config(id).await {
+        Ok(_) => ClientResponse::Ok {
+            message: format!("Deleted map_config #{}", id),
+            data: None,
+        },
+        Err(e) => ClientResponse::Error {
+            message: format!("Storage error: {}", e),
+        },
+    }
 }

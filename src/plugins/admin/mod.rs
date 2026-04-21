@@ -630,6 +630,7 @@ impl AdminPlugin {
                         time_add: Utc::now(),
                         time_edit: Utc::now(),
                         time_expire: expire,
+                        server_id: None,
                     };
                     ctx.storage.save_penalty(&penalty).await?;
 
@@ -738,6 +739,7 @@ impl AdminPlugin {
                         time_add: Utc::now(),
                         time_edit: Utc::now(),
                         time_expire: None,
+                        server_id: None,
                     };
                     ctx.storage.save_penalty(&penalty).await?;
                     ctx.message(&issuer_cid_str, &format!("^7Notice added for ^2{}", c.name)).await?;
@@ -880,6 +882,7 @@ impl AdminPlugin {
                         time_add: Utc::now(),
                         time_edit: Utc::now(),
                         time_expire: Some(expire),
+                        server_id: None,
                     };
                     ctx.storage.save_penalty(&penalty).await?;
                     if let Some(ref cid) = target.cid {
@@ -917,6 +920,7 @@ impl AdminPlugin {
                         time_add: Utc::now(),
                         time_edit: Utc::now(),
                         time_expire: None,
+                        server_id: None,
                     };
                     ctx.storage.save_penalty(&penalty).await?;
                     if let Some(ref cid) = target.cid {
@@ -954,6 +958,7 @@ impl AdminPlugin {
                         time_add: Utc::now(),
                         time_edit: Utc::now(),
                         time_expire: None,
+                        server_id: None,
                     };
                     ctx.storage.save_penalty(&penalty).await?;
                     if let Some(ref cid) = target.cid {
@@ -989,6 +994,7 @@ impl AdminPlugin {
                             time_add: Utc::now(),
                             time_edit: Utc::now(),
                             time_expire: None,
+                            server_id: None,
                         };
                         let _ = ctx.storage.save_penalty(&penalty).await;
                         if let Some(ref cid) = c.cid {
@@ -1382,6 +1388,7 @@ impl AdminPlugin {
                             time_add: Utc::now(),
                             time_edit: Utc::now(),
                             time_expire: Some(Utc::now() + chrono::Duration::seconds(duration as i64)),
+                            server_id: None,
                         };
                         let _ = ctx.storage.save_penalty(&penalty).await;
                         info!(admin = issuer_cid, target = %target.name, duration = duration, "!mute");

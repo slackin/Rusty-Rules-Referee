@@ -467,7 +467,7 @@ pub struct CheckGameLogRequest {
 }
 
 /// Helper: send a ClientRequest to a server via the polling infrastructure and await the response.
-async fn send_client_request(
+pub(crate) async fn send_client_request(
     state: &AppState,
     server_id: i64,
     request: ClientRequest,

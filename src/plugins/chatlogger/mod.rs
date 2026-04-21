@@ -133,6 +133,7 @@ impl Plugin for ChatLogPlugin {
                 channel: channel_label.to_string(),
                 message: text.clone(),
                 time_add: Utc::now(),
+                server_id: None,
             };
             if let Err(e) = ctx.storage.save_chat_message(&msg).await {
                 tracing::warn!(error = %e, "Failed to persist chat message to DB");

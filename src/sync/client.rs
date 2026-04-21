@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::ClientSection;
 use crate::core::context::BotContext;
@@ -37,6 +37,9 @@ pub enum ConnectionState {
 pub struct GameStateRef {
     pub game: Option<Arc<RwLock<Game>>>,
     pub clients: Option<Arc<Clients>>,
+    /// Full bot context — populated once the bot has finished initialising.
+    /// Used by master-initiated live-status/RCON handlers.
+    pub ctx: Option<Arc<BotContext>>,
 }
 
 /// The client sync manager.
@@ -89,7 +92,17 @@ impl SyncHandle {
         *self.game_state.write().await = GameStateRef {
             game: Some(game),
             clients: Some(clients),
+            ctx: None,
         };
+    }
+
+    /// Attach the full bot context so master-initiated live-status and RCON
+    /// handlers can access RCON, parser, game state, and clients in one shot.
+    pub async fn attach_bot_context(&self, ctx: Arc<BotContext>) {
+        let mut guard = self.game_state.write().await;
+        guard.game = Some(ctx.game.clone());
+        guard.clients = Some(ctx.clients.clone());
+        guard.ctx = Some(ctx);
     }
 }
 
@@ -409,6 +422,69 @@ impl ClientSyncManager {
                                             ClientRequest::Restart => {
                                                 handlers::handle_restart().await
                                             }
+                                            ClientRequest::GetLiveStatus => {
+                                                let gs = self.game_state.read().await;
+                                                handlers::handle_get_live_status(gs.ctx.as_deref()).await
+                                            }
+                                            ClientRequest::GetPlayers => {
+                                                let gs = self.game_state.read().await;
+                                                handlers::handle_get_players(gs.ctx.as_deref()).await
+                                            }
+                                            ClientRequest::ListMaps => {
+                                                let gs = self.game_state.read().await;
+                                                handlers::handle_list_maps(gs.ctx.as_deref()).await
+                                            }
+                                            ClientRequest::ChangeMap { map } => {
+                                                let gs = self.game_state.read().await;
+                                                handlers::handle_change_map(gs.ctx.as_deref(), &map).await
+                                            }
+                                            ClientRequest::MutePlayer { cid } => {
+                                                let gs = self.game_state.read().await;
+                                                handlers::handle_mute_player(gs.ctx.as_deref(), &cid).await
+                                            }
+                                            ClientRequest::UnmutePlayer { cid } => {
+                                                let gs = self.game_state.read().await;
+                                                handlers::handle_unmute_player(gs.ctx.as_deref(), &cid).await
+                                            }
+                                            ClientRequest::GetMapcycle => {
+                                                let gs = self.game_state.read().await;
+                                                let game_log = self.local_game_log().await;
+                                                handlers::handle_get_mapcycle(
+                                                    gs.ctx.as_deref(),
+                                                    game_log.as_deref(),
+                                                ).await
+                                            }
+                                            ClientRequest::SetMapcycle { maps } => {
+                                                let gs = self.game_state.read().await;
+                                                let game_log = self.local_game_log().await;
+                                                handlers::handle_set_mapcycle(
+                                                    gs.ctx.as_deref(),
+                                                    game_log.as_deref(),
+                                                    &maps,
+                                                ).await
+                                            }
+                                            ClientRequest::GetServerCfg => {
+                                                let game_log = self.local_game_log().await;
+                                                handlers::handle_get_server_cfg(game_log.as_deref()).await
+                                            }
+                                            ClientRequest::SaveConfigFile { path, contents } => {
+                                                handlers::handle_save_config_file(&path, &contents).await
+                                            }
+                                            ClientRequest::ListMapConfigs => {
+                                                handlers::handle_list_map_configs(Some(&self.storage)).await
+                                            }
+                                            ClientRequest::SaveMapConfig { config } => {
+                                                handlers::handle_save_map_config(
+                                                    Some(&self.storage),
+                                                    config,
+                                                ).await
+                                            }
+                                            ClientRequest::DeleteMapConfig { id } => {
+                                                handlers::handle_delete_map_config(
+                                                    Some(&self.storage),
+                                                    id,
+                                                ).await
+                                            }
                                         };
 
                                         let submission = ClientResponseSubmission {
@@ -440,6 +516,18 @@ impl ClientSyncManager {
             warn!("Lost connection to master, entering offline mode");
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
+    }
+
+    /// Read the current `server.game_log` value from the on-disk TOML config.
+    /// Used by master-initiated handlers that need the game-server directory
+    /// (mapcycle, server.cfg, etc.).
+    async fn local_game_log(&self) -> Option<String> {
+        let content = tokio::fs::read_to_string(&self.config_path).await.ok()?;
+        let doc: toml::Value = toml::from_str(&content).ok()?;
+        doc.get("server")?
+            .get("game_log")?
+            .as_str()
+            .map(|s| s.to_string())
     }
 
     async fn register(
@@ -521,7 +609,60 @@ impl ClientSyncManager {
                 } else {
                     table.remove("game_log");
                 }
+                if let Some(rcon_ip) = server_config.rcon_ip {
+                    table.insert("rcon_ip".to_string(), toml::Value::String(rcon_ip));
+                }
+                if let Some(rcon_port) = server_config.rcon_port {
+                    table.insert(
+                        "rcon_port".to_string(),
+                        toml::Value::Integer(rcon_port as i64),
+                    );
+                }
+                if let Some(delay) = server_config.delay {
+                    table.insert("delay".to_string(), toml::Value::Float(delay));
+                }
             }
+        }
+
+        // Apply [referee] (bot-level) settings if the master included them.
+        if let Some(bot) = server_config.bot {
+            let referee = doc
+                .as_table_mut()
+                .ok_or_else(|| anyhow::anyhow!("Config root is not a table"))?
+                .entry("referee".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+            if let Some(table) = referee.as_table_mut() {
+                if let Some(bot_name) = bot.bot_name {
+                    table.insert("bot_name".to_string(), toml::Value::String(bot_name));
+                }
+                if let Some(bot_prefix) = bot.bot_prefix {
+                    table.insert("bot_prefix".to_string(), toml::Value::String(bot_prefix));
+                }
+                if let Some(log_level) = bot.log_level {
+                    table.insert("log_level".to_string(), toml::Value::String(log_level));
+                }
+            }
+        }
+
+        // Apply [[plugins]] array — replaces the existing array wholesale so
+        // disabled plugins and removed plugins are honoured.
+        if let Some(plugins) = server_config.plugins {
+            let arr: Vec<toml::Value> = plugins
+                .into_iter()
+                .map(|p| {
+                    let mut tbl = toml::value::Table::new();
+                    tbl.insert("name".to_string(), toml::Value::String(p.name));
+                    tbl.insert("enabled".to_string(), toml::Value::Boolean(p.enabled));
+                    // settings is arbitrary JSON — convert to toml::Value best-effort
+                    if let Ok(settings_toml) = json_to_toml(&p.settings) {
+                        tbl.insert("settings".to_string(), settings_toml);
+                    }
+                    toml::Value::Table(tbl)
+                })
+                .collect();
+            doc.as_table_mut()
+                .ok_or_else(|| anyhow::anyhow!("Config root is not a table"))?
+                .insert("plugins".to_string(), toml::Value::Array(arr));
         }
 
         let output = toml::to_string_pretty(&doc)?;
@@ -558,4 +699,42 @@ impl ClientSyncManager {
         info!(path = %self.config_path, channel = %channel, "Persisted new update channel");
         Ok(())
     }
+}
+
+/// Convert a `serde_json::Value` into a `toml::Value`. TOML has no native
+/// null type, so JSON nulls are dropped (keys with null values are omitted
+/// from their parent table or replaced with an empty string in arrays).
+fn json_to_toml(v: &serde_json::Value) -> anyhow::Result<toml::Value> {
+    use serde_json::Value as JV;
+    Ok(match v {
+        JV::Null => toml::Value::String(String::new()),
+        JV::Bool(b) => toml::Value::Boolean(*b),
+        JV::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                toml::Value::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                toml::Value::Float(f)
+            } else {
+                toml::Value::String(n.to_string())
+            }
+        }
+        JV::String(s) => toml::Value::String(s.clone()),
+        JV::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                out.push(json_to_toml(item)?);
+            }
+            toml::Value::Array(out)
+        }
+        JV::Object(map) => {
+            let mut tbl = toml::value::Table::new();
+            for (k, val) in map {
+                if val.is_null() {
+                    continue;
+                }
+                tbl.insert(k.clone(), json_to_toml(val)?);
+            }
+            toml::Value::Table(tbl)
+        }
+    })
 }

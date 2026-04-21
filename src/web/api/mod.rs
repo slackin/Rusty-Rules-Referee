@@ -12,6 +12,7 @@ pub mod penalties;
 pub mod players;
 pub mod plugins;
 pub mod server;
+pub mod server_control;
 pub mod servers;
 pub mod setup;
 pub mod stats;

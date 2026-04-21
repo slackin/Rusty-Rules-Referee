@@ -134,6 +134,7 @@ pub async fn update_mapcycle(
                 detail: format!("Updated mapcycle ({} maps): {}", body.maps.len(), body.maps.join(", ")),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
 
             info!(maps = body.maps.len(), "Mapcycle updated via web UI");

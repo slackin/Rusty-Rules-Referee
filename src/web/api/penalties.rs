@@ -55,6 +55,7 @@ pub async fn disable_penalty(
         detail: format!("Disabled bans for client_id={} (bans={}, tempbans={})", penalty_client_id, ban_count, tb_count),
         ip_address: None,
         created_at: chrono::Utc::now(),
+        server_id: None,
     }).await;
 
     Json(serde_json::json!({"status": "ok", "disabled_bans": ban_count, "disabled_tempbans": tb_count}))

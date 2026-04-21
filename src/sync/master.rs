@@ -22,7 +22,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, oneshot, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::MasterSection;
 use crate::core::GameServer;
@@ -225,9 +225,54 @@ async fn handle_events(
         let _ = state.event_tx.send(event.clone());
     }
 
-    // TODO: persist events to database for historical querying
+    // Persist chat-bearing events as ChatMessage rows so master has a
+    // per-server chat history. The `event_type` string is the numeric EventId
+    // of the client — we can't reliably decode it here without a shared
+    // registry, so we detect chat by the payload shape: `data` is a JSON
+    // object like `{"Text":"..."}` that originated from EventData::Text.
+    for event in &batch.events {
+        if let Some(text) = chat_text_from_event(&event.data) {
+            if let Some(cid) = event.client_id {
+                let msg = crate::core::ChatMessage {
+                    id: 0,
+                    client_id: cid,
+                    client_name: chat_client_name_from_event(&event.data).unwrap_or_default(),
+                    channel: "all".to_string(),
+                    message: text,
+                    time_add: event.timestamp,
+                    server_id: Some(batch.server_id),
+                };
+                if let Err(e) = state.storage.save_chat_message(&msg).await {
+                    debug!(error = %e, "Failed to persist chat event (non-fatal)");
+                }
+            }
+        }
+    }
 
     Ok(StatusCode::OK)
+}
+
+/// Extract a chat-message text from a serialized EventData, if possible.
+/// EventData::Text(String) serializes as `{"Text":"..."}`; any event whose
+/// payload has a top-level string field named `message` or `text` is also
+/// treated as a chat-bearing event.
+fn chat_text_from_event(data: &serde_json::Value) -> Option<String> {
+    if let Some(s) = data.get("Text").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    if let Some(s) = data.get("message").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    if let Some(s) = data.get("text").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    None
+}
+
+fn chat_client_name_from_event(data: &serde_json::Value) -> Option<String> {
+    data.get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 async fn handle_penalty_sync(
@@ -259,13 +304,73 @@ async fn handle_penalty_sync(
         }
     }
 
-    // TODO: persist penalty to master database
+    // Persist to master DB: upsert the client by GUID, then save the penalty
+    // with server_id so the UI can scope it per-server.
+    if let Err(e) = persist_penalty(&state, &penalty).await {
+        warn!(error = %e, "Failed to persist penalty on master");
+    }
 
     Ok(StatusCode::OK)
 }
 
+/// Look up (or create a shell record for) the client identified by guid,
+/// then insert a penalty row attributed to that client with server_id set.
+async fn persist_penalty(
+    state: &MasterState,
+    penalty: &PenaltySync,
+) -> anyhow::Result<()> {
+    let storage = &state.storage;
+    let client_id = ensure_client(storage, &penalty.client_guid, &penalty.client_name).await?;
+
+    let ptype = match penalty.penalty_type.as_str() {
+        "Warning" => crate::core::PenaltyType::Warning,
+        "Notice" => crate::core::PenaltyType::Notice,
+        "Kick" => crate::core::PenaltyType::Kick,
+        "Ban" => crate::core::PenaltyType::Ban,
+        "TempBan" => crate::core::PenaltyType::TempBan,
+        "Mute" => crate::core::PenaltyType::Mute,
+        _ => crate::core::PenaltyType::Warning,
+    };
+    let time_expire = penalty
+        .duration
+        .map(|d| penalty.timestamp + chrono::Duration::seconds(d));
+
+    let row = crate::core::Penalty {
+        id: 0,
+        penalty_type: ptype,
+        client_id,
+        admin_id: None,
+        duration: penalty.duration,
+        reason: penalty.reason.clone(),
+        keyword: String::new(),
+        inactive: false,
+        time_add: penalty.timestamp,
+        time_edit: penalty.timestamp,
+        time_expire,
+        server_id: Some(penalty.server_id),
+    };
+    let _ = storage.save_penalty(&row).await?;
+    Ok(())
+}
+
+async fn ensure_client(
+    storage: &std::sync::Arc<dyn crate::storage::Storage>,
+    guid: &str,
+    name: &str,
+) -> anyhow::Result<i64> {
+    match storage.get_client_by_guid(guid).await {
+        Ok(c) => Ok(c.id),
+        Err(_) => {
+            let mut c = crate::core::Client::new(guid, name);
+            c.id = 0;
+            let id = storage.save_client(&c).await?;
+            Ok(id)
+        }
+    }
+}
+
 async fn handle_player_sync(
-    State(_state): State<MasterState>,
+    State(state): State<MasterState>,
     Json(batch): Json<PlayerSyncBatch>,
 ) -> Result<StatusCode, StatusCode> {
     info!(
@@ -274,7 +379,36 @@ async fn handle_player_sync(
         "Received player sync"
     );
 
-    // TODO: merge player data into master database
+    // Upsert each player so the master DB has a canonical client row per GUID.
+    for p in &batch.players {
+        match state.storage.get_client_by_guid(&p.guid).await {
+            Ok(mut existing) => {
+                existing.name = p.name.clone();
+                if let Some(ip_str) = &p.ip {
+                    if let Ok(ip) = ip_str.parse() {
+                        existing.ip = Some(ip);
+                    }
+                }
+                existing.group_bits = p.group_bits;
+                existing.time_edit = chrono::Utc::now();
+                if let Err(e) = state.storage.save_client(&existing).await {
+                    debug!(guid = %p.guid, error = %e, "Failed to update client on master");
+                }
+            }
+            Err(_) => {
+                let mut c = crate::core::Client::new(&p.guid, &p.name);
+                if let Some(ip_str) = &p.ip {
+                    if let Ok(ip) = ip_str.parse() {
+                        c.ip = Some(ip);
+                    }
+                }
+                c.group_bits = p.group_bits;
+                if let Err(e) = state.storage.save_client(&c).await {
+                    debug!(guid = %p.guid, error = %e, "Failed to create client on master");
+                }
+            }
+        }
+    }
 
     Ok(StatusCode::OK)
 }
@@ -392,10 +526,38 @@ async fn handle_ws_connection(mut socket: ws::WebSocket, state: MasterState) {
                     Some(Ok(ws::Message::Text(text))) => {
                         match serde_json::from_str::<SyncMessage>(&text) {
                             Ok(SyncMessage::Event(event)) => {
-                                let _ = state.event_tx.send(event);
+                                let _ = state.event_tx.send(event.clone());
+                                if let Some(text) = chat_text_from_event(&event.data) {
+                                    if let Some(cid) = event.client_id {
+                                        let msg = crate::core::ChatMessage {
+                                            id: 0,
+                                            client_id: cid,
+                                            client_name: chat_client_name_from_event(&event.data).unwrap_or_default(),
+                                            channel: "all".to_string(),
+                                            message: text,
+                                            time_add: event.timestamp,
+                                            server_id: Some(server_id),
+                                        };
+                                        let _ = state.storage.save_chat_message(&msg).await;
+                                    }
+                                }
                             }
                             Ok(SyncMessage::EventBatch(batch)) => {
                                 for event in batch.events {
+                                    if let Some(text) = chat_text_from_event(&event.data) {
+                                        if let Some(cid) = event.client_id {
+                                            let msg = crate::core::ChatMessage {
+                                                id: 0,
+                                                client_id: cid,
+                                                client_name: chat_client_name_from_event(&event.data).unwrap_or_default(),
+                                                channel: "all".to_string(),
+                                                message: text,
+                                                time_add: event.timestamp,
+                                                server_id: Some(server_id),
+                                            };
+                                            let _ = state.storage.save_chat_message(&msg).await;
+                                        }
+                                    }
                                     let _ = state.event_tx.send(event);
                                 }
                             }
@@ -409,6 +571,9 @@ async fn handle_ws_connection(mut socket: ws::WebSocket, state: MasterState) {
                                             ).await;
                                         }
                                     }
+                                }
+                                if let Err(e) = persist_penalty(&state, &penalty).await {
+                                    warn!(error = %e, "Failed to persist penalty on master (WS)");
                                 }
                             }
                             Ok(SyncMessage::Heartbeat(hb)) => {

@@ -145,6 +145,13 @@ pub struct ConfigSync {
 
 /// Game server configuration payload pushed from master to client.
 /// This is what gets serialized into the `config_json` DB column.
+///
+/// The core fields (address/port/rcon_password/game_log) describe how the
+/// bot talks to its game server. Optional `bot` and `plugins` fields carry
+/// the full bot-level settings the master has authority over, giving the
+/// master full per-server control (see docs/plan). Both are optional for
+/// backward compatibility — older clients parsing a new payload just ignore
+/// them, and older payloads without these fields still deserialize cleanly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfigPayload {
     pub address: String,
@@ -152,6 +159,50 @@ pub struct ServerConfigPayload {
     pub rcon_password: String,
     #[serde(default)]
     pub game_log: Option<String>,
+    /// Optional RCON IP override (if RCON is reachable on a different IP).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rcon_ip: Option<String>,
+    /// Optional RCON port override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rcon_port: Option<u16>,
+    /// Log-tail polling delay in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay: Option<f64>,
+    /// Bot-level settings (name, prefix, log level). `None` leaves the
+    /// client's current `[referee]` section untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<BotSettingsPayload>,
+    /// Full plugin list with enabled/settings. `None` leaves the client's
+    /// current `[[plugins]]` array untouched; `Some(vec)` overwrites it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<Vec<PluginConfigPayload>>,
+}
+
+/// Bot-level settings carried on `ServerConfigPayload`. Matches the
+/// `[referee]` section of the TOML config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BotSettingsPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+}
+
+/// One entry in the per-server plugin list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginConfigPayload {
+    pub name: String,
+    #[serde(default = "crate::sync::protocol::default_plugin_enabled")]
+    pub enabled: bool,
+    /// Free-form settings table (matches `[plugins.settings]` in TOML).
+    #[serde(default)]
+    pub settings: serde_json::Value,
+}
+
+pub(crate) fn default_plugin_enabled() -> bool {
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +240,37 @@ pub enum ClientRequest {
     /// re-exec itself (assumes a process supervisor or re-exec logic keeps it
     /// running, same as after an update).
     Restart,
+
+    // --- Live server control (per-server parity with standalone UI) ---
+    /// Get the full live status (game state + scoreboard) from the client's
+    /// RCON/state.
+    GetLiveStatus,
+    /// Get the connected-player scoreboard from the client's in-memory state.
+    GetPlayers,
+    /// List all maps available on the game server.
+    ListMaps,
+    /// Change the current map via RCON.
+    ChangeMap { map: String },
+    /// Mute a player via RCON.
+    MutePlayer { cid: String },
+    /// Unmute a player via RCON.
+    UnmutePlayer { cid: String },
+    /// Read the current mapcycle file contents.
+    GetMapcycle,
+    /// Overwrite the mapcycle file with the given ordered list of maps.
+    SetMapcycle { maps: Vec<String> },
+    /// Read the current server.cfg contents.
+    GetServerCfg,
+    /// Write new contents to a config file on the client filesystem.
+    SaveConfigFile { path: String, contents: String },
+    /// List the per-map config entries stored on the client.
+    ListMapConfigs,
+    /// Save (create or update) a per-map config entry on the client.
+    /// The `config` payload is a JSON object matching the `MapConfig` struct
+    /// (id is optional for creation).
+    SaveMapConfig { config: serde_json::Value },
+    /// Delete a per-map config entry by id on the client.
+    DeleteMapConfig { id: i64 },
 }
 
 /// Responses from a client bot back to the master.
@@ -262,8 +344,73 @@ pub enum ClientResponse {
         /// Human-readable explanation (success or error message).
         message: String,
     },
+
+    // --- Live server control responses ---
+    /// Live status snapshot (map, game type, scoreboard, etc.).
+    LiveStatus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        map: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        game_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hostname: Option<String>,
+        player_count: u32,
+        max_clients: u32,
+        players: Vec<LivePlayer>,
+        /// Extra RCON/state fields (cvar snapshot) that the client chose to
+        /// include. Free-form to keep the payload future-proof.
+        #[serde(default)]
+        extra: serde_json::Value,
+    },
+    /// Connected-player list (lighter than LiveStatus).
+    Players { players: Vec<LivePlayer> },
+    /// List of maps available on the game server.
+    MapList { maps: Vec<String> },
+    /// Current mapcycle contents.
+    Mapcycle {
+        /// Path to the mapcycle file on the client filesystem, if known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        maps: Vec<String>,
+    },
+    /// Current server.cfg file contents.
+    ServerCfg {
+        path: String,
+        contents: String,
+    },
+    /// List of per-map config entries stored on the client.
+    MapConfigs { entries: serde_json::Value },
+    /// Generic success acknowledgement.
+    Ok {
+        #[serde(default)]
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+    },
+
     /// Error response.
     Error { message: String },
+}
+
+/// A single connected player as reported by the client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LivePlayer {
+    pub cid: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    #[serde(default)]
+    pub score: i32,
+    #[serde(default)]
+    pub ping: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u32>,
 }
 
 /// A config file found during filesystem scan.

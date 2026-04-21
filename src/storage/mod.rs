@@ -91,6 +91,52 @@ pub trait Storage: Send + Sync {
     // ---- Audit log operations ----
     async fn save_audit_entry(&self, entry: &AuditEntry) -> Result<i64, StorageError>;
     async fn get_audit_log(&self, limit: u32, offset: u32) -> Result<Vec<AuditEntry>, StorageError>;
+    /// Audit entries scoped to a specific server. Default impl filters the full
+    /// list in memory; backends are encouraged to override for efficiency.
+    async fn get_audit_log_by_server(
+        &self,
+        server_id: i64,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<AuditEntry>, StorageError> {
+        let all = self.get_audit_log(limit * 20, offset).await?;
+        Ok(all
+            .into_iter()
+            .filter(|e| e.server_id == Some(server_id))
+            .take(limit as usize)
+            .collect())
+    }
+
+    /// Penalties scoped to a specific server.
+    async fn get_penalties_by_server(
+        &self,
+        server_id: i64,
+        limit: u32,
+    ) -> Result<Vec<Penalty>, StorageError> {
+        // Use get_last_bans() as a seed and filter by server_id — backends
+        // should override with proper `WHERE server_id = ?` queries.
+        let all = self.get_last_bans(limit * 20).await?;
+        Ok(all
+            .into_iter()
+            .filter(|p| p.server_id == Some(server_id))
+            .take(limit as usize)
+            .collect())
+    }
+
+    /// Chat messages scoped to a specific server.
+    async fn get_chat_messages_by_server(
+        &self,
+        server_id: i64,
+        limit: u32,
+        before_id: Option<i64>,
+    ) -> Result<Vec<ChatMessage>, StorageError> {
+        let all = self.get_chat_messages(limit * 20, before_id).await?;
+        Ok(all
+            .into_iter()
+            .filter(|m| m.server_id == Some(server_id))
+            .take(limit as usize)
+            .collect())
+    }
 
     // ---- XLR stats queries ----
     async fn get_xlr_leaderboard(&self, limit: u32, offset: u32) -> Result<Vec<serde_json::Value>, StorageError>;

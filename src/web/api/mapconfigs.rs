@@ -131,6 +131,7 @@ pub async fn create_map_config(
                 detail: format!("Created map config for '{}'", map_name),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
             info!(map = %map_name, "Map config created via web UI");
             (StatusCode::CREATED, Json(serde_json::json!({ "id": id }))).into_response()
@@ -200,6 +201,7 @@ pub async fn update_map_config(
                 detail: format!("Updated map config for '{}'", map_name),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
             info!(map = %map_name, "Map config updated via web UI");
             Json(serde_json::json!({ "ok": true })).into_response()
@@ -242,6 +244,7 @@ pub async fn delete_map_config(
                 detail: format!("Deleted map config for '{}'", config.map_name),
                 ip_address: None,
                 created_at: chrono::Utc::now(),
+                server_id: None,
             }).await;
             info!(map = %config.map_name, "Map config deleted via web UI");
             Json(serde_json::json!({ "ok": true })).into_response()
