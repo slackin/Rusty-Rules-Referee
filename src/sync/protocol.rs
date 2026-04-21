@@ -58,6 +58,11 @@ pub struct HeartbeatResponse {
     pub config_version: i64,
     /// Global bans that the client should enforce (since last heartbeat).
     pub pending_global_bans: Vec<PenaltySync>,
+    /// Master-controlled update channel for this server. When present and
+    /// different from the client's current channel, the client updates its
+    /// local config and uses this channel for subsequent update checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_channel: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,9 +176,12 @@ pub enum ClientRequest {
     GetVersion,
     /// Force the client to check for and apply an update immediately.
     /// If `update_url` is provided, it overrides the client's configured URL.
+    /// If `channel` is provided, it overrides the client's configured channel.
     ForceUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         update_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel: Option<String>,
     },
     /// Validate a game-log path on the client filesystem.
     CheckGameLog { path: String },

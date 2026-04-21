@@ -283,6 +283,17 @@ pub fn restart() -> ! {
 /// Checks periodically, downloads + verifies + applies + restarts when an
 /// update is available.
 pub async fn run_update_loop(config: UpdateSection, current_build_hash: &str) {
+    run_update_loop_with_channel(config, current_build_hash, None).await;
+}
+
+/// Same as [`run_update_loop`] but the release channel may be overridden at
+/// runtime via the supplied `RwLock`. Used in client mode where the master
+/// can change this server's channel without restarting the bot.
+pub async fn run_update_loop_with_channel(
+    config: UpdateSection,
+    current_build_hash: &str,
+    channel_override: Option<std::sync::Arc<tokio::sync::RwLock<String>>>,
+) {
     let interval = Duration::from_secs(config.check_interval);
 
     info!(
@@ -297,9 +308,13 @@ pub async fn run_update_loop(config: UpdateSection, current_build_hash: &str) {
     tokio::time::sleep(Duration::from_secs(30)).await;
 
     loop {
-        info!("Checking for updates...");
+        let channel = match channel_override.as_ref() {
+            Some(lock) => lock.read().await.clone(),
+            None => config.channel.clone(),
+        };
+        info!(%channel, "Checking for updates...");
 
-        match check_for_update(&config.url, &config.channel, current_build_hash).await {
+        match check_for_update(&config.url, &channel, current_build_hash).await {
             Ok(Some(update)) => {
                 info!(
                     current = current_build_hash,

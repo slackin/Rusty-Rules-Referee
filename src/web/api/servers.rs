@@ -29,6 +29,8 @@ pub struct ServerInfo {
     pub max_clients: u32,
     pub last_seen: Option<String>,
     pub online: bool,
+    /// Release channel this server's bot follows for updates.
+    pub update_channel: String,
     /// Last client-reported build hash (from heartbeat).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_hash: Option<String>,
@@ -172,6 +174,7 @@ pub async fn list_servers(
                 max_clients: s.max_clients,
                 last_seen: s.last_seen.map(|t| t.to_rfc3339()),
                 online,
+                update_channel: s.update_channel,
                 build_hash,
                 version,
             }
@@ -216,6 +219,7 @@ pub async fn get_server(
         max_clients: s.max_clients,
         last_seen: s.last_seen.map(|t| t.to_rfc3339()),
         online,
+        update_channel: s.update_channel,
         build_hash,
         version,
     }))
@@ -349,7 +353,7 @@ pub async fn get_server_config(
 pub async fn update_server_config(
     State(state): State<AppState>,
     Path(server_id): Path<i64>,
-    Json(payload): Json<ServerConfigPayload>,
+    Json(mut payload): Json<ServerConfigPayload>,
 ) -> impl IntoResponse {
     // Validate
     if payload.address.is_empty() || payload.address == "0.0.0.0" {
@@ -369,6 +373,19 @@ pub async fn update_server_config(
             StatusCode::BAD_REQUEST,
             Json(CommandResponse { ok: false, message: "RCON password is required".to_string() }),
         ).into_response();
+    }
+
+    // If the game_log path is a bare filename (no directory), assume the
+    // default Urban Terror dedicated-server log location on Linux.
+    if let Some(log) = payload.game_log.as_ref() {
+        let trimmed = log.trim();
+        if !trimmed.is_empty() && !trimmed.contains('/') && !trimmed.contains('\\') {
+            let resolved = format!("~/.q3a/q3ut4/{}", trimmed);
+            info!(original = %trimmed, resolved = %resolved, "Resolving bare game_log filename to default Linux path");
+            payload.game_log = Some(resolved);
+        } else if trimmed.is_empty() {
+            payload.game_log = None;
+        }
     }
 
     let mut server = match state.storage.get_server(server_id).await {
@@ -650,13 +667,25 @@ pub async fn force_server_update(
     Path(server_id): Path<i64>,
 ) -> impl IntoResponse {
     let update_url = state.config.update.url.clone();
-    info!(server_id, url = %update_url, "Force-update requested for client");
+
+    // Use the per-server channel stored in the DB (set from the master UI)
+    // and fall back to the master's own configured channel if the row is missing.
+    let channel = state
+        .storage
+        .get_server(server_id)
+        .await
+        .ok()
+        .map(|s| s.update_channel)
+        .unwrap_or_else(|| state.config.update.channel.clone());
+
+    info!(server_id, url = %update_url, channel = %channel, "Force-update requested for client");
 
     match send_client_request(
         &state,
         server_id,
         ClientRequest::ForceUpdate {
             update_url: Some(update_url),
+            channel: Some(channel),
         },
         std::time::Duration::from_secs(90),
     ).await {
@@ -685,4 +714,50 @@ pub async fn check_server_game_log(
         Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
         Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetUpdateChannelRequest {
+    pub channel: String,
+}
+
+/// PUT /api/v1/servers/:id/update-channel — set the release channel this
+/// server's bot follows for updates. The change is persisted in the DB and
+/// picked up by the client on its next heartbeat (no restart required).
+pub async fn set_server_update_channel(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<SetUpdateChannelRequest>,
+) -> impl IntoResponse {
+    let channel = req.channel.trim().to_string();
+    if !crate::config::VALID_UPDATE_CHANNELS.contains(&channel.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CommandResponse {
+                ok: false,
+                message: format!(
+                    "Invalid channel '{}' — expected one of: {}",
+                    channel,
+                    crate::config::VALID_UPDATE_CHANNELS.join(", ")
+                ),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = state.storage.set_server_update_channel(server_id, &channel).await {
+        error!(error = %e, server_id, "Failed to update server update_channel");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(CommandResponse { ok: false, message: e.to_string() }),
+        )
+            .into_response();
+    }
+
+    info!(server_id, %channel, "Server update channel changed");
+    Json(CommandResponse {
+        ok: true,
+        message: format!("Release channel set to '{}'. Applied on next heartbeat.", channel),
+    })
+    .into_response()
 }

@@ -13,6 +13,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::ClientSection;
 use crate::core::context::BotContext;
+use crate::core::{Clients, Game};
 use crate::events::Event;
 use crate::storage::Storage;
 use crate::sync::handlers::{self, SharedInstallState};
@@ -28,17 +29,30 @@ pub enum ConnectionState {
     Connected,
 }
 
+/// Shared handle to the live game state, used by the heartbeat to report
+/// player count, current map, and max clients to the master. Populated by
+/// the main loop once the bot has initialised its `BotContext` (may remain
+/// `None` during the early "waiting for config" phase).
+#[derive(Clone, Default)]
+pub struct GameStateRef {
+    pub game: Option<Arc<RwLock<Game>>>,
+    pub clients: Option<Arc<Clients>>,
+}
+
 /// The client sync manager.
 pub struct ClientSyncManager {
     config: ClientSection,
     config_path: String,
-    /// Release channel this client follows for updates (forwarded to force-update handler).
-    update_channel: String,
+    /// Release channel this client follows for updates. May be updated at
+    /// runtime when the master sends a new channel in the heartbeat response.
+    update_channel: Arc<RwLock<String>>,
     storage: Arc<dyn Storage>,
     queue: SyncQueue,
     server_id: Arc<RwLock<Option<i64>>>,
     state: Arc<RwLock<ConnectionState>>,
     local_config_version: i64,
+    /// Optional live game state — populated by the main loop after bot init.
+    game_state: Arc<RwLock<GameStateRef>>,
     /// Channel to receive events from the main bot loop for forwarding.
     event_rx: mpsc::Receiver<Event>,
     /// Channel to receive commands from the master.
@@ -59,6 +73,24 @@ pub struct SyncHandle {
     pub server_id: Arc<RwLock<Option<i64>>>,
     /// Watch channel that fires when the sync manager writes a config update to disk.
     pub config_updated: watch::Receiver<bool>,
+    /// Live game-state handle — call [`SyncHandle::attach_game_state`] once
+    /// the bot context is built so heartbeats can report real values.
+    pub game_state: Arc<RwLock<GameStateRef>>,
+}
+
+impl SyncHandle {
+    /// Attach live game state so subsequent heartbeats carry real
+    /// player count / map / max-clients values.
+    pub async fn attach_game_state(
+        &self,
+        game: Arc<RwLock<Game>>,
+        clients: Arc<Clients>,
+    ) {
+        *self.game_state.write().await = GameStateRef {
+            game: Some(game),
+            clients: Some(clients),
+        };
+    }
 }
 
 impl ClientSyncManager {
@@ -67,13 +99,14 @@ impl ClientSyncManager {
         config: ClientSection,
         storage: Arc<dyn Storage>,
         config_path: String,
-        update_channel: String,
+        update_channel: Arc<RwLock<String>>,
     ) -> (Self, SyncHandle) {
         let (event_tx, event_rx) = mpsc::channel::<Event>(1024);
         let (command_tx, command_rx) = mpsc::channel::<SyncMessage>(256);
         let (config_updated_tx, config_updated_rx) = watch::channel(false);
         let state = Arc::new(RwLock::new(ConnectionState::Disconnected));
         let server_id = Arc::new(RwLock::new(None));
+        let game_state = Arc::new(RwLock::new(GameStateRef::default()));
         let queue = SyncQueue::new(storage.clone(), None);
 
         let manager = Self {
@@ -85,6 +118,7 @@ impl ClientSyncManager {
             server_id: server_id.clone(),
             state: state.clone(),
             local_config_version: 0,
+            game_state: game_state.clone(),
             event_rx,
             command_tx,
             config_updated_tx,
@@ -96,6 +130,7 @@ impl ClientSyncManager {
             state,
             server_id,
             config_updated: config_updated_rx,
+            game_state,
         };
 
         (manager, handle)
@@ -231,12 +266,30 @@ impl ClientSyncManager {
 
                     // Periodic heartbeat
                     _ = heartbeat_timer.tick() => {
+                        // Pull live values from the attached game state (if any).
+                        let (current_map, player_count, max_clients) = {
+                            let gs = self.game_state.read().await;
+                            let mut map = None;
+                            let mut max = 0u32;
+                            if let Some(game) = gs.game.as_ref() {
+                                let g = game.read().await;
+                                map = g.map_name.clone();
+                                max = g.max_clients.unwrap_or(0);
+                            }
+                            let count = if let Some(clients) = gs.clients.as_ref() {
+                                clients.count().await as u32
+                            } else {
+                                0
+                            };
+                            (map, count, max)
+                        };
+
                         let hb = HeartbeatRequest {
                             server_id,
                             status: "online".to_string(),
-                            current_map: None,  // TODO: get from game state
-                            player_count: 0,    // TODO: get from clients manager
-                            max_clients: 0,     // TODO: get from game state
+                            current_map,
+                            player_count,
+                            max_clients,
                             build_hash: Some(env!("BUILD_HASH").to_string()),
                             version: Some(env!("CARGO_PKG_VERSION").to_string()),
                         };
@@ -254,6 +307,22 @@ impl ClientSyncManager {
                                         let _ = self.command_tx.send(
                                             SyncMessage::GlobalPenalty(ban.clone())
                                         ).await;
+                                    }
+
+                                    // Apply master-controlled update channel if it changed.
+                                    if let Some(remote_channel) = hb_resp.update_channel.as_ref() {
+                                        let current = self.update_channel.read().await.clone();
+                                        if remote_channel != &current && !remote_channel.is_empty() {
+                                            info!(
+                                                old = %current,
+                                                new = %remote_channel,
+                                                "Master updated release channel — applying"
+                                            );
+                                            *self.update_channel.write().await = remote_channel.clone();
+                                            if let Err(e) = self.persist_update_channel(remote_channel) {
+                                                warn!(error = %e, "Failed to persist update channel to config file");
+                                            }
+                                        }
                                     }
 
                                     // Check for config version mismatch
@@ -319,11 +388,15 @@ impl ClientSyncManager {
                                             ClientRequest::GetVersion => {
                                                 handlers::handle_get_version().await
                                             }
-                                            ClientRequest::ForceUpdate { update_url } => {
+                                            ClientRequest::ForceUpdate { update_url, channel } => {
                                                 match update_url {
                                                     Some(url) if !url.is_empty() => {
-                                                        // Master supplies the URL; client always uses its own configured channel.
-                                                        handlers::handle_force_update(url, self.update_channel.clone()).await
+                                                        // Master may override channel per-request; otherwise use local.
+                                                        let effective_channel = match channel {
+                                                            Some(c) if !c.is_empty() => c,
+                                                            _ => self.update_channel.read().await.clone(),
+                                                        };
+                                                        handlers::handle_force_update(url, effective_channel).await
                                                     }
                                                     _ => ClientResponse::Error {
                                                         message: "Master did not supply an update URL".to_string(),
@@ -455,6 +528,31 @@ impl ClientSyncManager {
         // Signal the main loop that config has been updated
         let _ = self.config_updated_tx.send(true);
 
+        Ok(())
+    }
+
+    /// Rewrite the `[update].channel` value in the local TOML config file.
+    /// Called when the master changes this client's release channel.
+    fn persist_update_channel(&self, channel: &str) -> anyhow::Result<()> {
+        let content = std::fs::read_to_string(&self.config_path)?;
+        let mut doc: toml::Value = toml::from_str(&content)?;
+
+        let update_tbl = doc
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("Config root is not a table"))?
+            .entry("update".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+
+        if let Some(table) = update_tbl.as_table_mut() {
+            table.insert(
+                "channel".to_string(),
+                toml::Value::String(channel.to_string()),
+            );
+        }
+
+        let output = toml::to_string_pretty(&doc)?;
+        std::fs::write(&self.config_path, &output)?;
+        info!(path = %self.config_path, channel = %channel, "Persisted new update channel");
         Ok(())
     }
 }

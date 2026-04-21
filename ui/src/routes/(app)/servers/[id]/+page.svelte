@@ -68,6 +68,10 @@
 	let forceUpdating = $state(false);
 	let forceUpdateResult = $state(null);
 
+	// Update channel
+	let channelSaving = $state(false);
+	let channelResult = $state(null);
+
 	async function loadServer() {
 		try {
 			server = await api.server(serverId);
@@ -386,6 +390,25 @@
 		forceUpdating = false;
 	}
 
+	async function changeUpdateChannel(newChannel) {
+		if (!server || newChannel === server.update_channel) return;
+		const previous = server.update_channel;
+		// Optimistic update
+		server = { ...server, update_channel: newChannel };
+		channelSaving = true;
+		channelResult = null;
+		try {
+			const res = await api.setServerUpdateChannel(serverId, newChannel);
+			channelResult = { ok: true, message: res?.message || `Channel set to ${newChannel}` };
+		} catch (e) {
+			// Revert on failure
+			server = { ...server, update_channel: previous };
+			channelResult = { ok: false, message: e.message || 'Failed to set channel' };
+			console.error('[R3] setServerUpdateChannel failed', e);
+		}
+		channelSaving = false;
+	}
+
 	$effect(() => { loadServer(); loadConfig(); loadVersion(); });
 </script>
 
@@ -538,6 +561,38 @@
 							Force Update
 						{/if}
 					</button>
+				</div>
+
+				<!-- Release channel selector -->
+				<div class="mt-4 border-t border-surface-800 pt-4">
+					<div class="flex items-start justify-between gap-4 flex-wrap">
+						<div class="flex-1 min-w-[200px]">
+							<label for="server_update_channel" class="mb-1 block text-xs font-medium text-surface-400">Release Channel</label>
+							<p class="text-xs text-surface-600">Which release stream this server follows. Applied on the next heartbeat; no restart required.</p>
+						</div>
+						<div class="flex items-center gap-2">
+							<select
+								id="server_update_channel"
+								class="input font-mono text-sm"
+								value={server.update_channel ?? 'beta'}
+								onchange={(e) => changeUpdateChannel(e.currentTarget.value)}
+								disabled={channelSaving}
+							>
+								<option value="production">production</option>
+								<option value="beta">beta (recommended)</option>
+								<option value="alpha">alpha</option>
+								<option value="dev">dev</option>
+							</select>
+							{#if channelSaving}
+								<Loader2 class="h-4 w-4 animate-spin text-surface-500" />
+							{/if}
+						</div>
+					</div>
+					{#if channelResult}
+						<div class="mt-2 rounded-lg px-3 py-2 text-xs {channelResult.ok ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}">
+							{channelResult.message}
+						</div>
+					{/if}
 				</div>
 
 				{#if forceUpdateResult}

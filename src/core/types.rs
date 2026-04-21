@@ -128,6 +128,9 @@ pub struct GameServer {
     pub config_json: Option<String>,
     pub config_version: i64,
     pub cert_fingerprint: Option<String>,
+    /// Release channel this server's bot follows for updates
+    /// (one of `production`, `beta`, `alpha`, `dev`). Master-controlled.
+    pub update_channel: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

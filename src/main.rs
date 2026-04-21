@@ -855,12 +855,16 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         Arc::from(storage::create_storage(&config.referee.database).await?);
     info!("Local cache database connected");
 
+    // Shared release-channel watch. Populated from local config at startup;
+    // the sync manager updates this when the master pushes a new channel.
+    let update_channel = std::sync::Arc::new(tokio::sync::RwLock::new(config.update.channel.clone()));
+
     // Set up the sync manager (always needed)
     let (sync_manager, mut sync_handle) = sync::client::ClientSyncManager::new(
         client_config.clone(),
         db.clone(),
         config_path.clone(),
-        config.update.channel.clone(),
+        update_channel.clone(),
     );
 
     // Spawn the sync manager
@@ -877,8 +881,13 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         // Start auto-update checker if enabled
         if config.update.enabled {
             let update_config = config.update.clone();
+            let channel_watch = update_channel.clone();
             tokio::spawn(async move {
-                rusty_rules_referee::update::run_update_loop(update_config, BUILD_HASH).await;
+                rusty_rules_referee::update::run_update_loop_with_channel(
+                    update_config,
+                    BUILD_HASH,
+                    Some(channel_watch),
+                ).await;
             });
         }
 
@@ -947,6 +956,10 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         parser.clone(),
         clients.clone(),
     ));
+
+    // Give the sync manager live access to game state so heartbeats can
+    // report current map, player count, and max clients to the master.
+    sync_handle.attach_game_state(game.clone(), clients.clone()).await;
 
     // Set up plugins (all execute locally)
     let mut plugins = PluginRegistry::new();
@@ -1040,8 +1053,13 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // Start auto-update checker if enabled
     if config.update.enabled {
         let update_config = config.update.clone();
+        let channel_watch = update_channel.clone();
         tokio::spawn(async move {
-            rusty_rules_referee::update::run_update_loop(update_config, BUILD_HASH).await;
+            rusty_rules_referee::update::run_update_loop_with_channel(
+                update_config,
+                BUILD_HASH,
+                Some(channel_watch),
+            ).await;
         });
     }
 

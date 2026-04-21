@@ -1352,6 +1352,7 @@ impl Storage for MysqlStorage {
             config_json: r.get("config_json"),
             config_version: r.get("config_version"),
             cert_fingerprint: r.get("cert_fingerprint"),
+            update_channel: r.get("update_channel"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
         }).collect())
@@ -1377,6 +1378,7 @@ impl Storage for MysqlStorage {
             config_json: row.get("config_json"),
             config_version: row.get("config_version"),
             cert_fingerprint: row.get("cert_fingerprint"),
+            update_channel: row.get("update_channel"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -1402,6 +1404,7 @@ impl Storage for MysqlStorage {
             config_json: r.get("config_json"),
             config_version: r.get("config_version"),
             cert_fingerprint: r.get("cert_fingerprint"),
+            update_channel: r.get("update_channel"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
         }))
@@ -1413,7 +1416,7 @@ impl Storage for MysqlStorage {
                 "UPDATE servers SET name = ?, address = ?, port = ?, status = ?, \
                  current_map = ?, player_count = ?, max_clients = ?, last_seen = ?, \
                  config_json = ?, config_version = ?, cert_fingerprint = ?, \
-                 updated_at = NOW() WHERE id = ?"
+                 update_channel = ?, updated_at = NOW() WHERE id = ?"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -1426,6 +1429,7 @@ impl Storage for MysqlStorage {
             .bind(&server.config_json)
             .bind(server.config_version)
             .bind(&server.cert_fingerprint)
+            .bind(&server.update_channel)
             .bind(server.id)
             .execute(&self.pool)
             .await
@@ -1434,8 +1438,8 @@ impl Storage for MysqlStorage {
         } else {
             let result = sqlx::query(
                 "INSERT INTO servers (name, address, port, status, current_map, player_count, \
-                 max_clients, last_seen, config_json, config_version, cert_fingerprint) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -1448,11 +1452,24 @@ impl Storage for MysqlStorage {
             .bind(&server.config_json)
             .bind(server.config_version)
             .bind(&server.cert_fingerprint)
+            .bind(&server.update_channel)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
             Ok(result.last_insert_id() as i64)
         }
+    }
+
+    async fn set_server_update_channel(&self, server_id: i64, channel: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE servers SET update_channel = ?, updated_at = NOW() WHERE id = ?"
+        )
+        .bind(channel)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
     }
 
     async fn update_server_status(
