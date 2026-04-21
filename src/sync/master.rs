@@ -161,6 +161,16 @@ async fn handle_register(
 
     info!(server_id, "Client bot registered");
 
+    // Kick off an installed-map scan for this server in the background.
+    // Rate-limited inside `mapscan::scan_on_connect` so reconnect storms
+    // don't hammer RCON.
+    crate::mapscan::scan_on_connect(
+        state.storage.clone(),
+        state.pending_responses.clone(),
+        state.pending_client_requests.clone(),
+        server_id,
+    );
+
     Ok(Json(RegisterResponse {
         server_id,
         config_version,

@@ -25,6 +25,7 @@
 	const LIMIT = 50;
 	let loading = $state(false);
 	let error = $state('');
+	let notice = $state('');
 	let info = $state('');
 	let refreshing = $state(false);
 	/** Per-filename import status: 'idle' | 'importing' | 'done' | 'err'. */
@@ -91,6 +92,7 @@
 				throw new Error(r?.data?.message || 'Import failed');
 			}
 			importState = { ...importState, [entry.filename]: 'done' };
+			notice = `Imported ${entry.filename}. The map won't be playable until the server changes map or restarts.`;
 			if (onimported) onimported(entry.filename);
 		} catch (e) {
 			importState = { ...importState, [entry.filename]: 'err' };
@@ -144,6 +146,7 @@
 			</div>
 
 			{#if error}<div class="mb-2 p-2 bg-red-500/20 border border-red-500/40 rounded text-red-300 text-xs">{error}</div>{/if}
+			{#if notice}<div class="mb-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded text-amber-200 text-xs">{notice}</div>{/if}
 			{#if info}<div class="mb-2 p-2 bg-blue-500/20 border border-blue-500/40 rounded text-blue-300 text-xs">{info}</div>{/if}
 
 			<div class="flex-1 overflow-y-auto min-h-0 border border-zinc-700 rounded-lg">

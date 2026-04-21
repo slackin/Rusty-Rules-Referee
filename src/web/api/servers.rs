@@ -856,7 +856,28 @@ pub async fn import_map(
     )
     .await
     {
-        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Ok(resp) => {
+            // On success, mark the map as pending_restart so the UI can
+            // display it right away — the engine won't actually load the
+            // new `.pk3` until it restarts or runs `fs_restart`.
+            if matches!(resp, crate::sync::protocol::ClientResponse::MapDownloaded { .. }) {
+                let map_name = entry
+                    .filename
+                    .trim_end_matches(".pk3")
+                    .trim_end_matches(".PK3")
+                    .to_string();
+                let _ = state
+                    .storage
+                    .mark_server_map_pending(
+                        server_id,
+                        &map_name,
+                        Some(&entry.filename),
+                        chrono::Utc::now(),
+                    )
+                    .await;
+            }
+            Json(serde_json::to_value(&resp).unwrap_or_default()).into_response()
+        }
         Err((status, msg)) => (
             status,
             Json(CommandResponse {

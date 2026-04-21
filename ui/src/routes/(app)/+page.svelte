@@ -71,7 +71,8 @@
 		mapActionResult = null;
 		try {
 			const res = await api.mapList();
-			mapList = res.maps ?? [];
+			const list = Array.isArray(res?.maps) ? res.maps : [];
+			mapList = list.map((m) => (typeof m === 'string' ? m : m.map_name)).filter(Boolean);
 		} catch (e) {
 			mapList = [];
 			console.error('Failed to load maps:', e);

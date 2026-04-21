@@ -61,6 +61,7 @@ export const api = {
 	say: (message) =>
 		request('/server/say', { method: 'POST', body: JSON.stringify({ message }) }),
 	mapList: () => request('/server/maps'),
+	refreshMaps: () => request('/server/maps/refresh', { method: 'POST' }),
 	changeMap: (map, action) =>
 		request('/server/map', { method: 'POST', body: JSON.stringify({ map, action }) }),
 	restartBot: () =>
@@ -237,6 +238,7 @@ export const api = {
 	serverPlayerUnmute: (id, cid) =>
 		request(`/servers/${id}/players/${cid}/unmute`, { method: 'POST' }),
 	serverMaps: (id) => request(`/servers/${id}/maps`),
+	serverRefreshMaps: (id) => request(`/servers/${id}/maps/refresh`, { method: 'POST' }),
 	serverChangeMap: (id, map) =>
 		request(`/servers/${id}/map`, { method: 'POST', body: JSON.stringify({ map }) }),
 	serverGetMapcycle: (id) => request(`/servers/${id}/mapcycle`),

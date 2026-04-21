@@ -8,4 +8,4 @@ mod types;
 pub use client::{Client, ClientVar, Team};
 pub use clients::Clients;
 pub use game::Game;
-pub use types::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
+pub use types::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};

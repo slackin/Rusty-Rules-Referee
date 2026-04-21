@@ -4,7 +4,7 @@ pub mod sqlite;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -183,6 +183,47 @@ pub trait Storage: Send + Sync {
     async fn count_map_repo_entries(&self) -> Result<u64, StorageError>;
     /// Most recent `last_seen_at` across all entries, if any.
     async fn latest_map_repo_refresh(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>, StorageError>;
+
+    // ---- Per-server installed-map cache (master-side) ----
+    /// Replace the full set of installed maps for a server with the given
+    /// batch in a single transaction. Rows with `pending_restart = 1` are
+    /// preserved even if absent from `maps`, so freshly-imported maps that
+    /// the game engine hasn't re-scanned yet don't vanish from the UI.
+    /// Returns the number of rows in the post-update set.
+    async fn replace_server_maps(
+        &self,
+        server_id: i64,
+        maps: &[ServerMap],
+        scanned_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, StorageError>;
+    /// Mark a single map as pending (imported but game engine has not yet
+    /// reloaded its filesystem). Inserts if missing.
+    async fn mark_server_map_pending(
+        &self,
+        server_id: i64,
+        map_name: &str,
+        pk3_filename: Option<&str>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), StorageError>;
+    /// List all cached installed maps for a server, ordered by `map_name`.
+    async fn list_server_maps(&self, server_id: i64) -> Result<Vec<ServerMap>, StorageError>;
+    /// Fetch the last scan status row for a server, if any.
+    async fn get_server_map_scan(
+        &self,
+        server_id: i64,
+    ) -> Result<Option<ServerMapScanStatus>, StorageError>;
+    /// Record the outcome of a scan (success or failure).
+    async fn record_server_map_scan(
+        &self,
+        server_id: i64,
+        ok: bool,
+        error: Option<&str>,
+        map_count: i64,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), StorageError>;
+    /// Remove all cached maps and scan status for a server (used on
+    /// `delete_server`).
+    async fn delete_server_maps(&self, server_id: i64) -> Result<(), StorageError>;
 
     // ---- Dashboard summary ----
     async fn get_dashboard_summary(&self) -> Result<DashboardSummary, StorageError>;

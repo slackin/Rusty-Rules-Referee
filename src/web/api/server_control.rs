@@ -106,21 +106,82 @@ pub struct ChangeMapRequest {
     pub map: String,
 }
 
-/// GET /api/v1/servers/:id/maps — available maps on the game server.
+/// GET /api/v1/servers/:id/maps — cached list of installed maps on the game
+/// server. Backed by the `server_maps` table, populated asynchronously by
+/// [`crate::mapscan`]. For a live refresh use POST `…/maps/refresh`.
 pub async fn server_maps(
     State(state): State<AppState>,
     Path(server_id): Path<i64>,
 ) -> impl IntoResponse {
-    match send_client_request(
-        &state,
+    let maps = state
+        .storage
+        .list_server_maps(server_id)
+        .await
+        .unwrap_or_default();
+    let status = state
+        .storage
+        .get_server_map_scan(server_id)
+        .await
+        .ok()
+        .flatten();
+    let current_map = state
+        .storage
+        .get_server(server_id)
+        .await
+        .ok()
+        .and_then(|s| s.current_map);
+    Json(serde_json::json!({
+        "maps": maps,
+        "current_map": current_map,
+        "last_scan_at": status.as_ref().and_then(|s| s.last_scan_at),
+        "last_scan_ok": status.as_ref().map(|s| s.last_scan_ok).unwrap_or(false),
+        "last_scan_error": status.as_ref().and_then(|s| s.last_scan_error.clone()),
+        "map_count": status.as_ref().map(|s| s.map_count).unwrap_or(0),
+    }))
+    .into_response()
+}
+
+/// POST /api/v1/servers/:id/maps/refresh — force an immediate RCON scan
+/// (bypassing the periodic scheduler). Rate-limited inside mapscan.
+pub async fn server_maps_refresh(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> impl IntoResponse {
+    let (Some(pending_responses), Some(pending_client_requests)) = (
+        state.pending_responses.clone(),
+        state.pending_client_requests.clone(),
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(CommandResponse {
+                ok: false,
+                message: "Master sync channel not available".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    match crate::mapscan::scan_remote_server(
+        state.storage.clone(),
+        pending_responses,
+        pending_client_requests,
         server_id,
-        ClientRequest::ListMaps,
-        StdDuration::from_secs(15),
     )
     .await
     {
-        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
-        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+        Ok(count) => Json(serde_json::json!({
+            "ok": true,
+            "map_count": count,
+        }))
+        .into_response(),
+        Err(msg) => (
+            StatusCode::BAD_GATEWAY,
+            Json(CommandResponse {
+                ok: false,
+                message: msg,
+            }),
+        )
+            .into_response(),
     }
 }
 

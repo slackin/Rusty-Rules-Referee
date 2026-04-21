@@ -291,6 +291,13 @@ pub struct MapRepoSection {
     /// (manual `POST /api/v1/map-repo/refresh` still works).
     #[serde(default = "default_map_repo_refresh_hours")]
     pub refresh_interval_hours: u32,
+    /// How often the master should ask each connected game server for its
+    /// list of installed `.bsp` maps (via `fdir *.bsp` over RCON) and
+    /// refresh the per-server cache in the `server_maps` table. Set to 0
+    /// to disable periodic scans (on-connect and manual refresh still
+    /// work).
+    #[serde(default = "default_map_scan_hours")]
+    pub scan_interval_hours: u32,
     /// Optional explicit target directory for imported `.pk3` files. When
     /// unset (the default), the bot auto-discovers a writable directory by
     /// trying in order: the parent of `server.game_log`, then `fs_homepath`
@@ -308,6 +315,7 @@ impl Default for MapRepoSection {
             enabled: default_map_repo_enabled(),
             sources: default_map_repo_sources(),
             refresh_interval_hours: default_map_repo_refresh_hours(),
+            scan_interval_hours: default_map_scan_hours(),
             download_dir: None,
         }
     }
@@ -315,6 +323,10 @@ impl Default for MapRepoSection {
 
 fn default_map_repo_enabled() -> bool {
     true
+}
+
+fn default_map_scan_hours() -> u32 {
+    24
 }
 
 fn default_map_repo_sources() -> Vec<String> {

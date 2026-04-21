@@ -86,48 +86,86 @@ pub async fn server_say(
     }
 }
 
-/// GET /api/v1/server/maps — list available maps on the server.
+/// GET /api/v1/server/maps — cached list of installed maps on the local
+/// game server. Backed by the `server_maps` table, populated asynchronously
+/// by [`crate::mapscan`]. For a live refresh use POST `/server/maps/refresh`.
 pub async fn list_maps(
     AuthUser(_claims): AuthUser,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
+    // Standalone mode uses server_id = 0 as the cache key.
+    const STANDALONE_SERVER_ID: i64 = 0;
+
     let ctx = match state.require_ctx() {
         Ok(c) => c,
-        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
-    };
-    let response = match ctx.rcon.send("fdir *.bsp").await {
-        Ok(r) => r,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Not available in master mode"})),
+            )
+                .into_response()
         }
     };
 
-    // Parse fdir output: lines like "maps/ut4_abbey.bsp" — strip prefix and suffix
-    let maps: Vec<String> = response
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.ends_with(".bsp") {
-                // Strip leading "maps/" or any path prefix
-                let name = trimmed
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(trimmed)
-                    .trim_end_matches(".bsp");
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
-            }
-            None
-        })
-        .collect();
-
+    let maps = state
+        .storage
+        .list_server_maps(STANDALONE_SERVER_ID)
+        .await
+        .unwrap_or_default();
+    let status = state
+        .storage
+        .get_server_map_scan(STANDALONE_SERVER_ID)
+        .await
+        .ok()
+        .flatten();
     let current_map = ctx.game.read().await.map_name.clone();
 
     Json(serde_json::json!({
         "maps": maps,
         "current_map": current_map,
-    })).into_response()
+        "last_scan_at": status.as_ref().and_then(|s| s.last_scan_at),
+        "last_scan_ok": status.as_ref().map(|s| s.last_scan_ok).unwrap_or(false),
+        "last_scan_error": status.as_ref().and_then(|s| s.last_scan_error.clone()),
+        "map_count": status.as_ref().map(|s| s.map_count).unwrap_or(0),
+    }))
+    .into_response()
+}
+
+/// POST /api/v1/server/maps/refresh — force an immediate RCON scan for the
+/// local game server (standalone mode only).
+pub async fn refresh_maps(
+    AuthUser(_claims): AuthUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    const STANDALONE_SERVER_ID: i64 = 0;
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Not available in master mode"})),
+            )
+                .into_response()
+        }
+    };
+    match crate::mapscan::scan_local_server(
+        state.storage.clone(),
+        ctx,
+        STANDALONE_SERVER_ID,
+    )
+    .await
+    {
+        Ok(count) => Json(serde_json::json!({
+            "ok": true,
+            "map_count": count,
+        }))
+        .into_response(),
+        Err(msg) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"ok": false, "error": msg})),
+        )
+            .into_response(),
+    }
 }
 
 /// POST /api/v1/server/map — change map or set next map.
@@ -324,6 +362,28 @@ pub async fn import_map(
         &allowed_hosts,
     )
     .await;
+
+    // On success, flag the map as pending_restart in the per-server cache
+    // so the UI can show it right away — the engine won't actually load
+    // the new `.pk3` until the next `fs_restart` or process restart.
+    if matches!(resp, crate::sync::protocol::ClientResponse::MapDownloaded { .. }) {
+        const STANDALONE_SERVER_ID: i64 = 0;
+        let map_name = entry
+            .filename
+            .trim_end_matches(".pk3")
+            .trim_end_matches(".PK3")
+            .to_string();
+        let _ = state
+            .storage
+            .mark_server_map_pending(
+                STANDALONE_SERVER_ID,
+                &map_name,
+                Some(&entry.filename),
+                chrono::Utc::now(),
+            )
+            .await;
+    }
+
     Json(serde_json::to_value(&resp).unwrap_or_default()).into_response()
 }
 

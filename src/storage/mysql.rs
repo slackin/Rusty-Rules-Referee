@@ -4,7 +4,7 @@ use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct MysqlStorage {
@@ -410,6 +410,36 @@ impl MysqlStorage {
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
+        // 011_server_maps — per-server installed-map cache.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS server_maps (
+                server_id BIGINT NOT NULL,
+                map_name VARCHAR(255) NOT NULL,
+                pk3_filename VARCHAR(255),
+                first_seen_at DATETIME NOT NULL,
+                last_seen_at DATETIME NOT NULL,
+                pending_restart TINYINT(1) NOT NULL DEFAULT 0,
+                PRIMARY KEY (server_id, map_name),
+                INDEX idx_server_maps_server (server_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS server_map_scans (
+                server_id BIGINT PRIMARY KEY,
+                last_scan_at DATETIME,
+                last_scan_ok TINYINT(1) NOT NULL DEFAULT 0,
+                last_scan_error TEXT,
+                map_count BIGINT NOT NULL DEFAULT 0
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
         // Re-enable foreign key checks
         sqlx::query("SET FOREIGN_KEY_CHECKS=1")
             .execute(&mut *conn)
@@ -604,6 +634,19 @@ fn row_to_map_repo_entry(row: &MySqlRow) -> MapRepoEntry {
         mtime: row.try_get("mtime").ok(),
         source_url: row.get("source_url"),
         last_seen_at: last_seen.map(|n| n.and_utc()).unwrap_or_default(),
+    }
+}
+
+fn row_to_server_map(row: &MySqlRow) -> ServerMap {
+    let first: NaiveDateTime = row.get("first_seen_at");
+    let last: NaiveDateTime = row.get("last_seen_at");
+    let pending: i64 = row.get::<i8, _>("pending_restart") as i64;
+    ServerMap {
+        map_name: row.get("map_name"),
+        pk3_filename: row.try_get("pk3_filename").ok(),
+        first_seen_at: first.and_utc(),
+        last_seen_at: last.and_utc(),
+        pending_restart: pending != 0,
     }
 }
 
@@ -1485,6 +1528,175 @@ impl Storage for MysqlStorage {
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(row.map(|n| n.and_utc()))
+    }
+
+    // ---- Per-server installed-map cache ----
+
+    async fn replace_server_maps(
+        &self,
+        server_id: i64,
+        maps: &[ServerMap],
+        scanned_at: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        let ts = scanned_at.naive_utc();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        for m in maps {
+            sqlx::query(
+                "INSERT INTO server_maps \
+                    (server_id, map_name, pk3_filename, first_seen_at, last_seen_at, pending_restart) \
+                 VALUES (?, ?, ?, ?, ?, 0) \
+                 ON DUPLICATE KEY UPDATE \
+                     pk3_filename = COALESCE(VALUES(pk3_filename), pk3_filename), \
+                     last_seen_at = VALUES(last_seen_at), \
+                     pending_restart = 0"
+            )
+            .bind(server_id)
+            .bind(&m.map_name)
+            .bind(&m.pk3_filename)
+            .bind(ts)
+            .bind(ts)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        }
+        sqlx::query(
+            "DELETE FROM server_maps \
+             WHERE server_id = ? AND last_seen_at < ? AND pending_restart = 0"
+        )
+        .bind(server_id)
+        .bind(ts)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM server_maps WHERE server_id = ?")
+                .bind(server_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(count as u64)
+    }
+
+    async fn mark_server_map_pending(
+        &self,
+        server_id: i64,
+        map_name: &str,
+        pk3_filename: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        let ts = now.naive_utc();
+        sqlx::query(
+            "INSERT INTO server_maps \
+                (server_id, map_name, pk3_filename, first_seen_at, last_seen_at, pending_restart) \
+             VALUES (?, ?, ?, ?, ?, 1) \
+             ON DUPLICATE KEY UPDATE \
+                 pk3_filename = COALESCE(VALUES(pk3_filename), pk3_filename), \
+                 last_seen_at = VALUES(last_seen_at), \
+                 pending_restart = 1"
+        )
+        .bind(server_id)
+        .bind(map_name)
+        .bind(pk3_filename)
+        .bind(ts)
+        .bind(ts)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn list_server_maps(&self, server_id: i64) -> Result<Vec<ServerMap>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT map_name, pk3_filename, first_seen_at, last_seen_at, pending_restart \
+             FROM server_maps WHERE server_id = ? ORDER BY map_name"
+        )
+        .bind(server_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_server_map).collect())
+    }
+
+    async fn get_server_map_scan(
+        &self,
+        server_id: i64,
+    ) -> Result<Option<ServerMapScanStatus>, StorageError> {
+        let row = sqlx::query(
+            "SELECT last_scan_at, last_scan_ok, last_scan_error, map_count \
+             FROM server_map_scans WHERE server_id = ?"
+        )
+        .bind(server_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.map(|r| {
+            let last: Option<NaiveDateTime> = r.try_get("last_scan_at").ok();
+            ServerMapScanStatus {
+                last_scan_at: last.map(|n| n.and_utc()),
+                last_scan_ok: r.get::<i8, _>("last_scan_ok") != 0,
+                last_scan_error: r.try_get("last_scan_error").ok(),
+                map_count: r.get("map_count"),
+            }
+        }))
+    }
+
+    async fn record_server_map_scan(
+        &self,
+        server_id: i64,
+        ok: bool,
+        error: Option<&str>,
+        map_count: i64,
+        at: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        let ts = at.naive_utc();
+        sqlx::query(
+            "INSERT INTO server_map_scans \
+                (server_id, last_scan_at, last_scan_ok, last_scan_error, map_count) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+                 last_scan_at = VALUES(last_scan_at), \
+                 last_scan_ok = VALUES(last_scan_ok), \
+                 last_scan_error = VALUES(last_scan_error), \
+                 map_count = VALUES(map_count)"
+        )
+        .bind(server_id)
+        .bind(ts)
+        .bind(if ok { 1_i8 } else { 0_i8 })
+        .bind(error)
+        .bind(map_count)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_server_maps(&self, server_id: i64) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        sqlx::query("DELETE FROM server_maps WHERE server_id = ?")
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        sqlx::query("DELETE FROM server_map_scans WHERE server_id = ?")
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
     }
 
     // ---- Dashboard summary ----

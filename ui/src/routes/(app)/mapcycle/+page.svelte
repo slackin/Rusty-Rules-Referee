@@ -1,14 +1,19 @@
 <script>
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api.svelte.js';
-	import { GripVertical, Plus, Trash2, Save, RotateCcw, Globe } from 'lucide-svelte';
+	import { GripVertical, Plus, Trash2, Save, RotateCcw, Globe, RefreshCw, Clock, AlertTriangle } from 'lucide-svelte';
 	import MapRepoBrowser from '$lib/components/MapRepoBrowser.svelte';
 	import MissingMapsDialog from '$lib/components/MissingMapsDialog.svelte';
 	import MapConfigCreateDialog from '$lib/components/MapConfigCreateDialog.svelte';
 
 	let maps = $state([]);
+	/** Full entries from the server_maps cache: { map_name, pending_restart, pk3_filename, ... } */
 	let availableMaps = $state([]);
 	let originalMaps = $state([]);
+	let lastScanAt = $state(null);
+	let lastScanOk = $state(true);
+	let lastScanError = $state(null);
+	let refreshing = $state(false);
 	let newMap = $state('');
 	let loading = $state(true);
 	let saving = $state(false);
@@ -29,8 +34,44 @@
 		showMcCreate = true;
 	}
 
+	function applyMapListResponse(d) {
+		availableMaps = (d?.maps || []).map((m) =>
+			typeof m === 'string'
+				? { map_name: m, pending_restart: false, pk3_filename: null }
+				: m
+		);
+		lastScanAt = d?.last_scan_at || null;
+		lastScanOk = d?.last_scan_ok !== false;
+		lastScanError = d?.last_scan_error || null;
+	}
+
 	async function reloadAvailable() {
-		try { const d = await api.mapList(); availableMaps = d.maps || []; } catch (_) {}
+		try { applyMapListResponse(await api.mapList()); } catch (_) {}
+	}
+
+	async function refreshScan() {
+		refreshing = true;
+		error = '';
+		try {
+			await api.refreshMaps();
+			await reloadAvailable();
+			message = 'Map list refreshed from server.';
+		} catch (e) {
+			error = 'Refresh failed: ' + e.message;
+		}
+		refreshing = false;
+	}
+
+	function formatLastScan(ts) {
+		if (!ts) return 'never';
+		const then = new Date(ts).getTime();
+		const diff = Math.max(0, Date.now() - then);
+		const mins = Math.floor(diff / 60000);
+		if (mins < 1) return 'just now';
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		return `${Math.floor(hrs / 24)}d ago`;
 	}
 
 	onMount(async () => {
@@ -41,7 +82,7 @@
 			]);
 			maps = cycleData.maps || [];
 			originalMaps = [...maps];
-			availableMaps = mapListData.maps || [];
+			applyMapListResponse(mapListData);
 		} catch (e) {
 			error = 'Failed to load mapcycle: ' + e.message;
 		}
@@ -128,9 +169,16 @@
 
 	let suggestions = $derived(
 		newMap.length > 0
-			? availableMaps.filter(m => m.toLowerCase().includes(newMap.toLowerCase()) && !maps.includes(m)).slice(0, 8)
+			? availableMaps
+				.filter((m) =>
+					m.map_name.toLowerCase().includes(newMap.toLowerCase()) &&
+					!maps.includes(m.map_name)
+				)
+				.slice(0, 8)
 			: []
 	);
+
+	let pendingCount = $derived(availableMaps.filter((m) => m.pending_restart).length);
 </script>
 
 <svelte:head><title>Mapcycle Editor | R3</title></svelte:head>
@@ -164,6 +212,28 @@
 	{#if loading}
 		<div class="text-zinc-400 text-center py-12">Loading mapcycle...</div>
 	{:else}
+		<!-- Installed-map cache status strip -->
+		<div class="mb-4 flex items-center justify-between gap-3 px-3 py-2 bg-zinc-800/40 border border-zinc-700/50 rounded-lg text-xs">
+			<div class="flex items-center gap-2 text-zinc-400">
+				<Clock size={12}/>
+				<span>
+					{availableMaps.length} installed map{availableMaps.length !== 1 ? 's' : ''}
+					· last scanned {formatLastScan(lastScanAt)}
+					{#if !lastScanOk && lastScanError}
+						<span class="text-red-400">· {lastScanError}</span>
+					{/if}
+					{#if pendingCount > 0}
+						<span class="text-amber-300">· {pendingCount} pending restart</span>
+					{/if}
+				</span>
+			</div>
+			<button onclick={refreshScan} disabled={refreshing}
+				class="flex items-center gap-1.5 px-2 py-1 bg-zinc-700 text-zinc-200 rounded hover:bg-zinc-600 disabled:opacity-40 text-xs">
+				<RefreshCw size={12} class={refreshing ? 'animate-spin' : ''}/>
+				{refreshing ? 'Refreshing…' : 'Refresh'}
+			</button>
+		</div>
+
 		<!-- Add map -->
 		<div class="mb-6 relative">
 			<div class="flex gap-2">
@@ -177,9 +247,14 @@
 			{#if suggestions.length > 0}
 				<div class="absolute top-full left-0 right-12 mt-1 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl z-10 max-h-48 overflow-y-auto">
 					{#each suggestions as s}
-						<button onclick={() => { newMap = s; addMap(); }}
-							class="w-full text-left px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-700 hover:text-white">
-							{s}
+						<button onclick={() => { newMap = s.map_name; addMap(); }}
+							class="w-full text-left px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-700 hover:text-white flex items-center justify-between gap-2">
+							<span>{s.map_name}</span>
+							{#if s.pending_restart}
+								<span class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">
+									<AlertTriangle size={10}/> pending restart
+								</span>
+							{/if}
 						</button>
 					{/each}
 				</div>
@@ -197,6 +272,11 @@
 					<span class="text-zinc-500 cursor-grab active:cursor-grabbing"><GripVertical size={16}/></span>
 					<span class="text-zinc-500 text-xs font-mono w-6 text-right">{i + 1}</span>
 					<span class="flex-1 text-white text-sm font-medium">{map}</span>
+					{#if availableMaps.find((a) => a.map_name === map)?.pending_restart}
+						<span class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">
+							<AlertTriangle size={10}/> pending restart
+						</span>
+					{/if}
 					<div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
 						<button onclick={() => moveMap(i, i - 1)} disabled={i === 0}
 							class="p-1 text-zinc-400 hover:text-white disabled:opacity-20 text-xs">▲</button>

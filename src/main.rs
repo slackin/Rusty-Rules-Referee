@@ -803,6 +803,17 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
             config.map_repo.sources.clone(),
             config.map_repo.refresh_interval_hours,
         );
+
+        // Per-server installed-map cache: ask each connected game server
+        // for its `fdir *.bsp` output on a schedule and persist to the
+        // `server_maps` table. On-connect scans are triggered separately
+        // from the register handler.
+        rusty_rules_referee::mapscan::spawn_master_scheduler(
+            db.clone(),
+            pending_responses.clone(),
+            pending_client_requests.clone(),
+            config.map_repo.scan_interval_hours,
+        );
     }
 
     // Health monitor: periodically check for offline servers

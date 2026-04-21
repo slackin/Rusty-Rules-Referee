@@ -13,7 +13,8 @@
 		loading = true; error = '';
 		try {
 			const r = await api.serverMaps(serverId);
-			maps = (r?.data ?? r?.MapList)?.maps || [];
+			const list = Array.isArray(r?.maps) ? r.maps : [];
+			maps = list.map((m) => (typeof m === 'string' ? m : m.map_name)).filter(Boolean);
 		} catch (e) { error = e.message; }
 		finally { loading = false; }
 	}

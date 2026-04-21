@@ -69,8 +69,12 @@
 		availableLoading = true;
 		try {
 			const r = await api.serverMaps(serverId);
-			const d = r?.data ?? r?.MapList ?? {};
-			availableMaps = (d.maps || []).slice().sort();
+			// New cache-backed shape: { maps: [{ map_name, pending_restart, ... }], last_scan_at, ... }
+			const list = Array.isArray(r?.maps) ? r.maps : [];
+			availableMaps = list
+				.map((m) => (typeof m === 'string' ? m : m.map_name))
+				.filter(Boolean)
+				.sort();
 		} catch (_) { /* non-fatal; manual add still works */ }
 		finally { availableLoading = false; }
 	}

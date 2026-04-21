@@ -210,3 +210,32 @@ pub struct MapRepoEntry {
     /// When this entry was last observed on one of the configured sources.
     pub last_seen_at: DateTime<Utc>,
 }
+
+/// A single installed map reported by a game server's engine via
+/// `fdir *.bsp`. Cached per-server and refreshed on a schedule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerMap {
+    /// Map name without the `.bsp` extension (e.g. `ut4_turnpike`).
+    pub map_name: String,
+    /// Best-effort `.pk3` filename if known (filled in at import time; left
+    /// unset by engine-only scans, since `fdir *.bsp` doesn't reveal which
+    /// pk3 provided a given `.bsp`).
+    #[serde(default)]
+    pub pk3_filename: Option<String>,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    /// True when a `.pk3` was imported but the game engine has not yet
+    /// re-scanned its filesystem (UrT caches the filesystem at startup and
+    /// only rediscovers new pk3 files on `fs_restart` or map change).
+    #[serde(default)]
+    pub pending_restart: bool,
+}
+
+/// Status of the most recent installed-maps scan for a single server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerMapScanStatus {
+    pub last_scan_at: Option<DateTime<Utc>>,
+    pub last_scan_ok: bool,
+    pub last_scan_error: Option<String>,
+    pub map_count: i64,
+}

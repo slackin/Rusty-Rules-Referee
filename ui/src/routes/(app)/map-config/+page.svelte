@@ -84,7 +84,8 @@
 				api.mapList()
 			]);
 			configs = configsData || [];
-			availableMaps = mapsData.maps || [];
+			const list = Array.isArray(mapsData?.maps) ? mapsData.maps : [];
+			availableMaps = list.map((m) => (typeof m === 'string' ? m : m.map_name)).filter(Boolean);
 		} catch (e) {
 			error = 'Failed to load map configs: ' + e.message;
 		}
