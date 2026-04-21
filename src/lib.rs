@@ -17,6 +17,7 @@ pub mod storage;
 pub mod sync;
 pub mod update;
 pub mod web;
+pub mod maprepo;
 
 /// Create a TCP listener with `SO_REUSEADDR` set, so a restart doesn't fail
 /// with "Address already in use" while the old socket is in TIME_WAIT.

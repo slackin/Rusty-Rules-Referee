@@ -275,6 +275,15 @@ pub enum ClientRequest {
     SaveMapConfig { config: serde_json::Value },
     /// Delete a per-map config entry by id on the client.
     DeleteMapConfig { id: i64 },
+    /// Download a `.pk3` map file from the master-approved URL and place it
+    /// into the game server's `q3ut4/` directory. Filename is validated to
+    /// prevent path traversal and the URL host must be on the allowlist.
+    DownloadMapPk3 {
+        url: String,
+        filename: String,
+        #[serde(default)]
+        allowed_hosts: Vec<String>,
+    },
 }
 
 /// Responses from a client bot back to the master.
@@ -384,6 +393,13 @@ pub enum ClientResponse {
     },
     /// List of per-map config entries stored on the client.
     MapConfigs { entries: serde_json::Value },
+    /// A `.pk3` was downloaded successfully onto the client filesystem.
+    MapDownloaded {
+        /// Absolute path to the written file.
+        path: String,
+        /// Final file size in bytes.
+        size: u64,
+    },
     /// Generic success acknowledgement.
     Ok {
         #[serde(default)]

@@ -65,6 +65,7 @@
 	let updateMsg = $state('');
 	let updateMsgType = $state('');
 	let update = $state({});
+	let map_repo = $state({});
 
 	// Game log path check
 	let gameLogChecking = $state(false);
@@ -450,7 +451,7 @@
 	];
 
 	function currentJson() {
-		return JSON.stringify({ referee, server, web, update, plugins });
+		return JSON.stringify({ referee, server, web, update, map_repo, plugins });
 	}
 
 	let isDirty = $derived(currentJson() !== originalJson);
@@ -464,8 +465,14 @@
 			web = cfg.web || {};
 			update = cfg.update || { enabled: false, url: 'https://r3.pugbot.net/api/updates', channel: 'beta', check_interval: 3600, auto_restart: true };
 			if (!update.channel) update.channel = 'beta';
+			map_repo = cfg.map_repo || {
+				enabled: true,
+				sources: ['https://maps.pugbot.net/q3ut4/', 'https://urt.li/q3ut4/'],
+				refresh_interval_hours: 24,
+			};
+			if (!Array.isArray(map_repo.sources)) map_repo.sources = [];
 			plugins = (cfg.plugins || []).map(p => ({ ...p, settings: p.settings || {} }));
-			originalJson = JSON.stringify({ referee, server, web, update, plugins });
+			originalJson = JSON.stringify({ referee, server, web, update, map_repo, plugins });
 		} catch (e) {
 			message = e.message;
 			messageType = 'error';
@@ -481,7 +488,7 @@
 		saving = true;
 		message = '';
 		try {
-			const payload = { referee, server, web, update, plugins };
+			const payload = { referee, server, web, update, map_repo, plugins };
 			await api.updateConfig(payload);
 			message = 'Configuration saved successfully. Some changes may require a restart.';
 			messageType = 'success';
@@ -500,6 +507,7 @@
 		web = orig.web;
 		update = orig.update;
 		plugins = orig.plugins;
+		map_repo = orig.map_repo || { enabled: true, sources: [], refresh_interval_hours: 24 };
 		message = '';
 	}
 
@@ -911,6 +919,51 @@
 							</button>
 						</div>
 					</div>
+				</div>
+			</div>
+		</section>
+
+		<!-- Map Repository Section -->
+		<section class="card">
+			<div class="flex items-center gap-3 border-b border-surface-800 px-6 py-4">
+				<div class="flex h-9 w-9 items-center justify-center rounded-lg bg-accent/10">
+					<Globe class="h-4.5 w-4.5 text-accent" />
+				</div>
+				<div>
+					<h2 class="text-sm font-semibold text-surface-100">Map Repository</h2>
+					<p class="text-xs text-surface-500">External <code>.pk3</code> index used for one-click map imports</p>
+				</div>
+			</div>
+			<div class="p-6 space-y-5">
+				<div class="flex items-center justify-between">
+					<div>
+						<label for="mr_enabled" class="text-xs font-medium text-surface-400">Enable map repository</label>
+						<p class="text-xs text-surface-600">Periodically scrape the sources below and cache available maps.</p>
+					</div>
+					<button
+						id="mr_enabled"
+						class="relative h-6 w-11 rounded-full transition-colors {map_repo.enabled ? 'bg-accent' : 'bg-surface-700'}"
+						onclick={() => map_repo.enabled = !map_repo.enabled}
+						role="switch"
+						aria-checked={map_repo.enabled}
+					>
+						<span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform {map_repo.enabled ? 'translate-x-5' : 'translate-x-0'}"></span>
+					</button>
+				</div>
+
+				<div>
+					<label for="mr_sources" class="mb-1.5 block text-xs font-medium text-surface-400">Source URLs (one per line)</label>
+					<textarea id="mr_sources" rows="4" class="input font-mono text-sm"
+						placeholder="https://maps.pugbot.net/q3ut4/&#10;https://urt.li/q3ut4/"
+						value={(map_repo.sources || []).join('\n')}
+						oninput={(e) => { map_repo.sources = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean); }}></textarea>
+					<p class="mt-1 text-xs text-surface-600">Each URL must serve an Apache/nginx-style HTML directory index listing <code>.pk3</code> files.</p>
+				</div>
+
+				<div class="sm:max-w-xs">
+					<label for="mr_interval" class="mb-1.5 block text-xs font-medium text-surface-400">Refresh interval (hours)</label>
+					<input id="mr_interval" type="number" min="1" class="input font-mono" bind:value={map_repo.refresh_interval_hours} placeholder="24" />
+					<p class="mt-1 text-xs text-surface-600">How often the master re-scrapes all sources.</p>
 				</div>
 			</div>
 		</section>

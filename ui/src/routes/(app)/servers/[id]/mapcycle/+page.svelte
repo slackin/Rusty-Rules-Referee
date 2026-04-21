@@ -1,7 +1,10 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
 	import { page } from '$app/stores';
-	import { ArrowUp, ArrowDown, X, Plus, RotateCcw, Save, Code, List, GripVertical } from 'lucide-svelte';
+	import { ArrowUp, ArrowDown, X, Plus, RotateCcw, Save, Code, List, GripVertical, Globe } from 'lucide-svelte';
+	import MapRepoBrowser from '$lib/components/MapRepoBrowser.svelte';
+	import MissingMapsDialog from '$lib/components/MissingMapsDialog.svelte';
+	import MapConfigCreateDialog from '$lib/components/MapConfigCreateDialog.svelte';
 
 	let serverId = $derived(Number($page.params.id));
 	let mapcyclePath = $state('');
@@ -31,6 +34,23 @@
 	/** Drag & drop state. */
 	let dragFrom = $state(-1);
 	let dragOver = $state(-1);
+
+	/** Map repository browser modal. */
+	let showRepo = $state(false);
+	/** Missing-maps pre-save confirmation. */
+	let showMissing = $state(false);
+	let missingList = $state([]);
+	/** MapConfig create prompt after a successful import. */
+	let showMcCreate = $state(false);
+	let mcCreateFile = $state('');
+
+	function promptMapConfig(filename) {
+		try {
+			if (sessionStorage.getItem('r3.skipMapConfigPrompt') === '1') return;
+		} catch (_) {}
+		mcCreateFile = filename;
+		showMcCreate = true;
+	}
 
 	async function load() {
 		loading = true; error = ''; msg = '';
@@ -144,6 +164,20 @@
 	async function save() {
 		// Make sure whatever mode the user edited in is reflected.
 		if (mode === 'raw') syncFromRaw();
+		// Pre-flight: detect any maps that aren't installed on the server.
+		try {
+			const r = await api.serverMissingMaps(serverId, cycle);
+			const list = r?.missing || [];
+			if (list.length > 0) {
+				missingList = list;
+				showMissing = true;
+				return; // dialog continues the save via onproceed
+			}
+		} catch (_) { /* non-fatal — proceed with save */ }
+		await doSave();
+	}
+
+	async function doSave() {
 		saving = true; msg = '';
 		try {
 			const r = await api.serverSetMapcycle(serverId, cycle);
@@ -234,6 +268,10 @@
 		<div class="card p-4 h-fit">
 			<h3 class="text-sm font-semibold text-surface-200 mb-3">Add a map</h3>
 
+			<button class="btn btn-secondary w-full mb-3" onclick={() => (showRepo = true)}>
+				<Globe size={14} /> Browse map repository…
+			</button>
+
 			<label class="block text-xs text-surface-500 mb-1" for="mc-filter">Search server maps</label>
 			<input
 				id="mc-filter"
@@ -297,3 +335,24 @@
 		Reload from server
 	</button>
 </div>
+
+<MapRepoBrowser
+	bind:open={showRepo}
+	{serverId}
+	onimported={(fn) => {
+		// Strip .pk3 and auto-add the newly imported map to the cycle so the
+		// admin can save straight away.
+		const stem = fn.replace(/\.pk3$/i, '');
+		if (!cycle.includes(stem)) addMap(stem);
+		loadAvailable();
+		promptMapConfig(fn);
+	}} />
+
+<MissingMapsDialog
+	bind:open={showMissing}
+	{serverId}
+	missing={missingList}
+	onproceed={doSave}
+	onimported={(fn) => { loadAvailable(); promptMapConfig(fn); }} />
+
+<MapConfigCreateDialog bind:open={showMcCreate} filename={mcCreateFile} />

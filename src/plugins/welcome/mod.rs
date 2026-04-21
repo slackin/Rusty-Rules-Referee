@@ -129,6 +129,22 @@ impl Plugin for WelcomePlugin {
 
         // Look up client from the connected-clients manager
         if let Some(client) = ctx.clients.get_by_cid(&cid_str).await {
+            // Guard against duplicate EVT_CLIENT_AUTH dispatches (one from
+            // ClientConnect/dumpuser, another from AccountValidated): only
+            // greet once per connection.
+            let already_welcomed = client
+                .get_var("welcome", "welcomed")
+                .and_then(|v| v.value.as_bool())
+                .unwrap_or(false);
+            if already_welcomed {
+                return Ok(());
+            }
+            ctx.clients
+                .update(&cid_str, |c| {
+                    c.set_var("welcome", "welcomed", serde_json::json!(true));
+                })
+                .await;
+
             // Check for a custom greeting first
             let custom_greeting = client.get_var("welcome", "greeting")
                 .and_then(|v| v.value.as_str().map(|s| s.to_string()));

@@ -4,7 +4,7 @@ pub mod sqlite;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -163,6 +163,26 @@ pub trait Storage: Send + Sync {
     async fn get_map_config_by_id(&self, id: i64) -> Result<MapConfig, StorageError>;
     async fn save_map_config(&self, config: &MapConfig) -> Result<i64, StorageError>;
     async fn delete_map_config(&self, id: i64) -> Result<(), StorageError>;
+
+    // ---- Map repository cache (master-side) ----
+    /// Upsert a batch of repo entries. Uses `filename` as primary key.
+    async fn upsert_map_repo_entries(&self, entries: &[MapRepoEntry]) -> Result<u64, StorageError>;
+    /// Case-insensitive substring search over `filename`. `query` empty
+    /// returns the newest entries. Returns `(entries, total_matching)`.
+    async fn search_map_repo(
+        &self,
+        query: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<MapRepoEntry>, u64), StorageError>;
+    async fn get_map_repo_entry(&self, filename: &str) -> Result<Option<MapRepoEntry>, StorageError>;
+    /// Remove entries whose `last_seen_at` is older than the cutoff.
+    /// Returns the number of rows deleted.
+    async fn prune_map_repo_entries(&self, before: chrono::DateTime<chrono::Utc>) -> Result<u64, StorageError>;
+    /// Total count of cached entries.
+    async fn count_map_repo_entries(&self) -> Result<u64, StorageError>;
+    /// Most recent `last_seen_at` across all entries, if any.
+    async fn latest_map_repo_refresh(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>, StorageError>;
 
     // ---- Dashboard summary ----
     async fn get_dashboard_summary(&self) -> Result<DashboardSummary, StorageError>;

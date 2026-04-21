@@ -51,6 +51,8 @@ pub struct RefereeConfig {
     #[serde(default)]
     pub client: Option<ClientSection>,
     #[serde(default)]
+    pub map_repo: MapRepoSection,
+    #[serde(default)]
     pub plugins: Vec<PluginConfig>,
 }
 
@@ -267,6 +269,53 @@ fn default_sync_interval() -> u64 {
 
 fn default_heartbeat_interval() -> u64 {
     15
+}
+
+/// External `.pk3` map repository configuration.
+///
+/// The master periodically scrapes each listed HTML autoindex, persists a
+/// searchable cache of `.pk3` filenames in the `map_repo_entries` table, and
+/// lets admins one-click import selected maps onto a game server.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MapRepoSection {
+    /// Whether the map repo browser (and background refresher) is enabled.
+    #[serde(default = "default_map_repo_enabled")]
+    pub enabled: bool,
+    /// Ordered list of autoindex URLs to scrape. Each URL must serve an
+    /// Apache/nginx-style directory listing of `.pk3` files (trailing slash
+    /// required). Filename conflicts across sources are resolved by "last
+    /// seen wins" on refresh.
+    #[serde(default = "default_map_repo_sources")]
+    pub sources: Vec<String>,
+    /// Background refresh interval in hours. Set to 0 to disable the timer
+    /// (manual `POST /api/v1/map-repo/refresh` still works).
+    #[serde(default = "default_map_repo_refresh_hours")]
+    pub refresh_interval_hours: u32,
+}
+
+impl Default for MapRepoSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_map_repo_enabled(),
+            sources: default_map_repo_sources(),
+            refresh_interval_hours: default_map_repo_refresh_hours(),
+        }
+    }
+}
+
+fn default_map_repo_enabled() -> bool {
+    true
+}
+
+fn default_map_repo_sources() -> Vec<String> {
+    vec![
+        "https://maps.pugbot.net/q3ut4/".to_string(),
+        "https://urt.li/q3ut4/".to_string(),
+    ]
+}
+
+fn default_map_repo_refresh_hours() -> u32 {
+    24
 }
 
 impl RefereeConfig {

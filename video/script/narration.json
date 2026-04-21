@@ -1,0 +1,221 @@
+{
+  "$schema": "./narration.schema.json",
+  "meta": {
+    "title": "R3 — Multi-Server Walkthrough",
+    "subtitle": "Urban Terror server admin bot — master-mode portal tour",
+    "targetLengthMs": 240000,
+    "hardCapMs": 320000,
+    "watermark": "r3.pugbot.net",
+    "voice": "en-US-GuyNeural",
+    "rate": "+2%",
+    "pitch": "+0Hz"
+  },
+  "scenes": [
+    {
+      "id": "intro",
+      "route": "/",
+      "narration": "Meet R3 in multi-server mode. One master portal, many game servers, one login — today we'll tour the whole thing, edit a real mapcycle, tweak a real server config, and watch the built-in update system find a new release.",
+      "durationMs": 12000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main", "timeoutMs": 8000 },
+        { "type": "idle", "ms": 6000 }
+      ]
+    },
+    {
+      "id": "master-dashboard",
+      "route": "/",
+      "narration": "This is the master dashboard. R3's running in master mode, so every game server in your fleet rolls up into a single view — live map, live player counts, who's online, who's offline. No browser tabs, no SSH, no guessing.",
+      "durationMs": 13000,
+      "interactions": [
+        { "type": "glide", "selector": "main" },
+        { "type": "idle", "ms": 8000 }
+      ]
+    },
+    {
+      "id": "servers-list",
+      "route": "/servers",
+      "narration": "The Servers page lists every registered node. Here we've got three — a sixteen-slot US East box, a twenty-slot EU West classic, and a thirty-two slot Sydney 24-7. Each one reports its IP, port, current map, update channel and last heartbeat.",
+      "durationMs": 14000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "table, .card" },
+        { "type": "glide", "selector": "main" },
+        { "type": "idle", "ms": 8000 }
+      ]
+    },
+    {
+      "id": "server-detail",
+      "route": "/servers/1",
+      "narration": "Click a server and you drop into its detail page — live scoreboard, dedicated map-config editor, per-server penalties, plugins, audit log, and a clone of every tab you see at the top. Everything the master can do, scoped to this one node.",
+      "durationMs": 14000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "glide", "selector": "main" },
+        { "type": "idle", "ms": 9000 }
+      ]
+    },
+    {
+      "id": "server-players",
+      "route": "/servers/1/players",
+      "narration": "Per-server player lists give you who's connected to this node right now — their current score, ping, admin group, and how long they've been in. Live data streams from the client bot over the master's mutual-TLS channel.",
+      "durationMs": 13000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "table, .card", "timeoutMs": 8000 },
+        { "type": "glide", "selector": "table, .card", "atMs": 5000 },
+        { "type": "idle", "ms": 2000 }
+      ]
+    },
+    {
+      "id": "mapcycle-edit",
+      "route": "/servers/1/mapcycle",
+      "narration": "Here's the mapcycle editor — this is the real editor wired to the real file on disk. Visual mode on the left, raw text view on the right, drag to reorder, click to add or remove. Let's add a map, move it to the top, and save.",
+      "durationMs": 22000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "#mc-filter", "timeoutMs": 6000 },
+        { "type": "type", "selector": "#mc-manual", "text": "ut4_casa", "delay": 90, "ifExists": true, "atMs": 11500 },
+        { "type": "click", "selector": "button:has-text(\"Add\")", "ifExists": true, "atMs": 13500 },
+        { "type": "click", "selector": "button[title=\"Move up\"]:not([disabled])", "ifExists": true, "atMs": 14600 },
+        { "type": "click", "selector": "button[title=\"Move up\"]:not([disabled])", "ifExists": true, "atMs": 15500 },
+        { "type": "glide", "selector": "button.btn-primary", "atMs": 16500 },
+        { "type": "click", "selector": "button.btn-primary", "ifExists": true, "atMs": 17700 }
+      ]
+    },
+    {
+      "id": "map-config",
+      "route": "/servers/1/map-config",
+      "narration": "Map configs let you attach per-map cvars — different fraglimits, different gametypes, different gear rules. R3 applies them automatically on every map change, so Turnpike can be Team Survivor while Uptown stays CTF.",
+      "durationMs": 13000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 9000 }
+      ]
+    },
+    {
+      "id": "server-cfg-edit",
+      "route": "/servers/1/server-cfg",
+      "narration": "The server.cfg editor gives you a form view of every UrT cvar, grouped by section, with tooltips and validation — or flip to raw text if you prefer. Changes stay local until you hit Save, which pushes the new config over mutual TLS to the remote node.",
+      "durationMs": 20000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main", "timeoutMs": 8000 },
+        { "type": "glide", "selector": "input[id*=\"sv_hostname\"], input[name*=\"sv_hostname\"]", "atMs": 9500 },
+        { "type": "clearInput", "selector": "input[id*=\"sv_hostname\"], input[name*=\"sv_hostname\"]", "atMs": 10300 },
+        { "type": "type", "selector": "input[id*=\"sv_hostname\"], input[name*=\"sv_hostname\"]", "text": "^2R3 US East - Turnpike", "delay": 60, "ifExists": true, "atMs": 10700 },
+        { "type": "scroll", "y": 500, "atMs": 13000 },
+        { "type": "glide", "selector": "button.btn-primary", "atMs": 13800 },
+        { "type": "click", "selector": "button.btn-primary", "ifExists": true, "atMs": 14800 }
+      ]
+    },
+    {
+      "id": "penalties-cross-server",
+      "route": "/penalties",
+      "narration": "The master Penalties view aggregates bans, kicks and warnings across every server. Filter by type, player, admin or server, and flag or lift any penalty inline. Every action gets logged in the audit trail.",
+      "durationMs": 13000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 9000 }
+      ]
+    },
+    {
+      "id": "chat-cross-server",
+      "route": "/chat",
+      "narration": "Chat logs stream from every node into one searchable archive. Grep for racism keywords, review a team-chat conversation from last week, or pull an entire session for evidence — it's all indexed, scoped and exportable.",
+      "durationMs": 12000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 8000 }
+      ]
+    },
+    {
+      "id": "stats-leaderboard",
+      "route": "/stats",
+      "narration": "The stats leaderboard runs on XLR — a rolling skill rating that weighs every kill by opponent skill. Players earn or lose points per match, and the board resets on your schedule. Weapon breakdowns and map breakdowns hang off every player card.",
+      "durationMs": 13000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 9000 }
+      ]
+    },
+    {
+      "id": "player-profile",
+      "route": "/players/1",
+      "narration": "A player profile pulls everything together — aliases, thirty-day skill trend, kill-death by weapon, every chat line they've ever typed, every penalty they've ever received. One URL, the whole rap sheet.",
+      "durationMs": 14000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 10000 }
+      ]
+    },
+    {
+      "id": "console",
+      "route": "/console",
+      "narration": "The live console routes RCON through the master. Commands get signed by your admin user and replayed into the audit log — no more sharing the rcon password, and every action is attributable.",
+      "durationMs": 12000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "glide", "selector": "main", "atMs": 4000 },
+        { "type": "idle", "ms": 2000 }
+      ]
+    },
+    {
+      "id": "audit-log",
+      "route": "/audit-log",
+      "narration": "Every admin action is cryptographically stamped into the audit log — who, what, when, from where, with arguments. Tamper-evident, server-scoped, and searchable across the whole fleet.",
+      "durationMs": 12000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 8000 }
+      ]
+    },
+    {
+      "id": "pairing",
+      "route": "/pairing",
+      "narration": "Onboarding a new server takes two commands. Generate a pairing token here, drop it into the client node's TOML, and R3 completes a mutual TLS handshake on first boot. The new server appears in the fleet the moment it reports in.",
+      "durationMs": 14000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 10000 }
+      ]
+    },
+    {
+      "id": "config",
+      "route": "/config",
+      "narration": "The master config panel edits the TOML that drives every connected node. Plugins, thresholds, announce intervals, censorship rules — change it here, save it, and the policy propagates to every remote bot on its next sync.",
+      "durationMs": 14000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 10000 }
+      ]
+    },
+    {
+      "id": "update-system",
+      "route": "/config",
+      "narration": "Down here is the update system. Point it at a channel — stable, beta, or alpha — click Check, and R3 phones home. If a new build is out, it verifies the signature, streams the binary, swaps the process, and you're upgraded with zero downtime.",
+      "durationMs": 17000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "scroll", "y": 1200, "atMs": 500 },
+        { "type": "glide", "selector": "button:has-text(\"Check for updates\"), button:has-text(\"Check\")", "atMs": 5500 },
+        { "type": "click", "selector": "button:has-text(\"Check for updates\"), button:has-text(\"Check\")", "ifExists": true, "atMs": 7500 }
+      ]
+    },
+    {
+      "id": "admin-users",
+      "route": "/admin-users",
+      "narration": "Role-based access control is built in. Superadmins have the keys, moderators can ban and kick, viewers can only read. Bcrypt-hashed passwords, per-role route guards, and session-scoped JWTs — no shared logins.",
+      "durationMs": 12000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 8000 }
+      ]
+    },
+    {
+      "id": "outro",
+      "route": "/",
+      "narration": "That's R3 in master mode — one portal, unlimited servers, every feature your old admin bot had plus the one thing it didn't: a UI you actually want to use. Source and install instructions at r3 dot pugbot dot net.",
+      "durationMs": 12000,
+      "interactions": [
+        { "type": "waitForSelector", "selector": "main" },
+        { "type": "idle", "ms": 8000 }
+      ]
+    }
+  ]
+}

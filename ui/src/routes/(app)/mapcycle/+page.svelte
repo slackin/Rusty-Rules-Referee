@@ -1,7 +1,10 @@
 <script>
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api.svelte.js';
-	import { GripVertical, Plus, Trash2, Save, RotateCcw } from 'lucide-svelte';
+	import { GripVertical, Plus, Trash2, Save, RotateCcw, Globe } from 'lucide-svelte';
+	import MapRepoBrowser from '$lib/components/MapRepoBrowser.svelte';
+	import MissingMapsDialog from '$lib/components/MissingMapsDialog.svelte';
+	import MapConfigCreateDialog from '$lib/components/MapConfigCreateDialog.svelte';
 
 	let maps = $state([]);
 	let availableMaps = $state([]);
@@ -12,6 +15,23 @@
 	let message = $state('');
 	let error = $state('');
 	let dragIndex = $state(null);
+	let showRepo = $state(false);
+	let showMissing = $state(false);
+	let missingList = $state([]);
+	let showMcCreate = $state(false);
+	let mcCreateFile = $state('');
+
+	function promptMapConfig(filename) {
+		try {
+			if (sessionStorage.getItem('r3.skipMapConfigPrompt') === '1') return;
+		} catch (_) {}
+		mcCreateFile = filename;
+		showMcCreate = true;
+	}
+
+	async function reloadAvailable() {
+		try { const d = await api.mapList(); availableMaps = d.maps || []; } catch (_) {}
+	}
 
 	onMount(async () => {
 		try {
@@ -78,6 +98,19 @@
 		saving = false;
 	}
 
+	async function trySave() {
+		try {
+			const r = await api.localMissingMaps(maps);
+			const list = r?.missing || [];
+			if (list.length > 0) {
+				missingList = list;
+				showMissing = true;
+				return;
+			}
+		} catch (_) { /* non-fatal */ }
+		await save();
+	}
+
 	function reset() {
 		maps = [...originalMaps];
 		message = '';
@@ -106,11 +139,15 @@
 	<div class="flex items-center justify-between mb-6">
 		<h1 class="text-2xl font-bold text-white">Mapcycle Editor</h1>
 		<div class="flex gap-2">
+			<button onclick={() => (showRepo = true)}
+				class="flex items-center gap-1.5 px-3 py-2 bg-zinc-700 text-zinc-200 rounded-lg hover:bg-zinc-600 text-sm">
+				<Globe size={14}/> Browse repo
+			</button>
 			<button onclick={reset} disabled={!hasChanges || saving}
 				class="flex items-center gap-1.5 px-3 py-2 bg-zinc-700 text-zinc-300 rounded-lg hover:bg-zinc-600 disabled:opacity-40 text-sm">
 				<RotateCcw size={14}/> Reset
 			</button>
-			<button onclick={save} disabled={!hasChanges || saving}
+			<button onclick={trySave} disabled={!hasChanges || saving}
 				class="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 disabled:opacity-40 text-sm font-medium">
 				<Save size={14}/> {saving ? 'Saving...' : 'Save'}
 			</button>
@@ -179,3 +216,22 @@
 		<div class="mt-4 text-xs text-zinc-500">{maps.length} map{maps.length !== 1 ? 's' : ''} in rotation</div>
 	{/if}
 </div>
+
+<MapRepoBrowser
+	bind:open={showRepo}
+	serverId={null}
+	onimported={(fn) => {
+		const stem = fn.replace(/\.pk3$/i, '');
+		if (!maps.includes(stem)) maps = [...maps, stem];
+		reloadAvailable();
+		promptMapConfig(fn);
+	}} />
+
+<MissingMapsDialog
+	bind:open={showMissing}
+	serverId={null}
+	missing={missingList}
+	onproceed={save}
+	onimported={(fn) => { reloadAvailable(); promptMapConfig(fn); }} />
+
+<MapConfigCreateDialog bind:open={showMcCreate} filename={mcCreateFile} />

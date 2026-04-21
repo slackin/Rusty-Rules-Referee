@@ -192,3 +192,21 @@ pub struct MapConfig {
 fn default_now() -> DateTime<Utc> {
     Utc::now()
 }
+
+/// A single `.pk3` map file cached from an external map repository.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapRepoEntry {
+    /// Exact filename including `.pk3` extension. Primary key.
+    pub filename: String,
+    /// File size in bytes, if reported by the index.
+    #[serde(default)]
+    pub size: Option<i64>,
+    /// Last-modified timestamp string as reported by the index (free-form,
+    /// e.g. `2024-05-01 12:30`). Parseable formats vary across mirrors.
+    #[serde(default)]
+    pub mtime: Option<String>,
+    /// Absolute URL to download the `.pk3` from.
+    pub source_url: String,
+    /// When this entry was last observed on one of the configured sources.
+    pub last_seen_at: DateTime<Utc>,
+}

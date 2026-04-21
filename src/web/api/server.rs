@@ -268,3 +268,126 @@ pub async fn restart_bot(
         "message": "Bot is restarting..."
     }))
 }
+
+// ---------------------------------------------------------------------------
+// Map repository import (standalone mode)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct ImportMapBody {
+    pub filename: String,
+}
+
+/// POST /api/v1/server/maps/import — fetch a `.pk3` from the repo cache and
+/// place it into the local game server's `q3ut4/` directory.
+pub async fn import_map(
+    AdminOnly(_claims): AdminOnly,
+    State(state): State<AppState>,
+    Json(body): Json<ImportMapBody>,
+) -> impl IntoResponse {
+    if !state.config.map_repo.enabled {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "map_repo is disabled"})),
+        )
+            .into_response();
+    }
+    let entry = match state.storage.get_map_repo_entry(&body.filename).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("'{}' not found in map repo cache", body.filename)
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    let allowed_hosts = state.config.map_repo.sources.clone();
+    let game_log = state.config.server.game_log.clone();
+    let resp = crate::sync::handlers::handle_download_map_pk3(
+        game_log.as_deref(),
+        &entry.source_url,
+        &entry.filename,
+        &allowed_hosts,
+    )
+    .await;
+    Json(serde_json::to_value(&resp).unwrap_or_default()).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct MissingMapsBody {
+    pub maps: Vec<String>,
+}
+
+/// POST /api/v1/server/maps/missing — diff the given list against the
+/// server's installed maps and annotate with repo availability.
+pub async fn missing_maps(
+    AuthUser(_claims): AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<MissingMapsBody>,
+) -> impl IntoResponse {
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Not available in master mode"})),
+            )
+                .into_response();
+        }
+    };
+    let raw = match ctx.rcon.send("fdir *.bsp").await {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    let installed: std::collections::HashSet<String> = raw
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            if !t.ends_with(".bsp") {
+                return None;
+            }
+            let name = t.rsplit('/').next().unwrap_or(t).trim_end_matches(".bsp");
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_lowercase())
+            }
+        })
+        .collect();
+
+    let mut missing = Vec::new();
+    for m in &body.maps {
+        let key = m.trim().to_lowercase();
+        if key.is_empty() || installed.contains(&key) {
+            continue;
+        }
+        let repo = state
+            .storage
+            .get_map_repo_entry(&format!("{}.pk3", key))
+            .await
+            .ok()
+            .flatten();
+        missing.push(serde_json::json!({
+            "map": m,
+            "repo_filename": repo.as_ref().map(|e| e.filename.clone()),
+            "repo_size": repo.as_ref().and_then(|e| e.size),
+        }));
+    }
+    Json(serde_json::json!({ "missing": missing })).into_response()
+}

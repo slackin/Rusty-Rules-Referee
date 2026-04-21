@@ -6,6 +6,7 @@ pub mod config;
 pub mod groups;
 pub mod mapconfigs;
 pub mod mapcycle;
+pub mod maprepo;
 pub mod notes;
 pub mod pairing;
 pub mod penalties;

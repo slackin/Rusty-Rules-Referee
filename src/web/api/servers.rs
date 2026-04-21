@@ -782,3 +782,177 @@ pub async fn set_server_update_channel(
     })
     .into_response()
 }
+
+// ---------------------------------------------------------------------------
+// Map repository import (per-server)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ImportMapRequest {
+    pub filename: String,
+}
+
+/// POST /api/v1/servers/:id/maps/import — download a `.pk3` from the cached
+/// repo entry onto the target client. Body: `{ filename: "ut4_foo.pk3" }`.
+pub async fn import_map(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<ImportMapRequest>,
+) -> impl IntoResponse {
+    if !state.config.map_repo.enabled {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CommandResponse {
+                ok: false,
+                message: "map_repo is disabled in config".into(),
+            }),
+        )
+            .into_response();
+    }
+    let entry = match state.storage.get_map_repo_entry(&req.filename).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(CommandResponse {
+                    ok: false,
+                    message: format!("'{}' not found in map repo cache", req.filename),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(CommandResponse {
+                    ok: false,
+                    message: format!("Storage error: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Build the host allowlist from configured sources so the client can
+    // cross-check and reject SSRF attempts.
+    let allowed_hosts: Vec<String> = state.config.map_repo.sources.clone();
+
+    info!(
+        server_id,
+        filename = %entry.filename,
+        url = %entry.source_url,
+        "Import map onto server"
+    );
+
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::DownloadMapPk3 {
+            url: entry.source_url.clone(),
+            filename: entry.filename.clone(),
+            allowed_hosts,
+        },
+        std::time::Duration::from_secs(600),
+    )
+    .await
+    {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (
+            status,
+            Json(CommandResponse {
+                ok: false,
+                message: msg,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MissingMapsRequest {
+    pub maps: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MissingMapInfo {
+    pub map: String,
+    /// Matching filename in the repo cache, if found.
+    pub repo_filename: Option<String>,
+    pub repo_size: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MissingMapsResponse {
+    pub missing: Vec<MissingMapInfo>,
+}
+
+/// POST /api/v1/servers/:id/maps/missing — given a candidate list of maps
+/// (without the `.pk3` extension), returns those that the server does not
+/// currently have installed, enriched with repo-availability info.
+pub async fn missing_maps(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<MissingMapsRequest>,
+) -> impl IntoResponse {
+    // Query the client for its installed maps.
+    let resp = match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::ListMaps,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err((status, msg)) => {
+            return (
+                status,
+                Json(CommandResponse {
+                    ok: false,
+                    message: msg,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let installed: Vec<String> = match resp {
+        ClientResponse::MapList { maps } => {
+            maps.into_iter().map(|m| m.to_lowercase()).collect()
+        }
+        other => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": "Unexpected response from client",
+                    "response": other,
+                })),
+            )
+                .into_response();
+        }
+    };
+    let installed_set: std::collections::HashSet<&str> =
+        installed.iter().map(|s| s.as_str()).collect();
+
+    let mut missing = Vec::new();
+    for m in &req.maps {
+        let key = m.trim().to_lowercase();
+        if key.is_empty() || installed_set.contains(key.as_str()) {
+            continue;
+        }
+        // Look up `<map>.pk3` in the repo cache (best-effort).
+        let candidate = format!("{}.pk3", key);
+        let repo = state
+            .storage
+            .get_map_repo_entry(&candidate)
+            .await
+            .ok()
+            .flatten();
+        missing.push(MissingMapInfo {
+            map: m.clone(),
+            repo_filename: repo.as_ref().map(|e| e.filename.clone()),
+            repo_size: repo.as_ref().and_then(|e| e.size),
+        });
+    }
+
+    Json(MissingMapsResponse { missing }).into_response()
+}

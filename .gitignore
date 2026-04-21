@@ -7,3 +7,6 @@ ui/.svelte-kit/
 docs/node_modules/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+# Stray build/log artifacts that shouldn't be committed
+/cargo-build.log
+/package-lock.json

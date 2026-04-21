@@ -489,6 +489,15 @@ impl ClientSyncManager {
                                                     id,
                                                 ).await
                                             }
+                                            ClientRequest::DownloadMapPk3 { url, filename, allowed_hosts } => {
+                                                let game_log = self.local_game_log().await;
+                                                handlers::handle_download_map_pk3(
+                                                    game_log.as_deref(),
+                                                    &url,
+                                                    &filename,
+                                                    &allowed_hosts,
+                                                ).await
+                                            }
                                         };
 
                                         let submission = ClientResponseSubmission {

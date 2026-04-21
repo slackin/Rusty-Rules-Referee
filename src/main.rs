@@ -796,6 +796,15 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
         }
     });
 
+    // Map repository background refresher (scrapes external .pk3 autoindexes).
+    if config.map_repo.enabled {
+        rusty_rules_referee::maprepo::spawn_refresher(
+            db.clone(),
+            config.map_repo.sources.clone(),
+            config.map_repo.refresh_interval_hours,
+        );
+    }
+
     // Health monitor: periodically check for offline servers
     let health_storage = db.clone();
     tokio::spawn(async move {

@@ -39,3 +39,31 @@ features:
     title: XLRstats
     details: Extended player statistics with ELO-based skill tracking, weapon stats, map stats, and leaderboards.
 ---
+
+<section class="r3-demo-video">
+  <div class="r3-demo-video__inner">
+    <h2 class="r3-demo-video__title">See R3 in action</h2>
+    <p class="r3-demo-video__subtitle">A two-minute tour of the web dashboard — live scoreboard, player management, penalties, RCON console, and the full plugin configuration UI.</p>
+    <video
+      class="r3-demo-video__player"
+      controls
+      muted
+      autoplay
+      playsinline
+      preload="metadata"
+      poster="https://r3.pugbot.net/media/r3-demo-poster.jpg"
+    >
+      <source src="https://r3.pugbot.net/media/r3-demo-720p.mp4" type="video/mp4" media="(max-width: 900px)" />
+      <source src="https://r3.pugbot.net/media/r3-demo-1080p.mp4" type="video/mp4" media="(max-width: 1800px)" />
+      <source src="https://r3.pugbot.net/media/r3-demo-1440p.mp4" type="video/mp4" />
+      Your browser doesn't support HTML5 video.
+      <a href="https://r3.pugbot.net/media/r3-demo-1080p.mp4">Download the demo (1080p MP4).</a>
+    </video>
+    <p class="r3-demo-video__links">
+      Also available:
+      <a href="https://r3.pugbot.net/media/r3-demo-720p.mp4">720p</a>&nbsp;·
+      <a href="https://r3.pugbot.net/media/r3-demo-1080p.mp4">1080p</a>&nbsp;·
+      <a href="https://r3.pugbot.net/media/r3-demo-1440p.mp4">1440p</a>
+    </p>
+  </div>
+</section>

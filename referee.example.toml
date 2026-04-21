@@ -39,6 +39,17 @@ enabled = false             # Set to true to enable automatic update checking
 # check_interval = 3600    # How often to check (seconds, default: 1 hour)
 # auto_restart = true      # Automatically restart after applying an update
 
+# ---- Map repository (external `.pk3` index for one-click imports) ----
+[map_repo]
+enabled = true
+# List of public Apache/nginx directory-index URLs to scrape for .pk3 files.
+# Visit each in a browser first to confirm it serves an HTML index.
+sources = [
+    "https://maps.pugbot.net/q3ut4/",
+    "https://urt.li/q3ut4/",
+]
+refresh_interval_hours = 24   # How often the master refreshes the cache.
+
 # Plugins to load (order matters for dependencies)
 
 # ---- Core admin plugin (must be first) ----

@@ -4,7 +4,7 @@ use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, SyncQueueEntry, VoteRecord};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct MysqlStorage {
@@ -395,6 +395,21 @@ impl MysqlStorage {
         .await
         .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
+        // 010_map_repo — external `.pk3` index cache (master-side).
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS map_repo_entries (
+                filename VARCHAR(255) PRIMARY KEY,
+                size BIGINT,
+                mtime VARCHAR(64),
+                source_url TEXT NOT NULL,
+                last_seen_at DATETIME NOT NULL,
+                INDEX idx_map_repo_entries_last_seen (last_seen_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
+
         // Re-enable foreign key checks
         sqlx::query("SET FOREIGN_KEY_CHECKS=1")
             .execute(&mut *conn)
@@ -578,6 +593,17 @@ fn row_to_map_config(row: &MySqlRow) -> MapConfig {
         custom_commands: row.get("custom_commands"),
         created_at: parse_dt(row.get("created_at")),
         updated_at: parse_dt(row.get("updated_at")),
+    }
+}
+
+fn row_to_map_repo_entry(row: &MySqlRow) -> MapRepoEntry {
+    let last_seen: Option<NaiveDateTime> = row.try_get("last_seen_at").ok();
+    MapRepoEntry {
+        filename: row.get("filename"),
+        size: row.try_get("size").ok(),
+        mtime: row.try_get("mtime").ok(),
+        source_url: row.get("source_url"),
+        last_seen_at: last_seen.map(|n| n.and_utc()).unwrap_or_default(),
     }
 }
 
@@ -1335,6 +1361,130 @@ impl Storage for MysqlStorage {
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(())
+    }
+
+    // ---- Map repository cache ----
+
+    async fn upsert_map_repo_entries(
+        &self,
+        entries: &[MapRepoEntry],
+    ) -> Result<u64, StorageError> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.pool.begin().await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        let mut n: u64 = 0;
+        for e in entries {
+            sqlx::query(
+                "INSERT INTO map_repo_entries (filename, size, mtime, source_url, last_seen_at) \
+                 VALUES (?, ?, ?, ?, ?) \
+                 ON DUPLICATE KEY UPDATE \
+                     size = VALUES(size), \
+                     mtime = VALUES(mtime), \
+                     source_url = VALUES(source_url), \
+                     last_seen_at = VALUES(last_seen_at)"
+            )
+            .bind(&e.filename)
+            .bind(e.size)
+            .bind(&e.mtime)
+            .bind(&e.source_url)
+            .bind(e.last_seen_at.naive_utc())
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| StorageError::QueryFailed(err.to_string()))?;
+            n += 1;
+        }
+        tx.commit().await.map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(n)
+    }
+
+    async fn search_map_repo(
+        &self,
+        query: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<MapRepoEntry>, u64), StorageError> {
+        let like = format!("%{}%", query.to_lowercase());
+        let (rows, total) = if query.trim().is_empty() {
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM map_repo_entries")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            let rows = sqlx::query(
+                "SELECT filename, size, mtime, source_url, last_seen_at \
+                 FROM map_repo_entries ORDER BY filename LIMIT ? OFFSET ?"
+            )
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            (rows, total as u64)
+        } else {
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM map_repo_entries WHERE LOWER(filename) LIKE ?"
+            )
+            .bind(&like)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            let rows = sqlx::query(
+                "SELECT filename, size, mtime, source_url, last_seen_at \
+                 FROM map_repo_entries WHERE LOWER(filename) LIKE ? \
+                 ORDER BY filename LIMIT ? OFFSET ?"
+            )
+            .bind(&like)
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            (rows, total as u64)
+        };
+        Ok((rows.iter().map(row_to_map_repo_entry).collect(), total))
+    }
+
+    async fn get_map_repo_entry(&self, filename: &str) -> Result<Option<MapRepoEntry>, StorageError> {
+        let row = sqlx::query(
+            "SELECT filename, size, mtime, source_url, last_seen_at \
+             FROM map_repo_entries WHERE filename = ?"
+        )
+        .bind(filename)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.as_ref().map(row_to_map_repo_entry))
+    }
+
+    async fn prune_map_repo_entries(
+        &self,
+        before: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        let result = sqlx::query("DELETE FROM map_repo_entries WHERE last_seen_at < ?")
+            .bind(before.naive_utc())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.rows_affected())
+    }
+
+    async fn count_map_repo_entries(&self) -> Result<u64, StorageError> {
+        let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM map_repo_entries")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(c as u64)
+    }
+
+    async fn latest_map_repo_refresh(&self) -> Result<Option<DateTime<Utc>>, StorageError> {
+        let row: Option<NaiveDateTime> = sqlx::query_scalar(
+            "SELECT MAX(last_seen_at) FROM map_repo_entries"
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.map(|n| n.and_utc()))
     }
 
     // ---- Dashboard summary ----

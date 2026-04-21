@@ -129,10 +129,10 @@ export const api = {
 
 	// Stats
 	leaderboard: (limit = 25, offset = 0) =>
-		request(`/stats/leaderboard?limit=${limit}&offset=${offset}`),
+		request(`/stats/leaderboard?limit=${limit}&offset=${offset}`).then(r => r.leaderboard),
 	playerStats: (id) => request(`/stats/player/${id}`),
-	weaponStats: () => request('/stats/weapons'),
-	mapStats: () => request('/stats/maps'),
+	weaponStats: () => request('/stats/weapons').then(r => r.weapons),
+	mapStats: () => request('/stats/maps').then(r => r.maps),
 	dashboardSummary: () => request('/stats/summary'),
 
 	// Chat
@@ -261,6 +261,26 @@ export const api = {
 	serverListPlugins: (id) => request(`/servers/${id}/plugins`),
 	serverUpdatePlugin: (id, name, body) =>
 		request(`/servers/${id}/plugins/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
+
+	// Map repository (external .pk3 browser, master-side cache)
+	mapRepoSearch: (q = '', limit = 50, offset = 0) => {
+		const p = new URLSearchParams();
+		if (q) p.set('q', q);
+		p.set('limit', String(limit));
+		p.set('offset', String(offset));
+		return request(`/map-repo?${p.toString()}`);
+	},
+	mapRepoStatus: () => request('/map-repo/status'),
+	mapRepoRefresh: () => request('/map-repo/refresh', { method: 'POST' }),
+	serverImportMap: (id, filename) =>
+		request(`/servers/${id}/maps/import`, { method: 'POST', body: JSON.stringify({ filename }) }),
+	serverMissingMaps: (id, maps) =>
+		request(`/servers/${id}/maps/missing`, { method: 'POST', body: JSON.stringify({ maps }) }),
+	// Standalone-mode equivalents
+	localImportMap: (filename) =>
+		request('/server/maps/import', { method: 'POST', body: JSON.stringify({ filename }) }),
+	localMissingMaps: (maps) =>
+		request('/server/maps/missing', { method: 'POST', body: JSON.stringify({ maps }) }),
 
 	// Pairing (master mode)
 	enablePairing: (expiry_minutes = 30) =>

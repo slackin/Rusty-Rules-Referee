@@ -31,7 +31,10 @@ if [ ! -d "$DIST_DIR" ]; then
 fi
 
 echo "==> Deploying to $REMOTE_HOST..."
+# Preserve /media/ (demo videos, posters, etc.) so docs redeploys don't wipe
+# assets published via `video/npm run publish`.
 sshpass -p "$DEPLOY_PASS" rsync -avz --delete \
+  --exclude='media/' --exclude='media' \
   -e "ssh -o StrictHostKeyChecking=no" \
   "$DIST_DIR/" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 

@@ -1355,3 +1355,202 @@ pub async fn handle_delete_map_config(
         },
     }
 }
+
+/// DownloadMapPk3 — fetch a `.pk3` from the master-supplied URL and save it
+/// into the game server's `q3ut4/` directory (derived from `game_log`).
+///
+/// Security:
+///   * `filename` must match `^[A-Za-z0-9._()+-]+\.pk3$` (no path separators,
+///     no hidden files).
+///   * `url` scheme must be `https` (or `http` only if the host is localhost).
+///   * `url` host must appear in `allowed_hosts` when non-empty (the master
+///     supplies its configured `map_repo.sources` hosts).
+///   * Target directory must resolve from `game_log`; no arbitrary paths.
+///   * Downloads go to `<target>.part` then atomic-rename on success.
+pub async fn handle_download_map_pk3(
+    game_log: Option<&str>,
+    url: &str,
+    filename: &str,
+    allowed_hosts: &[String],
+) -> ClientResponse {
+    // Validate filename.
+    let name_re = match regex::Regex::new(r"^[A-Za-z0-9._()+\-]+\.pk3$") {
+        Ok(r) => r,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Internal regex error: {}", e),
+            };
+        }
+    };
+    if !name_re.is_match(filename) {
+        return ClientResponse::Error {
+            message: format!("Invalid filename: {}", filename),
+        };
+    }
+
+    // Validate URL.
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(u) => u,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Invalid download URL: {}", e),
+            };
+        }
+    };
+    let scheme = parsed.scheme();
+    let host = parsed.host_str().unwrap_or("");
+    if host.is_empty() {
+        return ClientResponse::Error {
+            message: "Download URL has no host".into(),
+        };
+    }
+    let is_local = matches!(host, "localhost" | "127.0.0.1" | "::1");
+    if scheme != "https" && !(scheme == "http" && is_local) {
+        return ClientResponse::Error {
+            message: format!("Download URL scheme must be https (got {})", scheme),
+        };
+    }
+    if !allowed_hosts.is_empty() {
+        let allowed = allowed_hosts.iter().any(|a| {
+            reqwest::Url::parse(a)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_string()))
+                .is_some_and(|h| h.eq_ignore_ascii_case(host))
+        });
+        if !allowed {
+            return ClientResponse::Error {
+                message: format!("Download host '{}' not in allowlist", host),
+            };
+        }
+    }
+
+    // Resolve target directory.
+    let Some(dir) = game_dir_from_log(game_log) else {
+        return ClientResponse::Error {
+            message: "Cannot determine game server directory (game_log not set)".into(),
+        };
+    };
+    if !dir.exists() {
+        return ClientResponse::Error {
+            message: format!("Game server directory {} does not exist", dir.display()),
+        };
+    }
+    let final_path = dir.join(filename);
+    let part_path = dir.join(format!("{}.part", filename));
+    if final_path.exists() {
+        return ClientResponse::Error {
+            message: format!("{} already exists on server", filename),
+        };
+    }
+
+    // Fetch.
+    let http = match reqwest::Client::builder()
+        .user_agent("r3-bot/map-repo")
+        .timeout(Duration::from_secs(300))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("HTTP client build failed: {}", e),
+            };
+        }
+    };
+
+    info!(url = %url, dest = %final_path.display(), "Downloading .pk3");
+    let mut resp = match http.get(url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("HTTP request failed: {}", e),
+            };
+        }
+    };
+    if !resp.status().is_success() {
+        return ClientResponse::Error {
+            message: format!("HTTP {} downloading {}", resp.status(), url),
+        };
+    }
+
+    // Refuse obviously-wrong content types (HTML error pages etc).
+    if let Some(ct) = resp.headers().get(reqwest::header::CONTENT_TYPE) {
+        if let Ok(s) = ct.to_str() {
+            let s = s.to_ascii_lowercase();
+            if s.contains("text/html") || s.contains("application/json") {
+                return ClientResponse::Error {
+                    message: format!("Unexpected content-type: {}", s),
+                };
+            }
+        }
+    }
+
+    // Cap at 256 MiB — .pk3 files in UrT are rarely over 100 MiB.
+    const MAX_SIZE: u64 = 256 * 1024 * 1024;
+    if let Some(len) = resp.content_length() {
+        if len > MAX_SIZE {
+            return ClientResponse::Error {
+                message: format!("File too large ({} bytes)", len),
+            };
+        }
+    }
+
+    let mut file = match tokio::fs::File::create(&part_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            return ClientResponse::Error {
+                message: format!("Cannot create {}: {}", part_path.display(), e),
+            };
+        }
+    };
+    use tokio::io::AsyncWriteExt;
+    let mut total: u64 = 0;
+    loop {
+        let chunk = match resp.chunk().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&part_path).await;
+                return ClientResponse::Error {
+                    message: format!("Download interrupted: {}", e),
+                };
+            }
+        };
+        total += chunk.len() as u64;
+        if total > MAX_SIZE {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return ClientResponse::Error {
+                message: "Download exceeded size cap".into(),
+            };
+        }
+        if let Err(e) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return ClientResponse::Error {
+                message: format!("Write failed: {}", e),
+            };
+        }
+    }
+    if let Err(e) = file.flush().await {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return ClientResponse::Error {
+            message: format!("Flush failed: {}", e),
+        };
+    }
+    drop(file);
+
+    if let Err(e) = tokio::fs::rename(&part_path, &final_path).await {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return ClientResponse::Error {
+            message: format!("Rename failed: {}", e),
+        };
+    }
+
+    info!(
+        path = %final_path.display(),
+        size = total,
+        "Downloaded .pk3 into game server"
+    );
+    ClientResponse::MapDownloaded {
+        path: final_path.to_string_lossy().to_string(),
+        size: total,
+    }
+}

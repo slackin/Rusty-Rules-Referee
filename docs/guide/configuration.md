@@ -101,6 +101,39 @@ port = 8080
 If you don't set `jwt_secret`, a random one is generated on each startup, which will invalidate all existing sessions. Set a fixed value for production use.
 :::
 
+## `[map_repo]` Section
+
+Configures the external `.pk3` map repository used by the **Mapcycle → Browse
+Maps** feature to provide one-click map imports.
+
+```toml
+[map_repo]
+enabled = true
+sources = [
+    "https://maps.pugbot.net/q3ut4/",
+    "https://urt.li/q3ut4/",
+]
+refresh_interval_hours = 24
+```
+
+| Field                    | Default                                              | Description                                                                 |
+| ------------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------- |
+| `enabled`                | `true`                                               | Enables background refresh and import endpoints.                            |
+| `sources`                | `["https://maps.pugbot.net/q3ut4/", "https://urt.li/q3ut4/"]` | List of URLs serving Apache/nginx-style HTML directory indexes of `.pk3` files. |
+| `refresh_interval_hours` | `24`                                                 | How often the master re-scrapes all sources.                                |
+
+Each source URL must return an HTML directory listing that contains `.pk3`
+file links — the scraper parses the standard Apache/nginx format and captures
+the filename, size, and last-modified timestamp. Files are looked up later by
+exact filename (case-insensitive) when an admin clicks **Import**.
+
+::: tip Security
+The download handler on each game-server node only accepts URLs whose host is
+in the configured `sources` list, only allows HTTPS (HTTP is permitted for
+`localhost` only), and rejects filenames that don't match
+`^[A-Za-z0-9._()+\-]+\.pk3$`. Downloads are capped at 256 MiB.
+:::
+
 ## `[[plugins]]` Array
 
 Each plugin is configured as a TOML array entry. All plugins share the same base structure:
