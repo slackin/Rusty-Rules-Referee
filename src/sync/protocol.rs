@@ -275,6 +275,16 @@ pub enum ClientRequest {
     SaveMapConfig { config: serde_json::Value },
     /// Delete a per-map config entry by id on the client.
     DeleteMapConfig { id: i64 },
+    /// Ensure a `map_configs` row exists for `map_name` on the client,
+    /// creating one from master-seeded defaults / built-ins if absent.
+    /// Returns the (possibly newly-created) `MapConfig`.
+    EnsureMapConfig { map_name: String },
+    /// Apply an existing `map_configs` row to the live server immediately
+    /// (re-issues all RCON commands without waiting for a map change).
+    ApplyMapConfig { map_name: String },
+    /// Reset a per-map config row back to its default / built-in values
+    /// (effectively deletes the existing row then re-ensures).
+    ResetMapConfig { map_name: String },
     /// Download a `.pk3` map file from the master-approved URL and place it
     /// into the game server's `q3ut4/` directory. Filename is validated to
     /// prevent path traversal and the URL host must be on the allowlist.

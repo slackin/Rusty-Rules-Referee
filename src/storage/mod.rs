@@ -4,7 +4,7 @@ pub mod sqlite;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -163,6 +163,16 @@ pub trait Storage: Send + Sync {
     async fn get_map_config_by_id(&self, id: i64) -> Result<MapConfig, StorageError>;
     async fn save_map_config(&self, config: &MapConfig) -> Result<i64, StorageError>;
     async fn delete_map_config(&self, id: i64) -> Result<(), StorageError>;
+    /// Return an existing `MapConfig` for `map_name`, creating it from
+    /// (map_config_defaults row → built-in defaults table → blank fallback)
+    /// when absent. The created row is tagged with `source='auto'`.
+    async fn ensure_map_config(&self, map_name: &str) -> Result<MapConfig, StorageError>;
+
+    // ---- Map configuration defaults (master-only global template) ----
+    async fn get_map_config_defaults(&self) -> Result<Vec<MapConfigDefault>, StorageError>;
+    async fn get_map_config_default(&self, map_name: &str) -> Result<Option<MapConfigDefault>, StorageError>;
+    async fn save_map_config_default(&self, def: &MapConfigDefault) -> Result<(), StorageError>;
+    async fn delete_map_config_default(&self, map_name: &str) -> Result<(), StorageError>;
 
     // ---- Map repository cache (master-side) ----
     /// Upsert a batch of repo entries. Uses `filename` as primary key.

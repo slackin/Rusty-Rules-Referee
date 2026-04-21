@@ -1356,6 +1356,71 @@ pub async fn handle_delete_map_config(
     }
 }
 
+/// EnsureMapConfig — get-or-create a map_config row for `map_name`.
+/// Returns the resulting `MapConfig` serialized under `data.config`.
+pub async fn handle_ensure_map_config(
+    storage: Option<&Arc<dyn Storage>>,
+    map_name: &str,
+) -> ClientResponse {
+    let Some(storage) = storage else { return unavailable("EnsureMapConfig"); };
+    match storage.ensure_map_config(map_name).await {
+        Ok(cfg) => ClientResponse::Ok {
+            message: format!("Ensured map_config for {}", map_name),
+            data: Some(serde_json::json!({ "config": cfg })),
+        },
+        Err(e) => ClientResponse::Error {
+            message: format!("Storage error: {}", e),
+        },
+    }
+}
+
+/// ApplyMapConfig — fetch `map_configs[map_name]` and push all its cvars
+/// to the live server immediately (no map change required).
+pub async fn handle_apply_map_config(
+    ctx: Option<&BotContext>,
+    storage: Option<&Arc<dyn Storage>>,
+    map_name: &str,
+) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("ApplyMapConfig (no BotContext)"); };
+    let Some(storage) = storage else { return unavailable("ApplyMapConfig (no storage)"); };
+    let cfg = match storage.ensure_map_config(map_name).await {
+        Ok(c) => c,
+        Err(e) => return ClientResponse::Error {
+            message: format!("Storage error: {}", e),
+        },
+    };
+    crate::plugins::mapconfig::MapconfigPlugin::apply_config(ctx, &cfg).await;
+    ClientResponse::Ok {
+        message: format!("Applied map config for {}", map_name),
+        data: Some(serde_json::json!({ "config": cfg })),
+    }
+}
+
+/// ResetMapConfig — delete the existing row (if any) and re-ensure it
+/// from defaults. Returns the freshly-created `MapConfig`.
+pub async fn handle_reset_map_config(
+    storage: Option<&Arc<dyn Storage>>,
+    map_name: &str,
+) -> ClientResponse {
+    let Some(storage) = storage else { return unavailable("ResetMapConfig"); };
+    if let Ok(Some(existing)) = storage.get_map_config(map_name).await {
+        if let Err(e) = storage.delete_map_config(existing.id).await {
+            return ClientResponse::Error {
+                message: format!("Storage error: {}", e),
+            };
+        }
+    }
+    match storage.ensure_map_config(map_name).await {
+        Ok(cfg) => ClientResponse::Ok {
+            message: format!("Reset map_config for {}", map_name),
+            data: Some(serde_json::json!({ "config": cfg })),
+        },
+        Err(e) => ClientResponse::Error {
+            message: format!("Storage error: {}", e),
+        },
+    }
+}
+
 /// DownloadMapPk3 — fetch a `.pk3` from the master-supplied URL and save it
 /// into the game server's `q3ut4/` directory (derived from `game_log`).
 ///

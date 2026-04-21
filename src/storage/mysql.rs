@@ -4,7 +4,7 @@ use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct MysqlStorage {
@@ -373,9 +373,51 @@ impl MysqlStorage {
             "CREATE INDEX idx_xlr_playerstats_server ON xlr_playerstats(server_id)",
             "CREATE INDEX idx_xlr_weaponstats_server ON xlr_weaponstats(server_id)",
             "CREATE INDEX idx_xlr_mapstats_server ON xlr_mapstats(server_id)",
+            // 012_map_configs_v2 — new columns on map_configs
+            "ALTER TABLE map_configs ADD COLUMN supported_gametypes VARCHAR(64) NOT NULL DEFAULT ''",
+            "ALTER TABLE map_configs ADD COLUMN default_gametype VARCHAR(16)",
+            "ALTER TABLE map_configs ADD COLUMN g_suddendeath INT",
+            "ALTER TABLE map_configs ADD COLUMN g_teamdamage INT",
+            "ALTER TABLE map_configs ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'user'",
         ] {
             let _ = sqlx::query(stmt).execute(&mut *conn).await;
         }
+
+        // 012_map_configs_v2 — global defaults table (master-only; clients
+        // create it too for schema parity but never populate it).
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS map_config_defaults (
+                map_name VARCHAR(128) PRIMARY KEY,
+                gametype VARCHAR(16) NOT NULL DEFAULT '',
+                supported_gametypes VARCHAR(64) NOT NULL DEFAULT '',
+                default_gametype VARCHAR(16),
+                capturelimit INT,
+                timelimit INT,
+                fraglimit INT,
+                g_gear VARCHAR(64) NOT NULL DEFAULT '',
+                g_gravity INT,
+                g_friendlyfire INT,
+                g_teamdamage INT,
+                g_suddendeath INT,
+                g_followstrict INT,
+                g_waverespawns INT,
+                g_bombdefusetime INT,
+                g_bombexplodetime INT,
+                g_swaproles INT,
+                g_maxrounds INT,
+                g_matchmode INT,
+                g_respawndelay INT,
+                startmessage VARCHAR(255) NOT NULL DEFAULT '',
+                skiprandom INT NOT NULL DEFAULT 0,
+                bot INT NOT NULL DEFAULT 0,
+                custom_commands TEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::QueryFailed(format!("MySQL migration error: {}", e)))?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS sync_queue (
@@ -609,6 +651,42 @@ fn row_to_map_config(row: &MySqlRow) -> MapConfig {
         g_gear: row.get("g_gear"),
         g_gravity: row.get("g_gravity"),
         g_friendlyfire: row.get("g_friendlyfire"),
+        g_followstrict: row.get("g_followstrict"),
+        g_waverespawns: row.get("g_waverespawns"),
+        g_bombdefusetime: row.get("g_bombdefusetime"),
+        g_bombexplodetime: row.get("g_bombexplodetime"),
+        g_swaproles: row.get("g_swaproles"),
+        g_maxrounds: row.get("g_maxrounds"),
+        g_matchmode: row.get("g_matchmode"),
+        g_respawndelay: row.get("g_respawndelay"),
+        startmessage: row.get("startmessage"),
+        skiprandom: row.get("skiprandom"),
+        bot: row.get("bot"),
+        custom_commands: row.get("custom_commands"),
+        supported_gametypes: row.try_get("supported_gametypes").unwrap_or_default(),
+        default_gametype: row.try_get("default_gametype").ok().flatten(),
+        g_suddendeath: row.try_get("g_suddendeath").ok().flatten(),
+        g_teamdamage: row.try_get("g_teamdamage").ok().flatten(),
+        source: row.try_get("source").unwrap_or_else(|_| "user".to_string()),
+        created_at: parse_dt(row.get("created_at")),
+        updated_at: parse_dt(row.get("updated_at")),
+    }
+}
+
+fn row_to_map_config_default(row: &MySqlRow) -> MapConfigDefault {
+    MapConfigDefault {
+        map_name: row.get("map_name"),
+        gametype: row.get("gametype"),
+        supported_gametypes: row.try_get("supported_gametypes").unwrap_or_default(),
+        default_gametype: row.try_get("default_gametype").ok().flatten(),
+        capturelimit: row.get("capturelimit"),
+        timelimit: row.get("timelimit"),
+        fraglimit: row.get("fraglimit"),
+        g_gear: row.get("g_gear"),
+        g_gravity: row.get("g_gravity"),
+        g_friendlyfire: row.get("g_friendlyfire"),
+        g_teamdamage: row.try_get("g_teamdamage").ok().flatten(),
+        g_suddendeath: row.try_get("g_suddendeath").ok().flatten(),
         g_followstrict: row.get("g_followstrict"),
         g_waverespawns: row.get("g_waverespawns"),
         g_bombdefusetime: row.get("g_bombdefusetime"),
@@ -1334,7 +1412,8 @@ impl Storage for MysqlStorage {
                 "UPDATE map_configs SET map_name=?, gametype=?, capturelimit=?, timelimit=?, fraglimit=?, \
                  g_gear=?, g_gravity=?, g_friendlyfire=?, g_followstrict=?, g_waverespawns=?, \
                  g_bombdefusetime=?, g_bombexplodetime=?, g_swaproles=?, g_maxrounds=?, g_matchmode=?, \
-                 g_respawndelay=?, startmessage=?, skiprandom=?, bot=?, custom_commands=? \
+                 g_respawndelay=?, startmessage=?, skiprandom=?, bot=?, custom_commands=?, \
+                 supported_gametypes=?, default_gametype=?, g_suddendeath=?, g_teamdamage=?, source=? \
                  WHERE id=?"
             )
             .bind(&config.map_name)
@@ -1357,6 +1436,11 @@ impl Storage for MysqlStorage {
             .bind(config.skiprandom)
             .bind(config.bot)
             .bind(&config.custom_commands)
+            .bind(&config.supported_gametypes)
+            .bind(config.default_gametype.as_deref())
+            .bind(config.g_suddendeath)
+            .bind(config.g_teamdamage)
+            .bind(&config.source)
             .bind(config.id)
             .execute(&self.pool)
             .await
@@ -1367,8 +1451,9 @@ impl Storage for MysqlStorage {
                 "INSERT INTO map_configs (map_name, gametype, capturelimit, timelimit, fraglimit, \
                  g_gear, g_gravity, g_friendlyfire, g_followstrict, g_waverespawns, \
                  g_bombdefusetime, g_bombexplodetime, g_swaproles, g_maxrounds, g_matchmode, \
-                 g_respawndelay, startmessage, skiprandom, bot, custom_commands) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 g_respawndelay, startmessage, skiprandom, bot, custom_commands, \
+                 supported_gametypes, default_gametype, g_suddendeath, g_teamdamage, source) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&config.map_name)
             .bind(&config.gametype)
@@ -1390,6 +1475,11 @@ impl Storage for MysqlStorage {
             .bind(config.skiprandom)
             .bind(config.bot)
             .bind(&config.custom_commands)
+            .bind(&config.supported_gametypes)
+            .bind(config.default_gametype.as_deref())
+            .bind(config.g_suddendeath)
+            .bind(config.g_teamdamage)
+            .bind(&config.source)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -1400,6 +1490,133 @@ impl Storage for MysqlStorage {
     async fn delete_map_config(&self, id: i64) -> Result<(), StorageError> {
         sqlx::query("DELETE FROM map_configs WHERE id = ?")
             .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn ensure_map_config(&self, map_name: &str) -> Result<MapConfig, StorageError> {
+        if let Some(existing) = self.get_map_config(map_name).await? {
+            return Ok(existing);
+        }
+        let (gametype, supported, default_gt) = if let Some(def) =
+            self.get_map_config_default(map_name).await?
+        {
+            (def.gametype, def.supported_gametypes,
+             def.default_gametype.unwrap_or_default())
+        } else if let Some((dgt, sgt)) =
+            crate::maprepo::builtin_defaults::builtin_default(map_name)
+        {
+            (dgt.to_string(), sgt.to_string(), dgt.to_string())
+        } else {
+            (String::new(), String::new(), String::new())
+        };
+        let mut cfg = MapConfig {
+            id: 0,
+            map_name: map_name.to_string(),
+            gametype,
+            capturelimit: None,
+            timelimit: None,
+            fraglimit: None,
+            g_gear: String::new(),
+            g_gravity: None,
+            g_friendlyfire: None,
+            g_followstrict: None,
+            g_waverespawns: None,
+            g_bombdefusetime: None,
+            g_bombexplodetime: None,
+            g_swaproles: None,
+            g_maxrounds: None,
+            g_matchmode: None,
+            g_respawndelay: None,
+            startmessage: String::new(),
+            skiprandom: 0,
+            bot: 0,
+            custom_commands: String::new(),
+            supported_gametypes: supported,
+            default_gametype: if default_gt.is_empty() { None } else { Some(default_gt) },
+            g_suddendeath: None,
+            g_teamdamage: None,
+            source: "auto".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let id = self.save_map_config(&cfg).await?;
+        cfg.id = id;
+        Ok(cfg)
+    }
+
+    async fn get_map_config_defaults(&self) -> Result<Vec<MapConfigDefault>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM map_config_defaults ORDER BY map_name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_map_config_default).collect())
+    }
+
+    async fn get_map_config_default(&self, map_name: &str) -> Result<Option<MapConfigDefault>, StorageError> {
+        let row = sqlx::query("SELECT * FROM map_config_defaults WHERE map_name = ?")
+            .bind(map_name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.as_ref().map(row_to_map_config_default))
+    }
+
+    async fn save_map_config_default(&self, def: &MapConfigDefault) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO map_config_defaults (map_name, gametype, supported_gametypes, default_gametype, \
+             capturelimit, timelimit, fraglimit, g_gear, g_gravity, g_friendlyfire, g_teamdamage, g_suddendeath, \
+             g_followstrict, g_waverespawns, g_bombdefusetime, g_bombexplodetime, g_swaproles, g_maxrounds, \
+             g_matchmode, g_respawndelay, startmessage, skiprandom, bot, custom_commands) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+             gametype=VALUES(gametype), supported_gametypes=VALUES(supported_gametypes), \
+             default_gametype=VALUES(default_gametype), capturelimit=VALUES(capturelimit), \
+             timelimit=VALUES(timelimit), fraglimit=VALUES(fraglimit), g_gear=VALUES(g_gear), \
+             g_gravity=VALUES(g_gravity), g_friendlyfire=VALUES(g_friendlyfire), \
+             g_teamdamage=VALUES(g_teamdamage), g_suddendeath=VALUES(g_suddendeath), \
+             g_followstrict=VALUES(g_followstrict), g_waverespawns=VALUES(g_waverespawns), \
+             g_bombdefusetime=VALUES(g_bombdefusetime), g_bombexplodetime=VALUES(g_bombexplodetime), \
+             g_swaproles=VALUES(g_swaproles), g_maxrounds=VALUES(g_maxrounds), \
+             g_matchmode=VALUES(g_matchmode), g_respawndelay=VALUES(g_respawndelay), \
+             startmessage=VALUES(startmessage), skiprandom=VALUES(skiprandom), bot=VALUES(bot), \
+             custom_commands=VALUES(custom_commands)"
+        )
+        .bind(&def.map_name)
+        .bind(&def.gametype)
+        .bind(&def.supported_gametypes)
+        .bind(def.default_gametype.as_deref())
+        .bind(def.capturelimit)
+        .bind(def.timelimit)
+        .bind(def.fraglimit)
+        .bind(&def.g_gear)
+        .bind(def.g_gravity)
+        .bind(def.g_friendlyfire)
+        .bind(def.g_teamdamage)
+        .bind(def.g_suddendeath)
+        .bind(def.g_followstrict)
+        .bind(def.g_waverespawns)
+        .bind(def.g_bombdefusetime)
+        .bind(def.g_bombexplodetime)
+        .bind(def.g_swaproles)
+        .bind(def.g_maxrounds)
+        .bind(def.g_matchmode)
+        .bind(def.g_respawndelay)
+        .bind(&def.startmessage)
+        .bind(def.skiprandom)
+        .bind(def.bot)
+        .bind(&def.custom_commands)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_map_config_default(&self, map_name: &str) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM map_config_defaults WHERE map_name = ?")
+            .bind(map_name)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;

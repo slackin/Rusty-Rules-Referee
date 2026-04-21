@@ -252,6 +252,20 @@ export const api = {
 		request(`/servers/${id}/map-configs`, { method: 'POST', body: JSON.stringify(config) }),
 	serverDeleteMapConfig: (id, mapConfigId) =>
 		request(`/servers/${id}/map-configs/${mapConfigId}`, { method: 'DELETE' }),
+	serverEnsureMapConfig: (id, mapName) =>
+		request(`/servers/${id}/map-configs/by-name/${encodeURIComponent(mapName)}`),
+	serverApplyMapConfig: (id, mapName) =>
+		request(`/servers/${id}/map-configs/by-name/${encodeURIComponent(mapName)}/apply`, { method: 'POST' }),
+	serverResetMapConfig: (id, mapName) =>
+		request(`/servers/${id}/map-configs/by-name/${encodeURIComponent(mapName)}/reset`, { method: 'POST' }),
+	mapConfigDefaults: () => request('/map-config-defaults'),
+	mapConfigDefault: (mapName) => request(`/map-config-defaults/${encodeURIComponent(mapName)}`),
+	saveMapConfigDefault: (mapName, def) =>
+		request(`/map-config-defaults/${encodeURIComponent(mapName)}`, { method: 'PUT', body: JSON.stringify(def) }),
+	deleteMapConfigDefault: (mapName) =>
+		request(`/map-config-defaults/${encodeURIComponent(mapName)}`, { method: 'DELETE' }),
+	propagateMapConfigDefault: (mapName, overwriteUserEdits = false) =>
+		request(`/map-config-defaults/${encodeURIComponent(mapName)}/propagate`, { method: 'POST', body: JSON.stringify({ overwrite_user_edits: overwriteUserEdits }) }),
 	serverPenalties: (id, limit = 100, offset = 0) =>
 		request(`/servers/${id}/penalties?limit=${limit}&offset=${offset}`),
 	serverChat: (id, limit = 100, beforeId = null) => {

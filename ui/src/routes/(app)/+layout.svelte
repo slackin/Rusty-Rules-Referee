@@ -43,6 +43,7 @@
 		{ href: '/', label: 'Dashboard', icon: LayoutDashboard },
 		{ href: '/servers', label: 'Servers', icon: Server },
 		{ href: '/pairing', label: 'Pairing', icon: Link },
+		{ href: '/map-defaults', label: 'Map Defaults', icon: Sliders },
 		{ href: '/penalties', label: 'Penalties', icon: Gavel },
 		{ href: '/audit-log', label: 'Audit Log', icon: ScrollText },
 		{ href: '/config', label: 'Configuration', icon: Settings },

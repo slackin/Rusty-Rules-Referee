@@ -1,7 +1,7 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
 	import { page } from '$app/stores';
-	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save, Download, FileSearch, Wrench, FolderOpen, Check, AlertTriangle, Loader2, Folder, FileText, ChevronRight, Power } from 'lucide-svelte';
+	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save, Download, FileSearch, Wrench, FolderOpen, Check, AlertTriangle, Loader2, Folder, FileText, ChevronRight, Power, Search, X } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
 	let server = $state(null);
@@ -48,6 +48,47 @@
 	let rconCommand = $state('');
 	let rconHistory = $state([]);
 	let rconSending = $state(false);
+
+	// Map switcher popover
+	let mapPopoverOpen = $state(false);
+	let mapcycleMaps = $state([]);
+	let mapcycleLoaded = $state(false);
+	let mapcycleLoading = $state(false);
+	let mapSearch = $state('');
+	let switchingMap = $state('');
+	let mapSwitchMsg = $state('');
+
+	async function openMapPopover() {
+		mapPopoverOpen = true;
+		if (mapcycleLoaded || mapcycleLoading) return;
+		mapcycleLoading = true;
+		try {
+			const r = await api.serverGetMapcycle(serverId);
+			const list = r?.maps || r?.data?.maps || r?.Ok?.data?.maps || [];
+			mapcycleMaps = Array.isArray(list)
+				? list.map((x) => (typeof x === 'string' ? x : x?.map_name)).filter(Boolean)
+				: [];
+			mapcycleLoaded = true;
+		} catch { /* ignore */ }
+		finally { mapcycleLoading = false; }
+	}
+
+	async function switchToMap(m) {
+		switchingMap = m;
+		mapSwitchMsg = '';
+		try {
+			await api.serverChangeMap(serverId, m);
+			mapSwitchMsg = `Map change to ${m} requested.`;
+			mapPopoverOpen = false;
+		} catch (e) { mapSwitchMsg = e?.message || String(e); }
+		finally { switchingMap = ''; }
+	}
+
+	let filteredMapcycle = $derived(
+		mapSearch.trim()
+			? mapcycleMaps.filter((m) => m.toLowerCase().includes(mapSearch.trim().toLowerCase()))
+			: mapcycleMaps,
+	);
 
 	// Say
 	let sayMessage = $state('');
@@ -475,14 +516,75 @@
 			</div>
 
 			{#if server.online}
+				{#if mapSwitchMsg}
+					<div class="mt-3 rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+						{mapSwitchMsg}
+					</div>
+				{/if}
 				<div class="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
 					<div class="rounded-lg bg-surface-800/50 p-3">
 						<div class="text-xs text-surface-500">Players</div>
 						<div class="mt-1 text-lg font-semibold text-surface-100">{server.player_count} <span class="text-sm text-surface-500">/ {server.max_clients}</span></div>
 					</div>
-					<div class="rounded-lg bg-surface-800/50 p-3">
+					<div class="relative rounded-lg bg-surface-800/50 p-3">
 						<div class="text-xs text-surface-500">Map</div>
-						<div class="mt-1 text-lg font-semibold text-surface-100">{server.current_map || '—'}</div>
+						<button
+							type="button"
+							class="mt-1 flex w-full items-center justify-between gap-2 rounded text-left text-lg font-semibold text-surface-100 hover:text-blue-300"
+							onclick={openMapPopover}
+							title="Switch map"
+						>
+							<span class="truncate">{server.current_map || '—'}</span>
+							<ChevronRight class="h-4 w-4 shrink-0 text-surface-500" />
+						</button>
+						{#if mapPopoverOpen}
+							<!-- backdrop to close on outside click -->
+							<button type="button" class="fixed inset-0 z-40" aria-label="Close"
+								onclick={() => (mapPopoverOpen = false)}></button>
+							<div class="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-lg border border-surface-700 bg-surface-900 shadow-xl sm:left-auto sm:right-0 sm:w-80">
+								<div class="flex items-center gap-2 border-b border-surface-800 p-2">
+									<Search class="h-3.5 w-3.5 text-surface-500" />
+									<input
+										type="text"
+										bind:value={mapSearch}
+										class="w-full bg-transparent text-sm outline-none placeholder:text-surface-500"
+										placeholder="Search mapcycle…"
+									/>
+									<button type="button" class="text-surface-500 hover:text-surface-300"
+										onclick={() => (mapPopoverOpen = false)} aria-label="Close">
+										<X class="h-3.5 w-3.5" />
+									</button>
+								</div>
+								<div class="max-h-72 overflow-y-auto">
+									{#if mapcycleLoading}
+										<div class="p-3 text-xs text-surface-500">Loading mapcycle…</div>
+									{:else if !filteredMapcycle.length}
+										<div class="p-3 text-xs text-surface-500">
+											{mapcycleLoaded ? 'No maps match.' : 'Mapcycle not loaded.'}
+										</div>
+									{:else}
+										{#each filteredMapcycle as m}
+											<button type="button"
+												class="flex w-full items-center justify-between px-3 py-2 text-left text-sm text-surface-200 hover:bg-surface-800 disabled:opacity-50"
+												disabled={!!switchingMap}
+												onclick={() => switchToMap(m)}>
+												<span class="truncate">{m}</span>
+												{#if switchingMap === m}
+													<Loader2 class="h-3.5 w-3.5 shrink-0 animate-spin text-blue-400" />
+												{:else if m === server.current_map}
+													<span class="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">live</span>
+												{/if}
+											</button>
+										{/each}
+									{/if}
+								</div>
+								<div class="border-t border-surface-800 p-2 text-xs">
+									<a href={`/servers/${serverId}/map-config`} class="text-blue-400 hover:text-blue-300">
+										Not in mapcycle? Browse all maps →
+									</a>
+								</div>
+							</div>
+						{/if}
 					</div>
 					<div class="rounded-lg bg-surface-800/50 p-3">
 						<div class="text-xs text-surface-500">Status</div>

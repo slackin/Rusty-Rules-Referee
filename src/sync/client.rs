@@ -489,6 +489,29 @@ impl ClientSyncManager {
                                                     id,
                                                 ).await
                                             }
+                                            ClientRequest::EnsureMapConfig { map_name } => {
+                                                handlers::handle_ensure_map_config(
+                                                    Some(&self.storage),
+                                                    &map_name,
+                                                ).await
+                                            }
+                                            ClientRequest::ApplyMapConfig { map_name } => {
+                                                let ctx_arc = {
+                                                    let gs = self.game_state.read().await;
+                                                    gs.ctx.clone()
+                                                };
+                                                handlers::handle_apply_map_config(
+                                                    ctx_arc.as_deref(),
+                                                    Some(&self.storage),
+                                                    &map_name,
+                                                ).await
+                                            }
+                                            ClientRequest::ResetMapConfig { map_name } => {
+                                                handlers::handle_reset_map_config(
+                                                    Some(&self.storage),
+                                                    &map_name,
+                                                ).await
+                                            }
                                             ClientRequest::DownloadMapPk3 { url, filename, allowed_hosts } => {
                                                 let game_log = self.local_game_log().await;
                                                 let override_dir = self.local_map_repo_download_dir().await;

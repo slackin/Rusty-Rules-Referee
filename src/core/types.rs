@@ -183,6 +183,22 @@ pub struct MapConfig {
     pub skiprandom: i32,
     pub bot: i32,
     pub custom_commands: String,
+    /// CSV of gametype ids the map supports. Empty = all allowed.
+    #[serde(default)]
+    pub supported_gametypes: String,
+    /// Gametype to switch to if current `g_gametype` is not in
+    /// `supported_gametypes`. Falls back to `gametype` when None.
+    #[serde(default)]
+    pub default_gametype: Option<String>,
+    /// g_suddendeath cvar (0/1). Separate from friendly-fire.
+    #[serde(default)]
+    pub g_suddendeath: Option<i32>,
+    /// g_teamdamage cvar (0/1). Distinct from `g_friendlyfire`.
+    #[serde(default)]
+    pub g_teamdamage: Option<i32>,
+    /// 'user' | 'auto' | 'default_seed' — used by UI to flag unedited rows.
+    #[serde(default = "default_source_user")]
+    pub source: String,
     #[serde(default = "default_now")]
     pub created_at: DateTime<Utc>,
     #[serde(default = "default_now")]
@@ -191,6 +207,52 @@ pub struct MapConfig {
 
 fn default_now() -> DateTime<Utc> {
     Utc::now()
+}
+
+fn default_source_user() -> String {
+    "user".to_string()
+}
+
+/// Global (master-only) template for map configuration. Mirrors
+/// `MapConfig` minus `id`/`server_id`. `map_name` is the primary key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapConfigDefault {
+    pub map_name: String,
+    #[serde(default)]
+    pub gametype: String,
+    #[serde(default)]
+    pub supported_gametypes: String,
+    #[serde(default)]
+    pub default_gametype: Option<String>,
+    pub capturelimit: Option<i32>,
+    pub timelimit: Option<i32>,
+    pub fraglimit: Option<i32>,
+    #[serde(default)]
+    pub g_gear: String,
+    pub g_gravity: Option<i32>,
+    pub g_friendlyfire: Option<i32>,
+    pub g_teamdamage: Option<i32>,
+    pub g_suddendeath: Option<i32>,
+    pub g_followstrict: Option<i32>,
+    pub g_waverespawns: Option<i32>,
+    pub g_bombdefusetime: Option<i32>,
+    pub g_bombexplodetime: Option<i32>,
+    pub g_swaproles: Option<i32>,
+    pub g_maxrounds: Option<i32>,
+    pub g_matchmode: Option<i32>,
+    pub g_respawndelay: Option<i32>,
+    #[serde(default)]
+    pub startmessage: String,
+    #[serde(default)]
+    pub skiprandom: i32,
+    #[serde(default)]
+    pub bot: i32,
+    #[serde(default)]
+    pub custom_commands: String,
+    #[serde(default = "default_now")]
+    pub created_at: DateTime<Utc>,
+    #[serde(default = "default_now")]
+    pub updated_at: DateTime<Utc>,
 }
 
 /// A single `.pk3` map file cached from an external map repository.

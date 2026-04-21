@@ -74,7 +74,7 @@ export const ALLOWVOTE_FLAGS = [
 ];
 
 // Gametype enum.
-const GAMETYPES = [
+export const GAMETYPES = [
 	{ value: '0', label: '0 — Free For All (FFA)' },
 	{ value: '1', label: '1 — Last Man Standing (LMS)' },
 	{ value: '3', label: '3 — Team Death Match (TDM)' },

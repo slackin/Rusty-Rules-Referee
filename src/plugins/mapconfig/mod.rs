@@ -22,12 +22,17 @@ impl MapconfigPlugin {
         }
     }
 
-    /// Build a list of RCON commands from a MapConfig.
-    fn build_commands(config: &MapConfig) -> Vec<String> {
+    /// Build a list of RCON commands from a MapConfig. `current_gametype`
+    /// is the server's current `g_gametype` as a string, used to enforce
+    /// `supported_gametypes` (if the current isn't allowed, we switch to
+    /// `default_gametype` instead of the stored `gametype`).
+    fn build_commands(config: &MapConfig, current_gametype: Option<&str>) -> Vec<String> {
         let mut cmds = Vec::new();
 
-        if !config.gametype.is_empty() {
-            cmds.push(format!("g_gametype {}", config.gametype));
+        // Resolve the gametype to apply.
+        let target_gt = Self::resolve_gametype(config, current_gametype);
+        if !target_gt.is_empty() {
+            cmds.push(format!("g_gametype {}", target_gt));
         }
         if let Some(v) = config.capturelimit {
             cmds.push(format!("capturelimit {}", v));
@@ -46,6 +51,12 @@ impl MapconfigPlugin {
         }
         if let Some(v) = config.g_friendlyfire {
             cmds.push(format!("g_friendlyfire {}", v));
+        }
+        if let Some(v) = config.g_teamdamage {
+            cmds.push(format!("g_teamdamage {}", v));
+        }
+        if let Some(v) = config.g_suddendeath {
+            cmds.push(format!("g_suddendeath {}", v));
         }
         if let Some(v) = config.g_followstrict {
             cmds.push(format!("g_followstrict {}", v));
@@ -84,6 +95,61 @@ impl MapconfigPlugin {
         }
 
         cmds
+    }
+
+    /// Pick the gametype to apply based on `supported_gametypes` and the
+    /// server's current `g_gametype`. Rules:
+    ///   * If `supported_gametypes` is empty, apply `gametype` as-is.
+    ///   * If the current gametype is already in the supported set, leave
+    ///     it alone (return empty string so no `g_gametype` cvar is sent).
+    ///   * Otherwise apply `default_gametype` if set, else `gametype`.
+    fn resolve_gametype(config: &MapConfig, current: Option<&str>) -> String {
+        if config.supported_gametypes.trim().is_empty() {
+            return config.gametype.clone();
+        }
+        let supported: Vec<&str> = config
+            .supported_gametypes
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if let Some(cur) = current.map(|s| s.trim()) {
+            if supported.iter().any(|s| *s == cur) {
+                return String::new();
+            }
+        }
+        config
+            .default_gametype
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| config.gametype.clone())
+    }
+
+    /// Apply a `MapConfig` to the live server via RCON. Public so the
+    /// sync-layer "apply now" handler can reuse the logic.
+    pub async fn apply_config(ctx: &BotContext, config: &MapConfig) {
+        let current_gt = ctx.get_cvar("g_gametype").await.ok();
+        let commands = Self::build_commands(config, current_gt.as_deref());
+        info!(
+            map = %config.map_name,
+            commands = commands.len(),
+            "Applying per-map configuration"
+        );
+
+        if !config.startmessage.is_empty() {
+            let _ = ctx.say(&config.startmessage).await;
+        }
+
+        for cmd in &commands {
+            match ctx.write(cmd).await {
+                Ok(_) => {
+                    info!(map = %config.map_name, cmd = %cmd, "Executed map config command");
+                }
+                Err(e) => {
+                    info!(map = %config.map_name, cmd = %cmd, error = %e, "Failed to execute map config command");
+                }
+            }
+        }
     }
 }
 
@@ -129,31 +195,13 @@ impl Plugin for MapconfigPlugin {
                     _ => return Ok(()),
                 };
 
-                match ctx.storage.get_map_config(&map_name).await {
-                    Ok(Some(config)) => {
-                        let commands = Self::build_commands(&config);
-                        info!(map = %map_name, commands = commands.len(), "Applying per-map configuration");
-
-                        if !config.startmessage.is_empty() {
-                            let _ = ctx.say(&config.startmessage).await;
-                        }
-
-                        for cmd in &commands {
-                            match ctx.write(cmd).await {
-                                Ok(_) => {
-                                    info!(map = %map_name, cmd = %cmd, "Executed map config command");
-                                }
-                                Err(e) => {
-                                    info!(map = %map_name, cmd = %cmd, error = %e, "Failed to execute map config command");
-                                }
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        info!(map = %map_name, "No per-map configuration found");
+                // Auto-create a default config if absent so every map has one.
+                match ctx.storage.ensure_map_config(&map_name).await {
+                    Ok(config) => {
+                        Self::apply_config(ctx, &config).await;
                     }
                     Err(e) => {
-                        info!(map = %map_name, error = %e, "Failed to load map configuration");
+                        info!(map = %map_name, error = %e, "Failed to load or create map configuration");
                     }
                 }
             }

@@ -351,6 +351,63 @@ pub async fn server_delete_map_config(
     }
 }
 
+/// GET /api/v1/servers/:id/map-configs/by-name/:map_name — fetch the
+/// map_config for `map_name`, creating one from defaults if absent.
+pub async fn server_ensure_map_config(
+    State(state): State<AppState>,
+    Path((server_id, map_name)): Path<(i64, String)>,
+) -> impl IntoResponse {
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::EnsureMapConfig { map_name },
+        StdDuration::from_secs(15),
+    )
+    .await
+    {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
+/// POST /api/v1/servers/:id/map-configs/by-name/:map_name/apply — apply
+/// the map_config immediately without waiting for a map change.
+pub async fn server_apply_map_config(
+    State(state): State<AppState>,
+    Path((server_id, map_name)): Path<(i64, String)>,
+) -> impl IntoResponse {
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::ApplyMapConfig { map_name },
+        StdDuration::from_secs(30),
+    )
+    .await
+    {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
+/// POST /api/v1/servers/:id/map-configs/by-name/:map_name/reset — reset
+/// the map_config back to its default / built-in values.
+pub async fn server_reset_map_config(
+    State(state): State<AppState>,
+    Path((server_id, map_name)): Path<(i64, String)>,
+) -> impl IntoResponse {
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::ResetMapConfig { map_name },
+        StdDuration::from_secs(15),
+    )
+    .await
+    {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
 // ---- Historical / persisted views (read directly from master DB) ----
 
 #[derive(Debug, Deserialize)]

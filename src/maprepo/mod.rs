@@ -18,6 +18,8 @@ use tracing::{debug, info, warn};
 use crate::core::MapRepoEntry;
 use crate::storage::Storage;
 
+pub mod builtin_defaults;
+
 /// Lightweight summary of the last refresh pass.
 #[derive(Debug, Clone, Default)]
 pub struct RefreshStats {
