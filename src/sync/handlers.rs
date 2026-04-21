@@ -1517,13 +1517,29 @@ pub async fn handle_download_map_pk3(
         }
     }
     let Some(dir) = chosen else {
+        // Fingerprint the common case: every candidate reports EROFS even
+        // though the paths exist. That's the systemd `ProtectHome=read-only`
+        // sandbox from older installer versions — no chmod/chown can fix it,
+        // only a systemd unit update. Give an actionable one-command fix.
+        let all_erofs = !tried.is_empty()
+            && tried
+                .iter()
+                .all(|t| t.contains("os error 30") || t.to_lowercase().contains("read-only"));
+        let hint = if all_erofs {
+            " This bot was installed with an older version whose systemd unit \
+             sandboxed /home as read-only. Re-run the R3 installer on the \
+             server (`curl -sSL https://r3.pugbot.net/api/updates/install-r3.sh | sudo bash`) \
+             to regenerate the service unit with the correct ReadWritePaths."
+        } else {
+            " Set `map_repo.download_dir` in the client's TOML config to an \
+             existing directory the bot user can write to (the game server \
+             will still load maps from it)."
+        };
         return ClientResponse::Error {
             message: format!(
-                "No writable q3ut4 directory found. Tried: {}. Set \
-                 `map_repo.download_dir` in the client's TOML config to an \
-                 existing directory the bot user can write to (the game \
-                 server will still load maps from it).",
-                tried.join("; ")
+                "No writable q3ut4 directory found. Tried: {}.{}",
+                tried.join("; "),
+                hint
             ),
         };
     };

@@ -603,7 +603,10 @@ Environment=RUST_LOG=info
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=${INSTALL_DIR}
+# The bot needs write access to its own install dir, and to the game-server
+# user's home so it can import .pk3 files into q3ut4/, edit server.cfg /
+# mapcycle.txt, etc. ReadWritePaths= implicitly punches through ProtectHome=.
+ReadWritePaths=${INSTALL_DIR} ${HOME_DIR}
 PrivateTmp=true
 
 [Install]
