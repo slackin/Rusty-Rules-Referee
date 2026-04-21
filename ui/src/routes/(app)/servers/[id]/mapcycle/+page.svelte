@@ -68,9 +68,17 @@
 	async function loadAvailable() {
 		availableLoading = true;
 		try {
-			const r = await api.serverMaps(serverId);
-			// New cache-backed shape: { maps: [{ map_name, pending_restart, ... }], last_scan_at, ... }
-			const list = Array.isArray(r?.maps) ? r.maps : [];
+			let r = await api.serverMaps(serverId);
+			let list = Array.isArray(r?.maps) ? r.maps : [];
+			// Auto-kick a scan if the cache is empty and we've never scanned
+			// (or the last scan failed) — saves the user a manual click.
+			if (!list.length) {
+				try {
+					await api.serverRefreshMaps(serverId);
+					r = await api.serverMaps(serverId);
+					list = Array.isArray(r?.maps) ? r.maps : [];
+				} catch (_) { /* non-fatal */ }
+			}
 			availableMaps = list
 				.map((m) => (typeof m === 'string' ? m : m.map_name))
 				.filter(Boolean)

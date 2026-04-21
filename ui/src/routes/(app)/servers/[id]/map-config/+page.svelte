@@ -40,18 +40,41 @@
 	async function loadAll() {
 		loading = true; error = '';
 		try {
-			const [m, cfgs] = await Promise.all([
-				api.serverMaps(serverId),
+			// Pull maps from three independent sources and take the union so
+			// the list is useful even when the server_maps scan hasn't run.
+			const [scan, cfgs, cycle] = await Promise.all([
+				api.serverMaps(serverId).catch(() => null),
 				api.serverListMapConfigs(serverId),
+				api.serverGetMapcycle(serverId).catch(() => null),
 			]);
-			const list = Array.isArray(m?.maps) ? m.maps : [];
-			maps = list.map((x) => (typeof x === 'string' ? x : x.map_name)).filter(Boolean).sort();
+			let scanList = Array.isArray(scan?.maps) ? scan.maps : [];
+			// Auto-kick a scan if the cache is empty — the scheduled background
+			// scan may not have run yet.
+			if (!scanList.length) {
+				try {
+					await api.serverRefreshMaps(serverId);
+					const scan2 = await api.serverMaps(serverId);
+					scanList = Array.isArray(scan2?.maps) ? scan2.maps : [];
+				} catch (_) { /* non-fatal */ }
+			}
+			const scanNames = scanList
+				.map((x) => (typeof x === 'string' ? x : x?.map_name))
+				.filter(Boolean);
+			const cycleNames = Array.isArray(cycle?.maps)
+				? cycle.maps.map((x) => (typeof x === 'string' ? x : x?.name || x?.map_name)).filter(Boolean)
+				: [];
+			const list2 = cfgs?.configs || cfgs?.data?.configs || cfgs?.Ok?.data?.configs || [];
+			configs = Array.isArray(list2) ? list2 : [];
+			const cfgNames = configs.map((c) => c.map_name).filter(Boolean);
+			const set = new Set([...scanNames, ...cycleNames, ...cfgNames]);
+			maps = Array.from(set).sort();
 			try {
 				const s = await api.server(serverId);
 				currentMap = s?.server?.current_map || s?.current_map || '';
 			} catch { /* ignore */ }
-			const list2 = cfgs?.configs || cfgs?.data?.configs || cfgs?.Ok?.data?.configs || [];
-			configs = Array.isArray(list2) ? list2 : [];
+			if (currentMap && !maps.includes(currentMap)) {
+				maps = [...maps, currentMap].sort();
+			}
 			if (!selectedMap && maps.length) {
 				await selectMap(currentMap && maps.includes(currentMap) ? currentMap : maps[0]);
 			}
