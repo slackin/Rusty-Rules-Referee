@@ -664,35 +664,42 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
 
     // Main loop: tail game log continuously and parse into events
     if let Some(ref log_path) = config.server.game_log {
-        info!(path = %log_path, "Starting log tailer");
-
         let delay = std::time::Duration::from_secs_f64(config.server.delay);
-        let mut tailer = LogTailer::new(Path::new(log_path), delay);
+        // Retry opening the log forever so the service doesn't exit (and
+        // systemd-restart-loop) just because the game server isn't running
+        // yet or the path is wrong. When the file appears we pick it up.
+        loop {
+            info!(path = %log_path, "Starting log tailer");
+            let mut tailer = LogTailer::new(Path::new(log_path), delay);
+            match tailer.start().await {
+                Ok(()) => {
+                    info!(path = %log_path, "Log tailer active — processing new lines");
+                    while let Some(line) = tailer.next_line().await {
+                        let log_line = LogLine {
+                            raw: line.clone(),
+                            timestamp: None,
+                            clean: line,
+                        };
 
-        match tailer.start().await {
-            Ok(()) => {
-                info!(path = %log_path, "Log tailer active — processing new lines");
-                while let Some(line) = tailer.next_line().await {
-                    let log_line = LogLine {
-                        raw: line.clone(),
-                        timestamp: None,
-                        clean: line,
-                    };
-
-                    match parser.parse_line(&log_line) {
-                        ParsedAction::Event(event) => {
-                            if event_tx.send(event).await.is_err() {
-                                error!("Event channel closed");
-                                break;
+                        match parser.parse_line(&log_line) {
+                            ParsedAction::Event(event) => {
+                                if event_tx.send(event).await.is_err() {
+                                    error!("Event channel closed");
+                                    break;
+                                }
                             }
+                            ParsedAction::NoOp => {}
+                            ParsedAction::Unknown(_) => {}
                         }
-                        ParsedAction::NoOp => {}
-                        ParsedAction::Unknown(_) => {}
                     }
+                    // Tailer returned None — the file ended / rotated. Retry.
+                    warn!(path = %log_path, "Log tailer stopped, retrying in 30s");
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
-            }
-            Err(e) => {
-                error!(path = %log_path, error = %e, "Cannot open game log");
+                Err(e) => {
+                    error!(path = %log_path, error = %e, "Cannot open game log — staying alive, will retry in 60s");
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
             }
         }
     } else {
@@ -701,12 +708,14 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
         tokio::signal::ctrl_c().await?;
     }
 
-    // Shutdown
-    drop(event_tx);
-    handler_task.await?;
-    info!("Rusty Rules Referee shutdown complete");
-
-    Ok(())
+    // Shutdown (unreachable unless ctrl_c path above)
+    #[allow(unreachable_code)]
+    {
+        drop(event_tx);
+        handler_task.await?;
+        info!("Rusty Rules Referee shutdown complete");
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -1386,33 +1395,40 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
 
     // Main loop: tail game log
     if let Some(ref log_path) = config.server.game_log {
-        info!(path = %log_path, "Starting log tailer");
         let delay = std::time::Duration::from_secs_f64(config.server.delay);
-        let mut tailer = LogTailer::new(Path::new(log_path), delay);
-
-        match tailer.start().await {
-            Ok(()) => {
-                info!(path = %log_path, "Log tailer active");
-                while let Some(line) = tailer.next_line().await {
-                    let log_line = LogLine {
-                        raw: line.clone(),
-                        timestamp: None,
-                        clean: line,
-                    };
-                    match parser.parse_line(&log_line) {
-                        ParsedAction::Event(event) => {
-                            if event_tx.send(event).await.is_err() {
-                                error!("Event channel closed");
-                                break;
+        // Retry opening the log forever so the service doesn't exit (and
+        // systemd-restart-loop) just because the game server isn't running
+        // yet or the path is wrong. When the file appears we pick it up.
+        loop {
+            info!(path = %log_path, "Starting log tailer");
+            let mut tailer = LogTailer::new(Path::new(log_path), delay);
+            match tailer.start().await {
+                Ok(()) => {
+                    info!(path = %log_path, "Log tailer active");
+                    while let Some(line) = tailer.next_line().await {
+                        let log_line = LogLine {
+                            raw: line.clone(),
+                            timestamp: None,
+                            clean: line,
+                        };
+                        match parser.parse_line(&log_line) {
+                            ParsedAction::Event(event) => {
+                                if event_tx.send(event).await.is_err() {
+                                    error!("Event channel closed");
+                                    break;
+                                }
                             }
+                            ParsedAction::NoOp => {}
+                            ParsedAction::Unknown(_) => {}
                         }
-                        ParsedAction::NoOp => {}
-                        ParsedAction::Unknown(_) => {}
                     }
+                    warn!(path = %log_path, "Log tailer stopped, retrying in 30s");
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
-            }
-            Err(e) => {
-                error!(path = %log_path, error = %e, "Cannot open game log");
+                Err(e) => {
+                    error!(path = %log_path, error = %e, "Cannot open game log — staying alive, will retry in 60s");
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
             }
         }
     } else {
@@ -1420,9 +1436,12 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         tokio::signal::ctrl_c().await?;
     }
 
-    // Shutdown
-    drop(event_tx);
-    handler_task.await?;
-    info!("Client bot shutdown complete");
-    Ok(())
+    // Shutdown (unreachable unless ctrl_c path above)
+    #[allow(unreachable_code)]
+    {
+        drop(event_tx);
+        handler_task.await?;
+        info!("Client bot shutdown complete");
+        Ok(())
+    }
 }
