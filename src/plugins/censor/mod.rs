@@ -1,12 +1,30 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use regex::Regex;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::core::context::BotContext;
+use crate::core::{Penalty, PenaltyType};
 use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
+
+/// What to do when a player with a bad name is detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CensorAction {
+    Kick,
+    Ban,
+}
+
+impl CensorAction {
+    fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ban" => Self::Ban,
+            _ => Self::Kick,
+        }
+    }
+}
 
 /// The Censor plugin — filters offensive language from chat.
 pub struct CensorPlugin {
@@ -15,6 +33,8 @@ pub struct CensorPlugin {
     bad_names: Vec<Regex>,
     warn_message: String,
     max_warnings: u32,
+    /// What to do when a bad name is detected.
+    name_action: CensorAction,
     /// Per-client warning counts.
     warnings: RwLock<HashMap<i64, u32>>,
 }
@@ -27,6 +47,7 @@ impl CensorPlugin {
             bad_names: Vec::new(),
             warn_message: "Watch your language!".to_string(),
             max_warnings: 3,
+            name_action: CensorAction::Kick,
             warnings: RwLock::new(HashMap::new()),
         }
     }
@@ -52,6 +73,68 @@ impl CensorPlugin {
     fn contains_bad_name(&self, name: &str) -> bool {
         self.bad_names.iter().any(|re| re.is_match(name))
     }
+
+    fn matching_bad_name(&self, name: &str) -> Option<String> {
+        self.bad_names
+            .iter()
+            .find(|re| re.is_match(name))
+            .map(|re| re.as_str().to_string())
+    }
+
+    /// Record a Penalty row for an automatic censor enforcement action.
+    async fn record_penalty(
+        &self,
+        ctx: &BotContext,
+        client_db_id: i64,
+        penalty_type: PenaltyType,
+        reason: String,
+    ) {
+        if client_db_id <= 0 {
+            return;
+        }
+        let now = Utc::now();
+        let penalty = Penalty {
+            id: 0,
+            penalty_type,
+            client_id: client_db_id,
+            admin_id: None,
+            duration: None,
+            reason,
+            keyword: "censor".to_string(),
+            inactive: false,
+            time_add: now,
+            time_edit: now,
+            time_expire: None,
+            server_id: None,
+        };
+        if let Err(e) = ctx.storage.save_penalty(&penalty).await {
+            warn!(error = %e, client = client_db_id, "Failed to record censor penalty");
+        }
+    }
+}
+
+/// Compile a list of string patterns into regexes, skipping blank entries and
+/// warn-logging any that fail to compile. Wraps each pattern with `(?i)` for
+/// case-insensitive matching.
+fn compile_patterns(label: &str, arr: &[toml::Value]) -> Vec<Regex> {
+    let mut out = Vec::new();
+    for entry in arr.iter().filter_map(|v| v.as_str()) {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            warn!("censor: skipping empty {} entry", label);
+            continue;
+        }
+        match Regex::new(&format!("(?i){}", trimmed)) {
+            Ok(re) => out.push(re),
+            Err(e) => warn!(
+                pattern = %trimmed,
+                error = %e,
+                "censor: skipping invalid {} regex",
+                label
+            ),
+        }
+    }
+    out
 }
 
 impl Default for CensorPlugin {
@@ -82,17 +165,14 @@ impl Plugin for CensorPlugin {
             if let Some(v) = s.get("max_warnings").and_then(|v| v.as_integer()) {
                 self.max_warnings = v as u32;
             }
+            if let Some(v) = s.get("action").and_then(|v| v.as_str()) {
+                self.name_action = CensorAction::from_str(v);
+            }
             if let Some(arr) = s.get("bad_words").and_then(|v| v.as_array()) {
-                self.bad_words = arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .filter_map(|s| regex::Regex::new(&format!("(?i){}", s)).ok())
-                    .collect();
+                self.bad_words = compile_patterns("bad_words", arr);
             }
             if let Some(arr) = s.get("bad_names").and_then(|v| v.as_array()) {
-                self.bad_names = arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .filter_map(|s| regex::Regex::new(&format!("(?i){}", s)).ok())
-                    .collect();
+                self.bad_names = compile_patterns("bad_names", arr);
             }
         }
         Ok(())
@@ -102,6 +182,7 @@ impl Plugin for CensorPlugin {
         info!(
             bad_words = self.bad_words.len(),
             bad_names = self.bad_names.len(),
+            name_action = ?self.name_action,
             "Censor plugin started"
         );
         Ok(())
@@ -113,13 +194,43 @@ impl Plugin for CensorPlugin {
         };
         let cid_str = client_id.to_string();
 
-        // Check for bad names on name change or connect
+        // Check for bad names on name change
         if let Some(key) = ctx.event_registry.get_key(event.event_type) {
             if key == "EVT_CLIENT_NAME_CHANGE" {
                 if let EventData::Text(ref name) = event.data {
-                    if self.contains_bad_name(name) {
-                        warn!(client = client_id, name = %name, "Bad name detected");
-                        ctx.kick(&cid_str, "Offensive player name").await?;
+                    if let Some(pattern) = self.matching_bad_name(name) {
+                        warn!(
+                            client = client_id,
+                            name = %name,
+                            pattern = %pattern,
+                            action = ?self.name_action,
+                            "Bad name detected"
+                        );
+                        let short_reason = "Offensive player name";
+                        let db_id = ctx
+                            .clients
+                            .get_by_cid(&cid_str)
+                            .await
+                            .map(|c| c.id)
+                            .unwrap_or(0);
+                        let (ptype, action_result) = match self.name_action {
+                            CensorAction::Kick => (
+                                PenaltyType::Kick,
+                                ctx.kick(&cid_str, short_reason).await,
+                            ),
+                            CensorAction::Ban => (
+                                PenaltyType::Ban,
+                                ctx.ban(&cid_str, short_reason).await,
+                            ),
+                        };
+                        action_result?;
+                        self.record_penalty(
+                            ctx,
+                            db_id,
+                            ptype,
+                            format!("Offensive player name (matched {})", pattern),
+                        )
+                        .await;
                         return Ok(());
                     }
                 }
@@ -142,6 +253,19 @@ impl Plugin for CensorPlugin {
                     ctx.message(&cid_str, "^1Kicked for repeated offensive language").await?;
                     ctx.kick(&cid_str, "Offensive language").await?;
                     self.warnings.write().await.remove(&client_id);
+                    let db_id = ctx
+                        .clients
+                        .get_by_cid(&cid_str)
+                        .await
+                        .map(|c| c.id)
+                        .unwrap_or(0);
+                    self.record_penalty(
+                        ctx,
+                        db_id,
+                        PenaltyType::Kick,
+                        "Repeated offensive language".to_string(),
+                    )
+                    .await;
                 } else {
                     ctx.message(
                         &cid_str,

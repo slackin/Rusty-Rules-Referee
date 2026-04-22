@@ -1,16 +1,36 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use regex::Regex;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::core::context::BotContext;
+use crate::core::{Penalty, PenaltyType};
 use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
 
-/// Urban Terror specific censoring — bans players with offensive names or clan tags.
+/// What to do when a player with a banned name is detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CensorAction {
+    Kick,
+    Ban,
+}
+
+impl CensorAction {
+    fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ban" => Self::Ban,
+            _ => Self::Kick,
+        }
+    }
+}
+
+/// Urban Terror specific censoring — kicks/bans players with offensive names or clan tags.
 pub struct CensorurtPlugin {
     enabled: bool,
     /// Regex patterns matching banned names/clan tags.
     banned_names: Vec<Regex>,
+    /// Whether to kick or ban when a banned name is detected.
+    action: CensorAction,
 }
 
 impl CensorurtPlugin {
@@ -30,6 +50,7 @@ impl CensorurtPlugin {
         Self {
             enabled: true,
             banned_names,
+            action: CensorAction::Kick,
         }
     }
 
@@ -52,6 +73,56 @@ impl CensorurtPlugin {
             .iter()
             .find(|re| re.is_match(&stripped))
             .map(|re| re.as_str().to_string())
+    }
+
+    /// Apply the configured action (kick or ban) and record a Penalty row
+    /// so the enforcement shows up in the penalties / audit views.
+    async fn enforce(
+        &self,
+        ctx: &BotContext,
+        cid: &str,
+        client_db_id: i64,
+        name: &str,
+        pattern: &str,
+    ) -> anyhow::Result<()> {
+        let reason = format!("Offensive player name (matched {})", pattern);
+        let short_reason = "Offensive player name";
+
+        match self.action {
+            CensorAction::Kick => ctx.kick(cid, short_reason).await?,
+            CensorAction::Ban => ctx.ban(cid, short_reason).await?,
+        }
+
+        if client_db_id > 0 {
+            let penalty_type = match self.action {
+                CensorAction::Kick => PenaltyType::Kick,
+                CensorAction::Ban => PenaltyType::Ban,
+            };
+            let now = Utc::now();
+            let penalty = Penalty {
+                id: 0,
+                penalty_type,
+                client_id: client_db_id,
+                admin_id: None,
+                duration: None,
+                reason,
+                keyword: "censorurt".to_string(),
+                inactive: false,
+                time_add: now,
+                time_edit: now,
+                time_expire: None,
+                server_id: None,
+            };
+            if let Err(e) = ctx.storage.save_penalty(&penalty).await {
+                warn!(
+                    error = %e,
+                    client = client_db_id,
+                    name = %name,
+                    "Failed to record censorurt penalty"
+                );
+            }
+        }
+        Ok(())
     }
 }
 fn strip_color_codes(s: &str) -> String {
@@ -91,10 +162,26 @@ impl Plugin for CensorurtPlugin {
     async fn on_load_config(&mut self, settings: Option<&toml::Table>) -> anyhow::Result<()> {
         if let Some(s) = settings {
             if let Some(arr) = s.get("banned_names").and_then(|v| v.as_array()) {
-                self.banned_names = arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .filter_map(|s| regex::Regex::new(&format!("(?i){}", s)).ok())
-                    .collect();
+                let mut compiled = Vec::new();
+                for entry in arr.iter().filter_map(|v| v.as_str()) {
+                    let trimmed = entry.trim();
+                    if trimmed.is_empty() {
+                        warn!("censorurt: skipping empty banned_names entry");
+                        continue;
+                    }
+                    match Regex::new(&format!("(?i){}", trimmed)) {
+                        Ok(re) => compiled.push(re),
+                        Err(e) => warn!(
+                            pattern = %trimmed,
+                            error = %e,
+                            "censorurt: skipping invalid banned_names regex"
+                        ),
+                    }
+                }
+                self.banned_names = compiled;
+            }
+            if let Some(v) = s.get("action").and_then(|v| v.as_str()) {
+                self.action = CensorAction::from_str(v);
             }
         }
         Ok(())
@@ -103,6 +190,7 @@ impl Plugin for CensorurtPlugin {
     async fn on_startup(&mut self) -> anyhow::Result<()> {
         info!(
             banned_patterns = self.banned_names.len(),
+            action = ?self.action,
             "CensorUrt plugin started"
         );
         Ok(())
@@ -123,9 +211,10 @@ impl Plugin for CensorurtPlugin {
                                 client = client_id,
                                 name = %client.name,
                                 pattern = %pattern,
+                                action = ?self.action,
                                 "Banned name detected on auth"
                             );
-                            ctx.kick(&cid_str, "Offensive player name").await?;
+                            self.enforce(ctx, &cid_str, client.id, &client.name, &pattern).await?;
                         }
                     }
                 }
@@ -137,9 +226,11 @@ impl Plugin for CensorurtPlugin {
                                 client = client_id,
                                 name = %new_name,
                                 pattern = %pattern,
+                                action = ?self.action,
                                 "Banned name detected on name change"
                             );
-                            ctx.kick(&cid_str, "Offensive player name").await?;
+                            let db_id = ctx.clients.get_by_cid(&cid_str).await.map(|c| c.id).unwrap_or(0);
+                            self.enforce(ctx, &cid_str, db_id, new_name, &pattern).await?;
                         }
                     }
                 }

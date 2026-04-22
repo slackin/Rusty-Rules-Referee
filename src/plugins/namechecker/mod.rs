@@ -1,10 +1,12 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use regex::Regex;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::core::context::BotContext;
+use crate::core::{Penalty, PenaltyType};
 use crate::events::{Event, EventData};
 use crate::plugins::{Plugin, PluginInfo};
 
@@ -114,6 +116,32 @@ impl NameCheckerPlugin {
         }
         None
     }
+
+    /// Record a Kick penalty for an automatic name-check enforcement so it
+    /// shows on the Penalties page.
+    async fn record_kick_penalty(&self, ctx: &BotContext, client_db_id: i64, reason: &str) {
+        if client_db_id <= 0 {
+            return;
+        }
+        let now = Utc::now();
+        let penalty = Penalty {
+            id: 0,
+            penalty_type: PenaltyType::Kick,
+            client_id: client_db_id,
+            admin_id: None,
+            duration: None,
+            reason: reason.to_string(),
+            keyword: "namechecker".to_string(),
+            inactive: false,
+            time_add: now,
+            time_edit: now,
+            time_expire: None,
+            server_id: None,
+        };
+        if let Err(e) = ctx.storage.save_penalty(&penalty).await {
+            warn!(error = %e, client = client_db_id, "Failed to record namechecker penalty");
+        }
+    }
 }
 
 impl Default for NameCheckerPlugin {
@@ -179,6 +207,7 @@ impl Plugin for NameCheckerPlugin {
                         warn!(player = %client.name, reason = %reason, "NameChecker kicking player");
                         ctx.message(cid, &format!("^1{}", reason)).await?;
                         ctx.kick(cid, &reason).await?;
+                        self.record_kick_penalty(ctx, client.id, &reason).await;
                     }
                 }
             }
@@ -203,6 +232,7 @@ impl Plugin for NameCheckerPlugin {
                         warn!(player = %new_name, reason = %reason, "NameChecker kicking player");
                         ctx.message(cid, &format!("^1{}", reason)).await?;
                         ctx.kick(cid, &reason).await?;
+                        self.record_kick_penalty(ctx, client.id, &reason).await;
                     }
                     return Ok(());
                 }
@@ -213,6 +243,7 @@ impl Plugin for NameCheckerPlugin {
                         warn!(player = %client.name, "NameChecker kicking player for name change spam");
                         ctx.message(cid, "^1Too many name changes").await?;
                         ctx.kick(cid, "Too many name changes").await?;
+                        self.record_kick_penalty(ctx, client.id, "Too many name changes").await;
                     }
                 }
             }

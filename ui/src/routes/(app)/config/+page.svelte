@@ -265,6 +265,7 @@
 			settings: [
 				{ key: 'warn_message', type: 'text', label: 'Warning Message', description: 'Message sent to the player when censored', default: 'Watch your language!' },
 				{ key: 'max_warnings', type: 'number', label: 'Max Warnings', description: 'Warnings before kicking the player', default: 3 },
+				{ key: 'action', type: 'select', label: 'Bad Name Action', description: 'What to do when a bad name is detected', default: 'kick', options: ['kick', 'ban'] },
 				{ key: 'bad_words', type: 'string_list', label: 'Bad Words', description: 'Regex patterns for forbidden words in chat (case-insensitive)', default: [] },
 				{ key: 'bad_names', type: 'string_list', label: 'Bad Names', description: 'Regex patterns for forbidden player names (case-insensitive)', default: [] },
 			]
@@ -273,6 +274,7 @@
 			label: 'Name Censor (URT)',
 			description: 'Filter offensive player names and clan tags',
 			settings: [
+				{ key: 'action', type: 'select', label: 'Action', description: 'What to do when a banned name is detected', default: 'kick', options: ['kick', 'ban'] },
 				{ key: 'banned_names', type: 'string_list', label: 'Banned Name Patterns', description: 'Regex patterns for banned names (case-insensitive)', default: [] },
 			]
 		},
