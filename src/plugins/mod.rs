@@ -1,6 +1,8 @@
+pub mod catalog;
 mod registry;
 mod traits;
 
+pub use catalog::{catalog, PluginCatalogEntry, PluginSchema, SettingField};
 pub use registry::PluginRegistry;
 pub use traits::{Plugin, PluginInfo};
 

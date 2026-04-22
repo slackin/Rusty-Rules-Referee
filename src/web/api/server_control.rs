@@ -483,7 +483,9 @@ pub async fn server_audit_log(
 
 // ---- Plugin config (stored in servers.config_json on the master) ----
 
-/// GET /api/v1/servers/:id/plugins — list of plugin configs from stored config_json.
+/// GET /api/v1/servers/:id/plugins — returns the full plugin catalog plus
+/// the per-server overrides stored in `servers.config_json`. The UI merges
+/// catalog defaults with overrides client-side.
 pub async fn server_list_plugins(
     State(state): State<AppState>,
     Path(server_id): Path<i64>,
@@ -492,13 +494,19 @@ pub async fn server_list_plugins(
         Ok(s) => s,
         Err(_) => return (StatusCode::NOT_FOUND, Json(CommandResponse { ok: false, message: "Server not found".into() })).into_response(),
     };
-    let plugins = server
+    let overrides = server
         .config_json
         .as_deref()
         .and_then(|j| serde_json::from_str::<ServerConfigPayload>(j).ok())
         .and_then(|p| p.plugins)
         .unwrap_or_default();
-    Json(serde_json::json!({"plugins": plugins})).into_response()
+    Json(serde_json::json!({
+        "catalog": crate::plugins::catalog(),
+        "overrides": overrides,
+        // Backwards-compat: callers that expected `plugins` still get the
+        // raw overrides list.
+        "plugins": overrides,
+    })).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -528,11 +536,22 @@ pub async fn server_update_plugin(
     {
         Some(p) => p,
         None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(CommandResponse { ok: false, message: "Server has no config payload yet".into() }),
-            )
-                .into_response();
+            // Initialize a fresh payload from the server row. This lets
+            // brand-new servers (no config_json yet) accept plugin edits,
+            // which will be pushed on the next heartbeat once the client
+            // connects.
+            ServerConfigPayload {
+                address: server.address.clone(),
+                port: server.port,
+                rcon_password: String::new(),
+                game_log: None,
+                server_cfg_path: None,
+                rcon_ip: None,
+                rcon_port: None,
+                delay: None,
+                bot: None,
+                plugins: Some(Vec::new()),
+            }
         }
     };
     let plugins = payload.plugins.get_or_insert_with(Vec::new);

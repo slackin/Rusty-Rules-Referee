@@ -46,6 +46,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/config/check-game-log", post(api::config::check_game_log))
         // Plugins
         .route("/plugins", get(api::plugins::list_plugins))
+        .route("/plugins/catalog", get(api::plugins::plugins_catalog))
         // Players
         .route("/players", get(api::players::list_players))
         .route("/players/:id", get(api::players::get_player))

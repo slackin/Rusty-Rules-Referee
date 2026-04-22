@@ -18,3 +18,12 @@ pub async fn list_plugins(
 
     Json(serde_json::json!({"plugins": plugins}))
 }
+
+/// GET /api/v1/plugins/catalog — static catalog of all known plugins with
+/// their settings schemas. Available in every run mode (standalone,
+/// master, client) because the catalog is compiled-in static data.
+pub async fn plugins_catalog(AuthUser(_claims): AuthUser) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "plugins": crate::plugins::catalog(),
+    }))
+}
