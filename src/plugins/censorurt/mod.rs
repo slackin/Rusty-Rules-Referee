@@ -41,13 +41,19 @@ impl CensorurtPlugin {
     }
 
     fn is_name_banned(&self, name: &str) -> bool {
-        // Strip UrT color codes before checking
+        self.matching_pattern(name).is_some()
+    }
+
+    /// Return the first banned regex pattern (as a string) that matches the
+    /// given name after stripping color codes, or `None` if the name is clean.
+    fn matching_pattern(&self, name: &str) -> Option<String> {
         let stripped = strip_color_codes(name);
-        self.banned_names.iter().any(|re| re.is_match(&stripped))
+        self.banned_names
+            .iter()
+            .find(|re| re.is_match(&stripped))
+            .map(|re| re.as_str().to_string())
     }
 }
-
-/// Strip Quake 3 / Urban Terror color codes (^0 through ^9, ^a-^z).
 fn strip_color_codes(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -112,8 +118,13 @@ impl Plugin for CensorurtPlugin {
             match event_key {
                 "EVT_CLIENT_AUTH" => {
                     if let Some(client) = ctx.clients.get_by_cid(&cid_str).await {
-                        if self.is_name_banned(&client.name) {
-                            info!(client = client_id, name = %client.name, "Banned name detected on auth");
+                        if let Some(pattern) = self.matching_pattern(&client.name) {
+                            info!(
+                                client = client_id,
+                                name = %client.name,
+                                pattern = %pattern,
+                                "Banned name detected on auth"
+                            );
                             ctx.kick(&cid_str, "Offensive player name").await?;
                         }
                     }
@@ -121,8 +132,13 @@ impl Plugin for CensorurtPlugin {
 
                 "EVT_CLIENT_NAME_CHANGE" => {
                     if let EventData::Text(ref new_name) = event.data {
-                        if self.is_name_banned(new_name) {
-                            info!(client = client_id, name = %new_name, "Banned name detected on name change");
+                        if let Some(pattern) = self.matching_pattern(new_name) {
+                            info!(
+                                client = client_id,
+                                name = %new_name,
+                                pattern = %pattern,
+                                "Banned name detected on name change"
+                            );
                             ctx.kick(&cid_str, "Offensive player name").await?;
                         }
                     }
