@@ -29,7 +29,9 @@
 	function defaultsFor(entry) {
 		const obj = {};
 		for (const f of entry.schema?.fields || []) {
-			obj[f.key] = structuredClone(f.default);
+			// Use JSON clone — structuredClone() rejects Svelte 5 $state proxies.
+			const d = f.default;
+			obj[f.key] = d === undefined || d === null ? d : JSON.parse(JSON.stringify(d));
 		}
 		return obj;
 	}
