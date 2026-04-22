@@ -27,27 +27,49 @@ export const SECTIONS = [
 	{ id: 'mapcycle', title: 'Mapcycle & Maps', defaultOpen: false },
 ];
 
-// Gear items — same codes/order as the map-config editor.
+// Gear items for Urban Terror 4.2.018+ / 4.3 per-weapon g_gear calculator.
+// Codes match those used by urbanterror.info's gear calculator and the B3
+// Poweradminurt43 plugin. g_gear is a BAN list: a letter being present in the
+// cvar means that item is DISABLED on the server. Empty string = everything
+// allowed (default). Grouped for UI readability; consumers just iterate.
 export const GEAR_ITEMS = [
-	{ code: 'G', label: 'Grenades' },
-	{ code: 'A', label: 'Snipers (SR-8, PSG-1)' },
-	{ code: 'a', label: 'Negev' },
-	{ code: 'I', label: 'SMGs (MP5K, UMP45, MAC-11)' },
-	{ code: 'W', label: 'Pistols (Desert Eagle, .50)' },
-	{ code: 'N', label: 'Pistols (Beretta, Colt 1911)' },
-	{ code: 'E', label: 'Automatics (G36, AK-103, LR300)' },
-	{ code: 'M', label: 'Shotguns (SPAS-12, Benelli)' },
-	{ code: 'K', label: 'Kevlar Vest' },
-	{ code: 'L', label: 'Laser Sight' },
-	{ code: 'O', label: 'Medkit' },
-	{ code: 'Q', label: 'Silencer' },
-	{ code: 'R', label: 'Extra Ammo' },
-	{ code: 'S', label: 'Helmet' },
-	{ code: 'T', label: 'NVGs (Night Vision)' },
-	{ code: 'U', label: 'Tactical Goggles' },
-	{ code: 'V', label: 'HE Grenade' },
-	{ code: 'X', label: 'Smoke Grenade' },
-	{ code: 'Z', label: 'HK69 Grenade Launcher' },
+	// Pistols
+	{ code: 'F', label: 'Beretta 92FS', category: 'Pistols' },
+	{ code: 'G', label: '.50 Desert Eagle', category: 'Pistols' },
+	{ code: 'f', label: 'Glock 19', category: 'Pistols' },
+	{ code: 'g', label: 'Colt 1911', category: 'Pistols' },
+	{ code: 'l', label: 'Magnum', category: 'Pistols' },
+	// SMGs
+	{ code: 'I', label: 'MP5K', category: 'SMGs' },
+	{ code: 'J', label: 'UMP45', category: 'SMGs' },
+	{ code: 'h', label: 'MAC-11', category: 'SMGs' },
+	{ code: 'k', label: 'FN P90', category: 'SMGs' },
+	// Shotguns
+	{ code: 'H', label: 'SPAS-12', category: 'Shotguns' },
+	{ code: 'j', label: 'Benelli M4', category: 'Shotguns' },
+	// Assault rifles
+	{ code: 'L', label: 'LR300ML', category: 'Assault Rifles' },
+	{ code: 'M', label: 'G36', category: 'Assault Rifles' },
+	{ code: 'a', label: 'AK-103', category: 'Assault Rifles' },
+	{ code: 'e', label: 'Colt M4', category: 'Assault Rifles' },
+	// Snipers
+	{ code: 'N', label: 'PSG-1', category: 'Snipers' },
+	{ code: 'Z', label: 'SR-8', category: 'Snipers' },
+	{ code: 'i', label: 'FRF1', category: 'Snipers' },
+	// Heavy / launchers
+	{ code: 'c', label: 'Negev LMG', category: 'Heavy' },
+	{ code: 'K', label: 'HK69 Grenade Launcher', category: 'Heavy' },
+	// Grenades
+	{ code: 'O', label: 'HE Grenade', category: 'Grenades' },
+	{ code: 'Q', label: 'Smoke Grenade', category: 'Grenades' },
+	// Gear / equipment
+	{ code: 'R', label: 'Kevlar Vest', category: 'Gear' },
+	{ code: 'W', label: 'Helmet', category: 'Gear' },
+	{ code: 'S', label: 'Tactical Goggles', category: 'Gear' },
+	{ code: 'T', label: 'Medkit', category: 'Gear' },
+	{ code: 'U', label: 'Silencer', category: 'Gear' },
+	{ code: 'V', label: 'Laser Sight', category: 'Gear' },
+	{ code: 'X', label: 'Extra Ammo', category: 'Gear' },
 ];
 
 // g_allowvote bit flags (UrT 4.3).
