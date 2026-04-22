@@ -410,18 +410,42 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                 }
             }
 
-            // --- Client info change (team updates) ---
+            // --- Client info change (team + name updates) ---
+            let mut synthesized_name_change: Option<Event> = None;
             if evt_key == Some("EVT_CLIENT_INFO_CHANGE") {
                 if let Some(cid) = &event.client_id {
                     if let rusty_rules_referee::events::EventData::Text(ref json) = event.data {
                         if let Ok(pairs) = serde_json::from_str::<Vec<(String, String)>>(json) {
+                            let cid_str = cid.to_string();
                             for (k, v) in &pairs {
                                 if k == "t" {
                                     let team = Team::from_str_urt(v);
-                                    handler_clients.update(&cid.to_string(), |c| {
+                                    handler_clients.update(&cid_str, |c| {
                                         c.team = team;
                                     }).await;
-                                    break;
+                                } else if k == "n" && !v.is_empty() {
+                                    let new_name = v.clone();
+                                    let old_name = handler_clients
+                                        .get_by_cid(&cid_str)
+                                        .await
+                                        .map(|c| c.name)
+                                        .unwrap_or_default();
+                                    if old_name != new_name {
+                                        let new_for_update = new_name.clone();
+                                        handler_clients.update(&cid_str, |c| {
+                                            c.current_name = Some(new_for_update.clone());
+                                            c.name = new_for_update;
+                                        }).await;
+                                        if let Some(nc_id) = handler_event_registry.get_id("EVT_CLIENT_NAME_CHANGE") {
+                                            synthesized_name_change = Some(
+                                                Event::new(
+                                                    nc_id,
+                                                    rusty_rules_referee::events::EventData::Text(new_name),
+                                                )
+                                                .with_client(*cid),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -438,6 +462,10 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
 
             // Dispatch event to plugins
             handler_plugins.dispatch(&event, &handler_ctx).await;
+            if let Some(nc_event) = synthesized_name_change {
+                handler_plugins.dispatch(&nc_event, &handler_ctx).await;
+                let _ = handler_ws_tx.send(nc_event);
+            }
 
             // Forward event to WebSocket clients
             let _ = handler_ws_tx.send(event);
@@ -1233,18 +1261,42 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                 }
             }
 
-            // --- Client info change (team updates) ---
+            // --- Client info change (team + name updates) ---
+            let mut synthesized_name_change: Option<Event> = None;
             if evt_key == Some("EVT_CLIENT_INFO_CHANGE") {
                 if let Some(cid) = &event.client_id {
                     if let rusty_rules_referee::events::EventData::Text(ref json) = event.data {
                         if let Ok(pairs) = serde_json::from_str::<Vec<(String, String)>>(json) {
+                            let cid_str = cid.to_string();
                             for (k, v) in &pairs {
                                 if k == "t" {
                                     let team = Team::from_str_urt(v);
-                                    handler_clients.update(&cid.to_string(), |c| {
+                                    handler_clients.update(&cid_str, |c| {
                                         c.team = team;
                                     }).await;
-                                    break;
+                                } else if k == "n" && !v.is_empty() {
+                                    let new_name = v.clone();
+                                    let old_name = handler_clients
+                                        .get_by_cid(&cid_str)
+                                        .await
+                                        .map(|c| c.name)
+                                        .unwrap_or_default();
+                                    if old_name != new_name {
+                                        let new_for_update = new_name.clone();
+                                        handler_clients.update(&cid_str, |c| {
+                                            c.current_name = Some(new_for_update.clone());
+                                            c.name = new_for_update;
+                                        }).await;
+                                        if let Some(nc_id) = handler_event_registry.get_id("EVT_CLIENT_NAME_CHANGE") {
+                                            synthesized_name_change = Some(
+                                                Event::new(
+                                                    nc_id,
+                                                    rusty_rules_referee::events::EventData::Text(new_name),
+                                                )
+                                                .with_client(*cid),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1261,6 +1313,10 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
 
             // Dispatch event to plugins
             handler_plugins.dispatch(&event, &handler_ctx).await;
+            if let Some(nc_event) = synthesized_name_change {
+                handler_plugins.dispatch(&nc_event, &handler_ctx).await;
+                let _ = sync_event_tx.send(nc_event.clone()).await;
+            }
 
             // Forward event to sync manager for master relay
             let _ = sync_event_tx.send(event).await;
