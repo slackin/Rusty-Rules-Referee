@@ -140,6 +140,9 @@ pub struct GameServer {
     /// Release channel this server's bot follows for updates
     /// (one of `production`, `beta`, `alpha`, `dev`). Master-controlled.
     pub update_channel: String,
+    /// Auto-update check interval in seconds. Master-controlled; pushed to
+    /// the client via heartbeat response.
+    pub update_interval: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

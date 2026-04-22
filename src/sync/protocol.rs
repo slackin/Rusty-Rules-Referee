@@ -63,6 +63,11 @@ pub struct HeartbeatResponse {
     /// local config and uses this channel for subsequent update checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_channel: Option<String>,
+    /// Master-controlled auto-update check interval in seconds. When present
+    /// and different from the client's current interval, the client updates
+    /// its local config and uses this interval for subsequent update checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_interval: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +299,13 @@ pub enum ClientRequest {
         #[serde(default)]
         allowed_hosts: Vec<String>,
     },
+
+    /// Read a single server cvar via RCON. Returns the trimmed current
+    /// value in the `Ok { data: { value, raw } }` response.
+    GetCvar { name: String },
+    /// Set a single server cvar via RCON. `value` is forwarded verbatim;
+    /// callers are responsible for quoting / validation.
+    SetCvar { name: String, value: String },
 }
 
 /// Responses from a client bot back to the master.

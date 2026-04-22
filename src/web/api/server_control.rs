@@ -597,3 +597,45 @@ pub async fn server_update_plugin(
     }))
     .into_response()
 }
+
+// ---- Live cvar read/write (master → client passthrough) --------------
+
+/// GET /api/v1/servers/:id/cvar/:name
+pub async fn server_get_cvar(
+    State(state): State<AppState>,
+    Path((server_id, name)): Path<(i64, String)>,
+) -> impl IntoResponse {
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::GetCvar { name },
+        StdDuration::from_secs(5),
+    )
+    .await
+    {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SetCvarBody { pub value: String }
+
+/// PUT /api/v1/servers/:id/cvar/:name — body `{"value":"..."}`
+pub async fn server_set_cvar(
+    State(state): State<AppState>,
+    Path((server_id, name)): Path<(i64, String)>,
+    Json(body): Json<SetCvarBody>,
+) -> impl IntoResponse {
+    match send_client_request(
+        &state,
+        server_id,
+        ClientRequest::SetCvar { name, value: body.value },
+        StdDuration::from_secs(5),
+    )
+    .await
+    {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}

@@ -246,6 +246,8 @@ pub trait Storage: Send + Sync {
     async fn update_server_status(&self, server_id: i64, status: &str, map: Option<&str>, players: u32, max_clients: u32) -> Result<(), StorageError>;
     /// Update the update-channel string for a server (master-controlled).
     async fn set_server_update_channel(&self, server_id: i64, channel: &str) -> Result<(), StorageError>;
+    /// Update the auto-update check interval (seconds) for a server (master-controlled).
+    async fn set_server_update_interval(&self, server_id: i64, interval_secs: u64) -> Result<(), StorageError>;
     async fn delete_server(&self, server_id: i64) -> Result<(), StorageError>;
 
     // ---- Sync queue (client-side offline queue) ----

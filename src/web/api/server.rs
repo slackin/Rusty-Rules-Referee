@@ -455,3 +455,90 @@ pub async fn missing_maps(
     }
     Json(serde_json::json!({ "missing": missing })).into_response()
 }
+
+// ---- Live cvar read/write (standalone) --------------------------------
+
+fn valid_cvar_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn parse_cvar_response(raw: &str) -> String {
+    let clean = raw.trim().trim_matches('\0');
+    if let Some(idx) = clean.find("is:\"") {
+        let after = &clean[idx + 4..];
+        if let Some(end) = after.find('"') {
+            let mut val = after[..end].to_string();
+            if val.ends_with("^7") {
+                val.truncate(val.len() - 2);
+            }
+            return val;
+        }
+    }
+    clean.to_string()
+}
+
+/// GET /api/v1/server/cvar/:name — read a single cvar from the live server.
+pub async fn get_cvar(
+    AuthUser(_claims): AuthUser,
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if !valid_cvar_name(&name) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid cvar name"}))).into_response();
+    }
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+    match ctx.write(&name).await {
+        Ok(raw) => {
+            let value = parse_cvar_response(&raw);
+            Json(serde_json::json!({ "name": name, "value": value, "raw": raw })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// PUT /api/v1/server/cvar/:name — set a single cvar on the live server.
+/// Body: `{ "value": "..." }`.
+pub async fn set_cvar(
+    AdminOnly(claims): AdminOnly,
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !valid_cvar_name(&name) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid cvar name"}))).into_response();
+    }
+    let value = match body.get("value").and_then(|v| v.as_str()) {
+        Some(v) => v.to_string(),
+        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing 'value' field"}))).into_response(),
+    };
+    if value.chars().any(|c| c == '"' || c == '\n' || c == '\r' || (c as u32) < 0x20) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid cvar value"}))).into_response();
+    }
+    let ctx = match state.require_ctx() {
+        Ok(c) => c,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Not available in master mode"}))).into_response(),
+    };
+
+    let _ = state.storage.save_audit_entry(&AuditEntry {
+        id: 0,
+        admin_user_id: Some(claims.user_id),
+        action: "set_cvar".to_string(),
+        detail: format!("set {} \"{}\"", name, value),
+        ip_address: None,
+        created_at: chrono::Utc::now(),
+        server_id: None,
+    }).await;
+
+    let cmd = format!("set {} \"{}\"", name, value);
+    match ctx.write(&cmd).await {
+        Ok(_) => Json(serde_json::json!({ "name": name, "value": value, "ok": true })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+

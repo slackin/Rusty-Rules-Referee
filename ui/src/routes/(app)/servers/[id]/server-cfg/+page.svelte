@@ -214,12 +214,14 @@
 	function openGearPicker(key) {
 		gearCvarKey = key;
 		const cur = values[key] ?? '';
+		// g_gear in UrT is a BAN list. Invert in UI so checked = allowed.
 		const sel = {};
-		for (const item of GEAR_ITEMS) sel[item.code] = cur.includes(item.code);
+		for (const item of GEAR_ITEMS) sel[item.code] = !cur.includes(item.code);
 		gearSelection = sel;
 	}
 	function applyGearPicker() {
-		const str = GEAR_ITEMS.filter((i) => gearSelection[i.code]).map((i) => i.code).join('');
+		// Persist unchecked codes (the banned items).
+		const str = GEAR_ITEMS.filter((i) => !gearSelection[i.code]).map((i) => i.code).join('');
 		setValue(gearCvarKey, str);
 		gearCvarKey = null;
 	}
@@ -560,7 +562,7 @@
 			onkeydown={(e) => e.stopPropagation()}
 		>
 			<h3 class="mb-2 text-base font-semibold text-surface-100">Gear Picker — {gearCvarKey}</h3>
-			<p class="mb-4 text-xs text-surface-500">Tick items to allow them. The g_gear string is built from selected codes.</p>
+			<p class="mb-4 text-xs text-surface-500">Tick items to <span class="text-emerald-400">allow</span> them. Unticked items are banned and go into the <code>g_gear</code> string. All ticked = empty g_gear (everything allowed).</p>
 			<div class="mb-4 grid grid-cols-2 gap-1">
 				{#each GEAR_ITEMS as item (item.code)}
 					<label class="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs text-surface-300 hover:bg-surface-800">

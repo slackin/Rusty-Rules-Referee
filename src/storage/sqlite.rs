@@ -54,6 +54,7 @@ impl SqliteStorage {
             include_str!("../../migrations/010_map_repo.sql"),
             include_str!("../../migrations/011_server_maps.sql"),
             include_str!("../../migrations/012_map_configs_v2.sql"),
+            include_str!("../../migrations/013_server_update_interval.sql"),
         ];
         for schema in migrations {
             // Strip SQL comment lines before splitting into statements
@@ -1640,6 +1641,7 @@ impl Storage for SqliteStorage {
             config_version: r.get("config_version"),
             cert_fingerprint: r.get("cert_fingerprint"),
             update_channel: r.get("update_channel"),
+            update_interval: r.try_get::<i64, _>("update_interval").unwrap_or(3600) as u64,
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
         }).collect())
@@ -1666,6 +1668,7 @@ impl Storage for SqliteStorage {
             config_version: row.get("config_version"),
             cert_fingerprint: row.get("cert_fingerprint"),
             update_channel: row.get("update_channel"),
+            update_interval: row.try_get::<i64, _>("update_interval").unwrap_or(3600) as u64,
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -1692,6 +1695,7 @@ impl Storage for SqliteStorage {
             config_version: r.get("config_version"),
             cert_fingerprint: r.get("cert_fingerprint"),
             update_channel: r.get("update_channel"),
+            update_interval: r.try_get::<i64, _>("update_interval").unwrap_or(3600) as u64,
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
         }))
@@ -1703,7 +1707,7 @@ impl Storage for SqliteStorage {
                 "UPDATE servers SET name = ?, address = ?, port = ?, status = ?, \
                  current_map = ?, player_count = ?, max_clients = ?, last_seen = ?, \
                  config_json = ?, config_version = ?, cert_fingerprint = ?, \
-                 update_channel = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                 update_channel = ?, update_interval = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -1717,6 +1721,7 @@ impl Storage for SqliteStorage {
             .bind(server.config_version)
             .bind(&server.cert_fingerprint)
             .bind(&server.update_channel)
+            .bind(server.update_interval as i64)
             .bind(server.id)
             .execute(&self.pool)
             .await
@@ -1725,8 +1730,8 @@ impl Storage for SqliteStorage {
         } else {
             let result = sqlx::query(
                 "INSERT INTO servers (name, address, port, status, current_map, player_count, \
-                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel, update_interval) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -1740,6 +1745,7 @@ impl Storage for SqliteStorage {
             .bind(server.config_version)
             .bind(&server.cert_fingerprint)
             .bind(&server.update_channel)
+            .bind(server.update_interval as i64)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -1752,6 +1758,18 @@ impl Storage for SqliteStorage {
             "UPDATE servers SET update_channel = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
         )
         .bind(channel)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_server_update_interval(&self, server_id: i64, interval_secs: u64) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE servers SET update_interval = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        )
+        .bind(interval_secs as i64)
         .bind(server_id)
         .execute(&self.pool)
         .await

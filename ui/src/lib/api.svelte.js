@@ -69,6 +69,9 @@ export const api = {
 	mapcycle: () => request('/server/mapcycle'),
 	updateMapcycle: (maps) =>
 		request('/server/mapcycle', { method: 'PUT', body: JSON.stringify({ maps }) }),
+	getCvar: (name) => request(`/server/cvar/${encodeURIComponent(name)}`),
+	setCvar: (name, value) =>
+		request(`/server/cvar/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
 
 	// Map configs (per-map settings)
 	mapConfigs: () => request('/map-configs').then(r => r.configs),
@@ -225,6 +228,8 @@ export const api = {
 		request(`/servers/${id}/restart`, { method: 'POST' }),
 	setServerUpdateChannel: (id, channel) =>
 		request(`/servers/${id}/update-channel`, { method: 'PUT', body: JSON.stringify({ channel }) }),
+	setServerUpdateInterval: (id, interval_secs) =>
+		request(`/servers/${id}/update-interval`, { method: 'PUT', body: JSON.stringify({ interval_secs }) }),
 	checkServerGameLog: (id, path) =>
 		request(`/servers/${id}/check-game-log`, { method: 'POST', body: JSON.stringify({ path }) }),
 	checkGameLog: (path) =>
@@ -247,6 +252,9 @@ export const api = {
 	serverGetServerCfg: (id) => request(`/servers/${id}/server-cfg`),
 	serverSaveServerCfg: (id, path, contents) =>
 		request(`/servers/${id}/server-cfg`, { method: 'PUT', body: JSON.stringify({ path, contents }) }),
+	serverGetCvar: (id, name) => request(`/servers/${id}/cvar/${encodeURIComponent(name)}`),
+	serverSetCvar: (id, name, value) =>
+		request(`/servers/${id}/cvar/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
 	serverListMapConfigs: (id) => request(`/servers/${id}/map-configs`),
 	serverSaveMapConfig: (id, config) =>
 		request(`/servers/${id}/map-configs`, { method: 'POST', body: JSON.stringify(config) }),

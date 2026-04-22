@@ -10,11 +10,17 @@
 	} = $props();
 
 	// ---- gear helpers ----
-	let gearSet = $derived(new Set((config.g_gear || '').split('')));
+	// UrT semantics: `g_gear` is a BAN list — each letter in the cvar disables
+	// that item. We invert in the UI so checkboxes read "allowed": checked =
+	// item is permitted (NOT in g_gear), unchecked = item is banned (IN g_gear).
+	// Empty g_gear still means "allow everything".
+	let bannedSet = $derived(new Set((config.g_gear || '').split('')));
 	function toggleGear(code) {
 		const set = new Set((config.g_gear || '').split(''));
 		if (set.has(code)) set.delete(code); else set.add(code);
-		config.g_gear = Array.from(set).join('');
+		// Preserve a stable ordering so diffs/UI stay consistent.
+		const order = GEAR_ITEMS.map((g) => g.code);
+		config.g_gear = order.filter((c) => set.has(c)).join('');
 	}
 
 	// ---- supported_gametypes helpers (CSV of ids) ----
@@ -126,15 +132,17 @@
 
 	<!-- Gear -->
 	<section class="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-		<h3 class="mb-1 text-sm font-semibold text-zinc-200">Gear (g_gear)</h3>
+		<h3 class="mb-1 text-sm font-semibold text-zinc-200">Allowed weapons & gear</h3>
 		<p class="mb-3 text-xs text-zinc-500">
-			Checked letters go in <code>g_gear</code>. Empty = allow everything.
+			Checked = item is <span class="text-emerald-400">allowed</span>.
+			Unchecked items are banned and go into the <code>g_gear</code> cvar.
+			All checked = allow everything (empty <code>g_gear</code>).
 		</p>
 		<div class="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
 			{#each GEAR_ITEMS as item}
 				<label class="flex items-center gap-2 rounded border border-zinc-800 px-2 py-1.5 text-xs hover:border-zinc-700">
 					<input type="checkbox" class="accent-blue-500"
-						checked={gearSet.has(item.code)}
+						checked={!bannedSet.has(item.code)}
 						{disabled}
 						onchange={() => toggleGear(item.code)} />
 					<span class="inline-block w-5 text-center font-mono text-zinc-300">{item.code}</span>
@@ -143,7 +151,7 @@
 			{/each}
 		</div>
 		<div class="mt-3 text-xs text-zinc-500">
-			Raw: <code class="text-zinc-300">{config.g_gear || '(empty)'}</code>
+			Banned (raw <code>g_gear</code>): <code class="text-zinc-300">{config.g_gear || '(none — all allowed)'}</code>
 		</div>
 	</section>
 

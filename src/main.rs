@@ -914,12 +914,17 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // the sync manager updates this when the master pushes a new channel.
     let update_channel = std::sync::Arc::new(tokio::sync::RwLock::new(config.update.channel.clone()));
 
+    // Shared update-check-interval watch (seconds). Populated from local
+    // config at startup; master may push a new value via heartbeat response.
+    let update_interval = std::sync::Arc::new(tokio::sync::RwLock::new(config.update.check_interval));
+
     // Set up the sync manager (always needed)
     let (sync_manager, mut sync_handle) = sync::client::ClientSyncManager::new(
         client_config.clone(),
         db.clone(),
         config_path.clone(),
         update_channel.clone(),
+        update_interval.clone(),
     );
 
     // Spawn the sync manager
@@ -937,11 +942,13 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         if config.update.enabled {
             let update_config = config.update.clone();
             let channel_watch = update_channel.clone();
+            let interval_watch = update_interval.clone();
             tokio::spawn(async move {
-                rusty_rules_referee::update::run_update_loop_with_channel(
+                rusty_rules_referee::update::run_update_loop_with_overrides(
                     update_config,
                     BUILD_HASH,
                     Some(channel_watch),
+                    Some(interval_watch),
                 ).await;
             });
         }
@@ -1131,11 +1138,13 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
     if config.update.enabled {
         let update_config = config.update.clone();
         let channel_watch = update_channel.clone();
+        let interval_watch = update_interval.clone();
         tokio::spawn(async move {
-            rusty_rules_referee::update::run_update_loop_with_channel(
+            rusty_rules_referee::update::run_update_loop_with_overrides(
                 update_config,
                 BUILD_HASH,
                 Some(channel_watch),
+                Some(interval_watch),
             ).await;
         });
     }

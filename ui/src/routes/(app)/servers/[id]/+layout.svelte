@@ -1,7 +1,7 @@
 <script>
 	import { page } from '$app/stores';
 	import { api } from '$lib/api.svelte.js';
-	import { LayoutDashboard, Users, ShieldBan, MessageSquare, ScrollText, Puzzle, Map, ListOrdered, FileCode } from 'lucide-svelte';
+	import { LayoutDashboard, Users, ShieldBan, MessageSquare, ScrollText, Puzzle, Map, ListOrdered, FileCode, Crosshair } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
 	let server = $state(null);
@@ -26,6 +26,7 @@
 		{ href: 'map-config', label: 'Map Config', icon: Map },
 		{ href: 'mapcycle', label: 'Mapcycle', icon: ListOrdered },
 		{ href: 'server-cfg', label: 'server.cfg', icon: FileCode },
+		{ href: 'live-gear', label: 'Live Gear', icon: Crosshair },
 	];
 
 	let currentTab = $derived.by(() => {

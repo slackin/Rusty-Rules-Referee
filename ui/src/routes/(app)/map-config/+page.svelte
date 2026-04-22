@@ -180,17 +180,20 @@
 	let gearSelection = $state({});
 
 	function openGearCalc() {
-		// Parse current g_gear into selection
+		// Parse current g_gear (a BAN list in UrT) into selection where
+		// checked = allowed (NOT in g_gear), unchecked = banned.
+		const banned = editing?.g_gear || '';
 		const sel = {};
 		for (const item of GEAR_ITEMS) {
-			sel[item.code] = (editing?.g_gear || '').includes(item.code);
+			sel[item.code] = !banned.includes(item.code);
 		}
 		gearSelection = sel;
 		showGearCalc = true;
 	}
 
 	function applyGear() {
-		editing.g_gear = GEAR_ITEMS.filter(i => gearSelection[i.code]).map(i => i.code).join('');
+		// Persist the BAN list: letters for items NOT checked.
+		editing.g_gear = GEAR_ITEMS.filter(i => !gearSelection[i.code]).map(i => i.code).join('');
 		showGearCalc = false;
 	}
 
@@ -435,7 +438,7 @@
 			<div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick={() => showGearCalc = false}>
 				<div class="bg-zinc-800 border border-zinc-700 rounded-xl shadow-2xl p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto" onclick={(e) => e.stopPropagation()}>
 					<h3 class="text-lg font-semibold text-white mb-4">Gear Calculator</h3>
-					<p class="text-xs text-zinc-400 mb-3">Select allowed weapons and gear. The g_gear string will be generated from your selection.</p>
+					<p class="text-xs text-zinc-400 mb-3">Check items to <span class="text-emerald-400">allow</span> them. Unchecked items are banned — they go into the <code class="font-mono">g_gear</code> cvar. All checked = empty g_gear (everything allowed).</p>
 					<div class="space-y-2">
 						{#each GEAR_ITEMS as item}
 							<label class="flex items-center gap-3 p-2 rounded-lg hover:bg-zinc-700/50 cursor-pointer">
@@ -447,8 +450,8 @@
 						{/each}
 					</div>
 					<div class="mt-4 p-3 bg-zinc-900 rounded-lg">
-						<span class="text-xs text-zinc-400">Result: </span>
-						<span class="font-mono text-white">{GEAR_ITEMS.filter(i => gearSelection[i.code]).map(i => i.code).join('') || '(empty — all allowed)'}</span>
+						<span class="text-xs text-zinc-400">Banned (g_gear): </span>
+						<span class="font-mono text-white">{GEAR_ITEMS.filter(i => !gearSelection[i.code]).map(i => i.code).join('') || '(none — all allowed)'}</span>
 					</div>
 					<div class="flex gap-2 mt-4 justify-end">
 						<button onclick={() => showGearCalc = false} class="px-3 py-2 bg-zinc-700 text-zinc-300 rounded-lg hover:bg-zinc-600 text-sm">Cancel</button>

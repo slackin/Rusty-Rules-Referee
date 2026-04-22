@@ -198,6 +198,13 @@ impl Plugin for MapconfigPlugin {
                 // Auto-create a default config if absent so every map has one.
                 match ctx.storage.ensure_map_config(&map_name).await {
                     Ok(config) => {
+                        // Small delay so UrT finishes InitGame / latched-cvar
+                        // bookkeeping before we start pushing new cvars.
+                        // `g_gear` isn't technically latched, but several of
+                        // the cvars we push (g_gametype, g_maxrounds, ...)
+                        // are, and sending them mid-InitGame can be ignored
+                        // or overwritten. 1.5s is enough in practice.
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                         Self::apply_config(ctx, &config).await;
                     }
                     Err(e) => {

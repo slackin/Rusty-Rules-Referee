@@ -143,6 +143,7 @@ async fn handle_register(
             config_version: 0,
             cert_fingerprint: Some(req.cert_fingerprint),
             update_channel: "beta".to_string(),
+            update_interval: 3600,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
@@ -210,13 +211,15 @@ async fn handle_heartbeat(
 
     let server_row = state.storage.get_server(req.server_id).await.ok();
     let config_version = server_row.as_ref().map(|s| s.config_version).unwrap_or(0);
-    let update_channel = server_row.map(|s| s.update_channel);
+    let update_channel = server_row.as_ref().map(|s| s.update_channel.clone());
+    let update_interval = server_row.as_ref().map(|s| s.update_interval);
 
     Ok(Json(HeartbeatResponse {
         ok: true,
         config_version,
         pending_global_bans: Vec::new(), // TODO: track pending bans since last heartbeat
         update_channel,
+        update_interval,
     }))
 }
 

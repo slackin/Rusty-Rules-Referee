@@ -333,6 +333,7 @@ impl MysqlStorage {
                 config_version BIGINT NOT NULL DEFAULT 0,
                 cert_fingerprint VARCHAR(128),
                 update_channel VARCHAR(32) NOT NULL DEFAULT 'beta',
+                update_interval INT NOT NULL DEFAULT 3600,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_servers_status (status)
@@ -345,6 +346,13 @@ impl MysqlStorage {
         // Add update_channel column to existing servers tables (migration 008)
         let _ = sqlx::query(
             "ALTER TABLE servers ADD COLUMN update_channel VARCHAR(32) NOT NULL DEFAULT 'beta'"
+        )
+        .execute(&mut *conn)
+        .await;
+
+        // Add update_interval column to existing servers tables (migration 013)
+        let _ = sqlx::query(
+            "ALTER TABLE servers ADD COLUMN update_interval INT NOT NULL DEFAULT 3600"
         )
         .execute(&mut *conn)
         .await;
@@ -1969,6 +1977,7 @@ impl Storage for MysqlStorage {
             config_version: r.get("config_version"),
             cert_fingerprint: r.get("cert_fingerprint"),
             update_channel: r.get("update_channel"),
+            update_interval: r.try_get::<i32, _>("update_interval").unwrap_or(3600) as u64,
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
         }).collect())
@@ -1995,6 +2004,7 @@ impl Storage for MysqlStorage {
             config_version: row.get("config_version"),
             cert_fingerprint: row.get("cert_fingerprint"),
             update_channel: row.get("update_channel"),
+            update_interval: row.try_get::<i32, _>("update_interval").unwrap_or(3600) as u64,
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -2021,6 +2031,7 @@ impl Storage for MysqlStorage {
             config_version: r.get("config_version"),
             cert_fingerprint: r.get("cert_fingerprint"),
             update_channel: r.get("update_channel"),
+            update_interval: r.try_get::<i32, _>("update_interval").unwrap_or(3600) as u64,
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
         }))
@@ -2032,7 +2043,7 @@ impl Storage for MysqlStorage {
                 "UPDATE servers SET name = ?, address = ?, port = ?, status = ?, \
                  current_map = ?, player_count = ?, max_clients = ?, last_seen = ?, \
                  config_json = ?, config_version = ?, cert_fingerprint = ?, \
-                 update_channel = ?, updated_at = NOW() WHERE id = ?"
+                 update_channel = ?, update_interval = ?, updated_at = NOW() WHERE id = ?"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -2046,6 +2057,7 @@ impl Storage for MysqlStorage {
             .bind(server.config_version)
             .bind(&server.cert_fingerprint)
             .bind(&server.update_channel)
+            .bind(server.update_interval as i64)
             .bind(server.id)
             .execute(&self.pool)
             .await
@@ -2054,8 +2066,8 @@ impl Storage for MysqlStorage {
         } else {
             let result = sqlx::query(
                 "INSERT INTO servers (name, address, port, status, current_map, player_count, \
-                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel, update_interval) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -2069,6 +2081,7 @@ impl Storage for MysqlStorage {
             .bind(server.config_version)
             .bind(&server.cert_fingerprint)
             .bind(&server.update_channel)
+            .bind(server.update_interval as i64)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -2081,6 +2094,18 @@ impl Storage for MysqlStorage {
             "UPDATE servers SET update_channel = ?, updated_at = NOW() WHERE id = ?"
         )
         .bind(channel)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_server_update_interval(&self, server_id: i64, interval_secs: u64) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE servers SET update_interval = ?, updated_at = NOW() WHERE id = ?"
+        )
+        .bind(interval_secs as i64)
         .bind(server_id)
         .execute(&self.pool)
         .await

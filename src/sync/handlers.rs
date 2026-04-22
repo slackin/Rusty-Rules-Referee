@@ -1049,6 +1049,79 @@ pub async fn handle_change_map(ctx: Option<&BotContext>, map: &str) -> ClientRes
     }
 }
 
+/// Validate a cvar name — alphanumerics + underscore only. Prevents
+/// command injection via the sync protocol.
+fn valid_cvar_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Parse a Q3/UrT cvar-query response. Typical shape:
+/// `"g_gear" is:"LKQEN^7" default:"0^7"`. Returns the value with trailing
+/// `^7` color code stripped. Falls back to the trimmed raw response for
+/// unknown formats.
+fn parse_cvar_response(raw: &str) -> String {
+    let clean = raw.trim().trim_matches('\0');
+    // Find the `is:"..."` segment.
+    if let Some(idx) = clean.find("is:\"") {
+        let after = &clean[idx + 4..];
+        if let Some(end) = after.find('"') {
+            let mut val = after[..end].to_string();
+            if val.ends_with("^7") {
+                val.truncate(val.len() - 2);
+            }
+            return val;
+        }
+    }
+    clean.to_string()
+}
+
+/// GetCvar — read a single cvar via RCON.
+pub async fn handle_get_cvar(ctx: Option<&BotContext>, name: &str) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("GetCvar"); };
+    if !valid_cvar_name(name) {
+        return ClientResponse::Error { message: format!("Invalid cvar name: {}", name) };
+    }
+    match ctx.rcon.send(name).await {
+        Ok(raw) => {
+            let value = parse_cvar_response(&raw);
+            ClientResponse::Ok {
+                message: format!("Read cvar {}", name),
+                data: Some(serde_json::json!({
+                    "name": name,
+                    "value": value,
+                    "raw": raw,
+                })),
+            }
+        }
+        Err(e) => ClientResponse::Error { message: format!("RCON read failed: {}", e) },
+    }
+}
+
+/// SetCvar — write a single cvar via RCON. `value` is forwarded verbatim
+/// (but quoted in the `set` command) so callers can pass UrT gear strings
+/// like "GAIKWNEMLOQURSTUVXZ".
+pub async fn handle_set_cvar(ctx: Option<&BotContext>, name: &str, value: &str) -> ClientResponse {
+    let Some(ctx) = ctx else { return unavailable("SetCvar"); };
+    if !valid_cvar_name(name) {
+        return ClientResponse::Error { message: format!("Invalid cvar name: {}", name) };
+    }
+    // Reject control chars / quotes in the value to keep the `set` command
+    // well-formed.
+    if value.chars().any(|c| c == '"' || c == '\n' || c == '\r' || (c as u32) < 0x20) {
+        return ClientResponse::Error { message: "Invalid cvar value".into() };
+    }
+    let cmd = format!("set {} \"{}\"", name, value);
+    match ctx.rcon.send(&cmd).await {
+        Ok(_) => ClientResponse::Ok {
+            message: format!("Set {} = {}", name, value),
+            data: Some(serde_json::json!({ "name": name, "value": value })),
+        },
+        Err(e) => ClientResponse::Error { message: format!("RCON set failed: {}", e) },
+    }
+}
+
 /// MutePlayer — issue `mute <cid>` via RCON.
 pub async fn handle_mute_player(ctx: Option<&BotContext>, cid: &str) -> ClientResponse {
     let Some(ctx) = ctx else { return unavailable("MutePlayer"); };

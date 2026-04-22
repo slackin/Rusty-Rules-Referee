@@ -118,9 +118,17 @@
 	let channelSaving = $state(false);
 	let channelResult = $state(null);
 
+	// Update interval
+	let intervalSaving = $state(false);
+	let intervalResult = $state(null);
+	let intervalDraft = $state('');
+
 	async function loadServer() {
 		try {
 			server = await api.server(serverId);
+			if (server && (intervalDraft === '' || intervalResult === null)) {
+				intervalDraft = String(server.update_interval ?? 3600);
+			}
 			error = '';
 		} catch (e) {
 			error = e.message || 'Failed to load server';
@@ -473,6 +481,33 @@
 		channelSaving = false;
 	}
 
+	async function saveUpdateInterval() {
+		if (!server) return;
+		const parsed = Math.floor(Number(intervalDraft));
+		if (!Number.isFinite(parsed) || parsed < 60 || parsed > 604800) {
+			intervalResult = { ok: false, message: 'Enter a value between 60 and 604800 seconds.' };
+			return;
+		}
+		if (parsed === server.update_interval) {
+			intervalResult = { ok: true, message: 'No change.' };
+			return;
+		}
+		const previous = server.update_interval;
+		server = { ...server, update_interval: parsed };
+		intervalSaving = true;
+		intervalResult = null;
+		try {
+			const res = await api.setServerUpdateInterval(serverId, parsed);
+			intervalResult = { ok: true, message: res?.message || `Interval set to ${parsed}s` };
+		} catch (e) {
+			server = { ...server, update_interval: previous };
+			intervalDraft = String(previous);
+			intervalResult = { ok: false, message: e.message || 'Failed to set interval' };
+			console.error('[R3] setServerUpdateInterval failed', e);
+		}
+		intervalSaving = false;
+	}
+
 	$effect(() => { loadServer(); loadConfig(); loadVersion(); });
 </script>
 
@@ -730,6 +765,50 @@
 					{#if channelResult}
 						<div class="mt-2 rounded-lg px-3 py-2 text-xs {channelResult.ok ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}">
 							{channelResult.message}
+						</div>
+					{/if}
+				</div>
+
+				<!-- Update check interval -->
+				<div class="mt-4 border-t border-surface-800 pt-4">
+					<div class="flex items-start justify-between gap-4 flex-wrap">
+						<div class="flex-1 min-w-[200px]">
+							<label for="server_update_interval" class="mb-1 block text-xs font-medium text-surface-400">Update Check Interval</label>
+							<p class="text-xs text-surface-600">How often (seconds) this server's bot checks for a new release. Applied on the next heartbeat; no restart required. Range: 60–604800.</p>
+						</div>
+						<div class="flex items-center gap-2">
+							<input
+								id="server_update_interval"
+								type="number"
+								min="60"
+								max="604800"
+								step="60"
+								class="input font-mono text-sm w-32"
+								bind:value={intervalDraft}
+								placeholder={String(server.update_interval ?? 3600)}
+								disabled={intervalSaving}
+							/>
+							<span class="text-xs text-surface-500">sec</span>
+							<button
+								type="button"
+								class="btn-secondary text-xs"
+								onclick={saveUpdateInterval}
+								disabled={intervalSaving || intervalDraft === '' || Number(intervalDraft) === server.update_interval}
+							>
+								{#if intervalSaving}
+									<Loader2 class="h-3 w-3 animate-spin" />
+								{:else}
+									Save
+								{/if}
+							</button>
+						</div>
+					</div>
+					<div class="mt-1 text-xs text-surface-600">
+						Current: <span class="font-mono text-surface-400">{server.update_interval ?? 3600}s</span>
+					</div>
+					{#if intervalResult}
+						<div class="mt-2 rounded-lg px-3 py-2 text-xs {intervalResult.ok ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}">
+							{intervalResult.message}
 						</div>
 					{/if}
 				</div>

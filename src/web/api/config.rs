@@ -642,7 +642,7 @@ async fn do_migrate(
     // --- servers (multi-server registrations) ---
     if let Ok(rows) = sqlx::query(
         "SELECT id, name, address, port, status, current_map, player_count, max_clients, \
-         last_seen, config_json, config_version, cert_fingerprint, update_channel, \
+         last_seen, config_json, config_version, cert_fingerprint, update_channel, update_interval, \
          created_at, updated_at FROM servers"
     ).fetch_all(sqlite).await {
         for row in &rows {
@@ -659,22 +659,23 @@ async fn do_migrate(
             let config_version: i64 = row.get("config_version");
             let cert_fingerprint: Option<String> = row.get("cert_fingerprint");
             let update_channel: String = row.try_get("update_channel").unwrap_or_else(|_| "beta".to_string());
+            let update_interval: i64 = row.try_get("update_interval").unwrap_or(3600i64);
             let created_at: String = row.get("created_at");
             let updated_at: String = row.get("updated_at");
             sqlx::query(
                 "INSERT INTO servers (id, name, address, port, status, current_map, player_count, max_clients, \
-                 last_seen, config_json, config_version, cert_fingerprint, update_channel, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 last_seen, config_json, config_version, cert_fingerprint, update_channel, update_interval, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                  ON DUPLICATE KEY UPDATE name=VALUES(name), address=VALUES(address), port=VALUES(port), \
                  status=VALUES(status), current_map=VALUES(current_map), player_count=VALUES(player_count), \
                  max_clients=VALUES(max_clients), last_seen=VALUES(last_seen), config_json=VALUES(config_json), \
                  config_version=VALUES(config_version), cert_fingerprint=VALUES(cert_fingerprint), \
-                 update_channel=VALUES(update_channel), updated_at=VALUES(updated_at)"
+                 update_channel=VALUES(update_channel), update_interval=VALUES(update_interval), updated_at=VALUES(updated_at)"
             )
             .bind(id).bind(&name).bind(&address).bind(port).bind(&status)
             .bind(&current_map).bind(player_count).bind(max_clients)
             .bind(&last_seen).bind(&config_json).bind(config_version)
-            .bind(&cert_fingerprint).bind(&update_channel)
+            .bind(&cert_fingerprint).bind(&update_channel).bind(update_interval)
             .bind(&created_at).bind(&updated_at)
             .execute(mysql).await.map_err(|err| e(&format!("Write server id={}", id), err))?;
         }

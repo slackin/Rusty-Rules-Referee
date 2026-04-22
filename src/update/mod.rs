@@ -397,7 +397,7 @@ pub async fn startup_update_check(config: &UpdateSection, current_build_hash: &s
 /// Checks periodically, downloads + verifies + applies + restarts when an
 /// update is available.
 pub async fn run_update_loop(config: UpdateSection, current_build_hash: &str) {
-    run_update_loop_with_channel(config, current_build_hash, None).await;
+    run_update_loop_with_overrides(config, current_build_hash, None, None).await;
 }
 
 /// Same as [`run_update_loop`] but the release channel may be overridden at
@@ -408,12 +408,27 @@ pub async fn run_update_loop_with_channel(
     current_build_hash: &str,
     channel_override: Option<std::sync::Arc<tokio::sync::RwLock<String>>>,
 ) {
-    let interval = Duration::from_secs(config.check_interval);
+    run_update_loop_with_overrides(config, current_build_hash, channel_override, None).await;
+}
+
+/// Run the auto-update checker with both channel and check-interval
+/// overrides. Used in client mode so the master can change either without
+/// restarting the bot.
+pub async fn run_update_loop_with_overrides(
+    config: UpdateSection,
+    current_build_hash: &str,
+    channel_override: Option<std::sync::Arc<tokio::sync::RwLock<String>>>,
+    interval_override: Option<std::sync::Arc<tokio::sync::RwLock<u64>>>,
+) {
+    let initial_interval = match interval_override.as_ref() {
+        Some(lock) => *lock.read().await,
+        None => config.check_interval,
+    };
 
     info!(
         url = %config.url,
         channel = %config.channel,
-        interval_secs = config.check_interval,
+        interval_secs = initial_interval,
         build = current_build_hash,
         "Auto-update checker started"
     );
@@ -478,6 +493,12 @@ pub async fn run_update_loop_with_channel(
             }
         }
 
-        tokio::time::sleep(interval).await;
+        // Re-read interval each tick so master-pushed changes take effect
+        // without restarting the loop.
+        let next_interval = match interval_override.as_ref() {
+            Some(lock) => *lock.read().await,
+            None => config.check_interval,
+        };
+        tokio::time::sleep(Duration::from_secs(next_interval)).await;
     }
 }

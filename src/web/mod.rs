@@ -77,6 +77,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/server/map", post(api::server::change_map))
         .route("/server/mapcycle", get(api::mapcycle::get_mapcycle))
         .route("/server/mapcycle", put(api::mapcycle::update_mapcycle))
+        .route("/server/cvar/:name", get(api::server::get_cvar))
+        .route("/server/cvar/:name", put(api::server::set_cvar))
         .route("/server/restart", post(api::server::restart_bot))
         // Stats
         .route("/stats/leaderboard", get(api::stats::leaderboard))
@@ -143,6 +145,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/force-update", post(api::servers::force_server_update))
         .route("/servers/:id/restart", post(api::servers::restart_server))
         .route("/servers/:id/update-channel", put(api::servers::set_server_update_channel))
+        .route("/servers/:id/update-interval", put(api::servers::set_server_update_interval))
         .route("/servers/:id/check-game-log", post(api::servers::check_server_game_log))
         // Map repo: per-server import + missing-map diff
         .route("/servers/:id/maps/import", post(api::servers::import_map))
@@ -166,6 +169,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/map-configs/by-name/:map_name", get(api::server_control::server_ensure_map_config))
         .route("/servers/:id/map-configs/by-name/:map_name/apply", post(api::server_control::server_apply_map_config))
         .route("/servers/:id/map-configs/by-name/:map_name/reset", post(api::server_control::server_reset_map_config))
+        .route("/servers/:id/cvar/:name", get(api::server_control::server_get_cvar))
+        .route("/servers/:id/cvar/:name", put(api::server_control::server_set_cvar))
         .route("/servers/:id/penalties", get(api::server_control::server_penalties_history))
         .route("/servers/:id/chat", get(api::server_control::server_chat_history))
         .route("/servers/:id/audit-log", get(api::server_control::server_audit_log))

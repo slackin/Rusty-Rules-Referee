@@ -49,6 +49,9 @@ pub struct ClientSyncManager {
     /// Release channel this client follows for updates. May be updated at
     /// runtime when the master sends a new channel in the heartbeat response.
     update_channel: Arc<RwLock<String>>,
+    /// Auto-update check interval (seconds). May be updated at runtime when
+    /// the master sends a new value in the heartbeat response.
+    update_interval: Arc<RwLock<u64>>,
     storage: Arc<dyn Storage>,
     queue: SyncQueue,
     server_id: Arc<RwLock<Option<i64>>>,
@@ -113,6 +116,7 @@ impl ClientSyncManager {
         storage: Arc<dyn Storage>,
         config_path: String,
         update_channel: Arc<RwLock<String>>,
+        update_interval: Arc<RwLock<u64>>,
     ) -> (Self, SyncHandle) {
         let (event_tx, event_rx) = mpsc::channel::<Event>(1024);
         let (command_tx, command_rx) = mpsc::channel::<SyncMessage>(256);
@@ -126,6 +130,7 @@ impl ClientSyncManager {
             config,
             config_path,
             update_channel,
+            update_interval,
             storage,
             queue,
             server_id: server_id.clone(),
@@ -338,6 +343,22 @@ impl ClientSyncManager {
                                         }
                                     }
 
+                                    // Apply master-controlled update interval if it changed.
+                                    if let Some(remote_interval) = hb_resp.update_interval {
+                                        let current = *self.update_interval.read().await;
+                                        if remote_interval != current && remote_interval >= 60 {
+                                            info!(
+                                                old_secs = current,
+                                                new_secs = remote_interval,
+                                                "Master updated check interval — applying"
+                                            );
+                                            *self.update_interval.write().await = remote_interval;
+                                            if let Err(e) = self.persist_update_interval(remote_interval) {
+                                                warn!(error = %e, "Failed to persist update interval to config file");
+                                            }
+                                        }
+                                    }
+
                                     // Check for config version mismatch
                                     if hb_resp.config_version > self.local_config_version {
                                         info!(
@@ -527,6 +548,14 @@ impl ClientSyncManager {
                                                     &filename,
                                                     &allowed_hosts,
                                                 ).await
+                                            }
+                                            ClientRequest::GetCvar { name } => {
+                                                let gs = self.game_state.read().await;
+                                                handlers::handle_get_cvar(gs.ctx.as_deref(), &name).await
+                                            }
+                                            ClientRequest::SetCvar { name, value } => {
+                                                let gs = self.game_state.read().await;
+                                                handlers::handle_set_cvar(gs.ctx.as_deref(), &name, &value).await
                                             }
                                         };
 
@@ -771,6 +800,31 @@ impl ClientSyncManager {
         let output = toml::to_string_pretty(&doc)?;
         std::fs::write(&self.config_path, &output)?;
         info!(path = %self.config_path, channel = %channel, "Persisted new update channel");
+        Ok(())
+    }
+
+    /// Rewrite the `[update].check_interval` value in the local TOML config file.
+    /// Called when the master changes this client's update check interval.
+    fn persist_update_interval(&self, interval_secs: u64) -> anyhow::Result<()> {
+        let content = std::fs::read_to_string(&self.config_path)?;
+        let mut doc: toml::Value = toml::from_str(&content)?;
+
+        let update_tbl = doc
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("Config root is not a table"))?
+            .entry("update".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+
+        if let Some(table) = update_tbl.as_table_mut() {
+            table.insert(
+                "check_interval".to_string(),
+                toml::Value::Integer(interval_secs as i64),
+            );
+        }
+
+        let output = toml::to_string_pretty(&doc)?;
+        std::fs::write(&self.config_path, &output)?;
+        info!(path = %self.config_path, interval_secs, "Persisted new update interval");
         Ok(())
     }
 }

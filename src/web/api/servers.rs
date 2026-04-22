@@ -31,6 +31,8 @@ pub struct ServerInfo {
     pub online: bool,
     /// Release channel this server's bot follows for updates.
     pub update_channel: String,
+    /// Auto-update check interval in seconds (master-controlled).
+    pub update_interval: u64,
     /// Last client-reported build hash (from heartbeat).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_hash: Option<String>,
@@ -175,6 +177,7 @@ pub async fn list_servers(
                 last_seen: s.last_seen.map(|t| t.to_rfc3339()),
                 online,
                 update_channel: s.update_channel,
+                update_interval: s.update_interval,
                 build_hash,
                 version,
             }
@@ -220,6 +223,7 @@ pub async fn get_server(
         last_seen: s.last_seen.map(|t| t.to_rfc3339()),
         online,
         update_channel: s.update_channel,
+        update_interval: s.update_interval,
         build_hash,
         version,
     }))
@@ -779,6 +783,52 @@ pub async fn set_server_update_channel(
     Json(CommandResponse {
         ok: true,
         message: format!("Release channel set to '{}'. Applied on next heartbeat.", channel),
+    })
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetUpdateIntervalRequest {
+    pub interval_secs: u64,
+}
+
+/// PUT /api/v1/servers/:id/update-interval — set the auto-update check
+/// interval (seconds) for this server. Persisted in the DB and pushed to
+/// the client on its next heartbeat.
+pub async fn set_server_update_interval(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<SetUpdateIntervalRequest>,
+) -> impl IntoResponse {
+    let interval = req.interval_secs;
+    // Reasonable bounds: 60s minimum, 7 days maximum.
+    if interval < 60 || interval > 604_800 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CommandResponse {
+                ok: false,
+                message: format!(
+                    "Invalid interval {}s — must be between 60 and 604800 seconds.",
+                    interval
+                ),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = state.storage.set_server_update_interval(server_id, interval).await {
+        error!(error = %e, server_id, "Failed to update server update_interval");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(CommandResponse { ok: false, message: e.to_string() }),
+        )
+            .into_response();
+    }
+
+    info!(server_id, interval_secs = interval, "Server update interval changed");
+    Json(CommandResponse {
+        ok: true,
+        message: format!("Update interval set to {}s. Applied on next heartbeat.", interval),
     })
     .into_response()
 }

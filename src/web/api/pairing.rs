@@ -396,6 +396,7 @@ pub async fn pair_client(
         config_version: 1,
         cert_fingerprint: Some(fingerprint),
         update_channel: "beta".to_string(),
+        update_interval: 3600,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
