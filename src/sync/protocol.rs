@@ -306,6 +306,81 @@ pub enum ClientRequest {
     /// Set a single server cvar via RCON. `value` is forwarded verbatim;
     /// callers are responsible for quoting / validation.
     SetCvar { name: String, value: String },
+
+    // --- Game server install wizard ---
+    /// Return the local UrT install-state marker + suggested defaults
+    /// (free install dir, free UDP port, server name).
+    SuggestInstallDefaults,
+    /// Probe a list of ports for availability. Combines passive `ss`
+    /// parsing with an active bind probe for each requested port.
+    DetectPorts {
+        ports: Vec<u16>,
+        #[serde(default = "default_port_kind")]
+        kind: PortKind,
+    },
+    /// Run the full install wizard end-to-end: download files (if missing),
+    /// generate server.cfg, and optionally register a systemd unit.
+    InstallGameServerWizard { params: GameServerWizardParams },
+    /// Start/stop/restart/status of the managed `urt@<slug>.service`.
+    GameServerService { action: ServiceAction },
+}
+
+/// UDP or TCP, for port-availability probes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PortKind {
+    Udp,
+    Tcp,
+}
+
+pub(crate) fn default_port_kind() -> PortKind {
+    PortKind::Udp
+}
+
+/// Wizard-collected parameters used to generate a complete `server.cfg`
+/// and (optionally) register a systemd service for the game server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameServerWizardParams {
+    /// Absolute path where UrT 4.3 files live (or will be placed if missing).
+    pub install_path: String,
+    /// sv_hostname — colored UrT string allowed.
+    pub hostname: String,
+    /// Public IP used for RCON and server list registration.
+    pub public_ip: String,
+    /// UDP port (net_port) the game server should bind.
+    pub port: u16,
+    /// RCON password (required, non-empty).
+    pub rcon_password: String,
+    /// Game mode label — one of: FFA, LMS, TDM, TS, FTL, CAH, CTF, BOMB, JUMP, FREEZE, GUNGAME.
+    pub game_mode: String,
+    /// sv_maxclients — total slot count.
+    pub max_clients: u16,
+    /// Optional admin (referee) password, distinct from rconPassword.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_password: Option<String>,
+    /// If true, install `/etc/systemd/system/urt@.service.d/<slug>.conf`
+    /// and enable the instance. Requires the one-time scaffolding laid
+    /// down by the shell installer.
+    #[serde(default)]
+    pub register_systemd: bool,
+    /// Optional slug override; defaults to the client's own service slug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// If true, (re-)download the UrT tarball even if files are already present.
+    #[serde(default)]
+    pub force_download: bool,
+}
+
+/// systemd action for the managed `urt@<slug>.service`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceAction {
+    Start,
+    Stop,
+    Restart,
+    Status,
+    Enable,
+    Disable,
 }
 
 /// Responses from a client bot back to the master.
@@ -422,6 +497,49 @@ pub enum ClientResponse {
         /// Final file size in bytes.
         size: u64,
     },
+
+    // --- Install wizard responses ---
+    /// Local install-state marker + suggested defaults for the wizard.
+    InstallDefaults {
+        /// Current install-state marker contents (null if marker is missing).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<UrtInstallState>,
+        /// Default install path suggestion (`$HOME/urbanterror-<slug>`).
+        suggested_install_path: String,
+        /// Default free UDP port suggestion.
+        suggested_port: u16,
+        /// Suggested slug (derived from this client's own service slug).
+        suggested_slug: String,
+        /// Default server-name suggestion.
+        suggested_server_name: String,
+        /// Whether the one-time systemd scaffolding (urt@.service template +
+        /// sudoers drop-in) is present on this host. If false, register_systemd
+        /// requests will fail and the UI should surface a hint.
+        scaffolding_present: bool,
+    },
+    /// Result of a port-availability probe.
+    PortReport {
+        kind: PortKind,
+        results: Vec<PortProbeResult>,
+    },
+    /// Wizard install complete: returns final paths + (optional) service name.
+    InstallWizardComplete {
+        install_path: String,
+        server_cfg_path: String,
+        mapcycle_path: Option<String>,
+        game_log: String,
+        service_name: Option<String>,
+    },
+    /// Status of the managed `urt@<slug>.service` after an action.
+    GameServerServiceStatus {
+        service_name: String,
+        action: String,
+        active: bool,
+        enabled: bool,
+        /// Trimmed last lines from `systemctl status` for display.
+        status_excerpt: String,
+    },
+
     /// Generic success acknowledgement.
     Ok {
         #[serde(default)]
@@ -488,6 +606,54 @@ pub struct ConfigCheck {
 pub struct CfgSetting {
     pub key: String,
     pub value: String,
+}
+
+/// On-disk install-state marker for the client bot's managed UrT instance.
+/// Lives at `$INSTALL_DIR/state/urt-install.json`. Written by the shell
+/// installer (initially) and updated by the wizard once configuration
+/// completes successfully.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UrtInstallState {
+    /// Instance slug (shared with `r3-<slug>.service`).
+    #[serde(default)]
+    pub slug: String,
+    /// Whether UrT game files are present on disk.
+    #[serde(default)]
+    pub files_present: bool,
+    /// Install path if the files are present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_path: Option<String>,
+    /// Whether a server.cfg has been generated and the instance is ready
+    /// to run (optionally as a managed service).
+    #[serde(default)]
+    pub configured: bool,
+    /// systemd service name (`urt@<slug>.service`) if register_systemd was
+    /// used, otherwise `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+    /// UDP port recorded at configuration time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Path to the generated server.cfg (for convenience in the UI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_cfg_path: Option<String>,
+    /// Path to the games.log file for this instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_log: Option<String>,
+}
+
+/// Result of probing a single port for availability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortProbeResult {
+    pub port: u16,
+    /// True if the port appears free (not in use and bindable by us).
+    pub available: bool,
+    /// True if `ss` reports the port as bound by some process.
+    pub ss_bound: bool,
+    /// True if we successfully opened and released a socket on this port.
+    pub bind_succeeded: bool,
+    /// Human-readable explanation (mostly for in-use ports: process, owner).
+    pub detail: String,
 }
 
 // ---------------------------------------------------------------------------

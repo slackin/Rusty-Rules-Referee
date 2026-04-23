@@ -557,6 +557,53 @@ impl ClientSyncManager {
                                                 let gs = self.game_state.read().await;
                                                 handlers::handle_set_cvar(gs.ctx.as_deref(), &name, &value).await
                                             }
+                                            ClientRequest::SuggestInstallDefaults => {
+                                                match handlers::WizardContext::from_config(
+                                                    &self.config_path,
+                                                    &self.config.server_name,
+                                                ) {
+                                                    Some(ctx) => {
+                                                        handlers::handle_suggest_install_defaults(&ctx).await
+                                                    }
+                                                    None => ClientResponse::Error {
+                                                        message: "Unable to derive wizard context from config path".to_string(),
+                                                    },
+                                                }
+                                            }
+                                            ClientRequest::DetectPorts { ports, kind } => {
+                                                handlers::handle_detect_ports(&ports, kind).await
+                                            }
+                                            ClientRequest::InstallGameServerWizard { params } => {
+                                                match handlers::WizardContext::from_config(
+                                                    &self.config_path,
+                                                    &self.config.server_name,
+                                                ) {
+                                                    Some(ctx) => {
+                                                        handlers::start_install_wizard(
+                                                            params,
+                                                            ctx,
+                                                            install_state.clone(),
+                                                        );
+                                                        ClientResponse::InstallStarted
+                                                    }
+                                                    None => ClientResponse::Error {
+                                                        message: "Unable to derive wizard context from config path".to_string(),
+                                                    },
+                                                }
+                                            }
+                                            ClientRequest::GameServerService { action } => {
+                                                match handlers::WizardContext::from_config(
+                                                    &self.config_path,
+                                                    &self.config.server_name,
+                                                ) {
+                                                    Some(ctx) => {
+                                                        handlers::handle_game_server_service(action, &ctx).await
+                                                    }
+                                                    None => ClientResponse::Error {
+                                                        message: "Unable to derive wizard context from config path".to_string(),
+                                                    },
+                                                }
+                                            }
                                         };
 
                                         let submission = ClientResponseSubmission {

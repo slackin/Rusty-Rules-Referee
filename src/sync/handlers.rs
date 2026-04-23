@@ -1800,3 +1800,616 @@ pub async fn handle_download_map_pk3(
         size: total,
     }
 }
+
+// ===========================================================================
+// Install wizard (client-side)
+//
+// Handlers supporting the master-driven install wizard: port probing,
+// install-defaults suggestion, full wizard install, and systemd service
+// control for the managed `urt@<slug>.service` instance.
+// ===========================================================================
+
+use crate::sync::urt_cfg;
+
+/// Everything a wizard-related handler needs to know about *this* client bot.
+/// Derived from the bot's own `config_path` so we correctly map a slug to
+/// state file, install dir, and home dir even if multiple clients share a
+/// user account.
+#[derive(Debug, Clone)]
+pub struct WizardContext {
+    /// Absolute path to the R3 install dir (parent of `r3.toml`).
+    pub r3_install_dir: PathBuf,
+    /// Slug — usually derived from the install dir basename (`r3-<slug>`).
+    pub slug: String,
+    /// Bot's configured server name (used as a default in suggestions).
+    pub server_name: String,
+    /// Path to the state marker JSON file.
+    pub state_file: PathBuf,
+    /// User home dir.
+    pub home: PathBuf,
+}
+
+impl WizardContext {
+    pub fn from_config(config_path: &str, server_name: &str) -> Option<Self> {
+        let r3_install_dir = Path::new(config_path).parent()?.to_path_buf();
+        let basename = r3_install_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("r3");
+        let slug = basename
+            .strip_prefix("r3-")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| slugify(server_name));
+        let state_file = r3_install_dir.join("state/urt-install.json");
+        let home = home_dir()?;
+        Some(Self {
+            r3_install_dir,
+            slug,
+            server_name: server_name.to_string(),
+            state_file,
+            home,
+        })
+    }
+}
+
+/// Lowercase, dash-separated, alnum-only (mirrors the shell installer rules).
+fn slugify(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut last_dash = false;
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+// ---------------------------------------------------------------------------
+// State file I/O
+// ---------------------------------------------------------------------------
+
+fn read_install_state(path: &Path) -> Option<UrtInstallState> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<UrtInstallState>(&raw).ok()
+}
+
+fn write_install_state(path: &Path, state: &UrtInstallState) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(state)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(path, json)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Port detection (active bind probe + passive `ss` parse)
+// ---------------------------------------------------------------------------
+
+/// Run `ss` once and collect the set of locally-bound port numbers for the
+/// given protocol. Returns `None` if `ss` is not on PATH or fails entirely;
+/// callers should treat that as "no passive data, rely on bind probe".
+async fn ss_bound_ports(kind: PortKind) -> Option<std::collections::HashMap<u16, String>> {
+    // -H: no header, -l: listening, -n: numeric, -p: process info (best-effort).
+    let flag = match kind {
+        PortKind::Udp => "-Hlunp",
+        PortKind::Tcp => "-Hlntp",
+    };
+    let output = tokio::process::Command::new("ss")
+        .arg(flag)
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut map = std::collections::HashMap::new();
+    for line in stdout.lines() {
+        // Columns vary slightly across ss versions, but the local-address
+        // column is typically index 4 for UDP (listening) and index 3 for TCP.
+        // Parse robustly by finding the first "addr:port" looking token.
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        for f in &fields {
+            if let Some(port) = parse_listen_port(f) {
+                let detail = line.trim().to_string();
+                map.insert(port, detail);
+                break;
+            }
+        }
+    }
+    Some(map)
+}
+
+/// Extract a trailing :PORT from an `ss` address column.
+fn parse_listen_port(token: &str) -> Option<u16> {
+    // IPv6 like `[::]:27960` or IPv4 like `0.0.0.0:27960` or `*:27960`.
+    // Strip any bracketed v6 prefix.
+    let addr = token.rsplit_once(':')?.1;
+    addr.parse::<u16>().ok().filter(|p| *p > 0)
+}
+
+fn try_bind(port: u16, kind: PortKind) -> (bool, String) {
+    let addr = format!("0.0.0.0:{}", port);
+    match kind {
+        PortKind::Udp => match std::net::UdpSocket::bind(&addr) {
+            Ok(_) => (true, "UDP bind ok".to_string()),
+            Err(e) => (false, format!("UDP bind failed: {}", e)),
+        },
+        PortKind::Tcp => match std::net::TcpListener::bind(&addr) {
+            Ok(_) => (true, "TCP bind ok".to_string()),
+            Err(e) => (false, format!("TCP bind failed: {}", e)),
+        },
+    }
+}
+
+pub async fn handle_detect_ports(ports: &[u16], kind: PortKind) -> ClientResponse {
+    let ss_map = ss_bound_ports(kind).await;
+    let mut results = Vec::with_capacity(ports.len());
+    for &port in ports {
+        let ss_bound = ss_map
+            .as_ref()
+            .map(|m| m.contains_key(&port))
+            .unwrap_or(false);
+        let ss_detail = ss_map.as_ref().and_then(|m| m.get(&port).cloned());
+        let (bind_ok, bind_detail) = try_bind(port, kind);
+        let available = !ss_bound && bind_ok;
+        let detail = match (ss_bound, bind_ok) {
+            (true, _) => ss_detail.unwrap_or_else(|| "in use (ss-reported)".to_string()),
+            (false, false) => bind_detail,
+            (false, true) => "available".to_string(),
+        };
+        results.push(PortProbeResult {
+            port,
+            available,
+            ss_bound,
+            bind_succeeded: bind_ok,
+            detail,
+        });
+    }
+    ClientResponse::PortReport { kind, results }
+}
+
+/// Find the lowest available UDP port in `range` (inclusive start, exclusive
+/// end). Uses the active bind probe only for speed.
+fn first_available_udp(range: std::ops::Range<u16>) -> Option<u16> {
+    range.into_iter().find(|&p| try_bind(p, PortKind::Udp).0)
+}
+
+// ---------------------------------------------------------------------------
+// Install defaults
+// ---------------------------------------------------------------------------
+
+/// Return the current state + suggested defaults for the wizard.
+pub async fn handle_suggest_install_defaults(ctx: &WizardContext) -> ClientResponse {
+    let state = read_install_state(&ctx.state_file);
+    let suggested_install_path = ctx
+        .home
+        .join(format!("urbanterror-{}", ctx.slug))
+        .to_string_lossy()
+        .to_string();
+    let suggested_port = first_available_udp(27960..28000).unwrap_or(27960);
+    let scaffolding_present = Path::new("/etc/systemd/system/urt@.service").exists();
+    ClientResponse::InstallDefaults {
+        state,
+        suggested_install_path,
+        suggested_port,
+        suggested_slug: ctx.slug.clone(),
+        suggested_server_name: ctx.server_name.clone(),
+        scaffolding_present,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wizard install
+// ---------------------------------------------------------------------------
+
+/// Starts the wizard install in a background task (mirrors the behaviour of
+/// `start_install_game_server` so the existing poll-based progress UI keeps
+/// working).
+pub fn start_install_wizard(
+    params: GameServerWizardParams,
+    ctx: WizardContext,
+    state: SharedInstallState,
+) {
+    tokio::spawn(async move {
+        run_wizard_install(params, ctx, state).await;
+    });
+}
+
+async fn run_wizard_install(
+    params: GameServerWizardParams,
+    ctx: WizardContext,
+    state: SharedInstallState,
+) {
+    // -- Refuse re-run if already configured (one game server per client) --
+    if let Some(existing) = read_install_state(&ctx.state_file) {
+        if existing.configured && !params.force_download {
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(
+                "This client already has a configured game server. Uninstall it first.".to_string(),
+            );
+            return;
+        }
+    }
+
+    // -- Validate params early by rendering the cfg in-memory --
+    let rendered_cfg = match urt_cfg::generate(&params, &ctx.server_name) {
+        Ok(s) => s,
+        Err(e) => {
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(format!("Config validation failed: {}", e));
+            return;
+        }
+    };
+
+    // -- Reset progress --
+    {
+        let mut s = state.write().await;
+        s.stage = "starting".to_string();
+        s.percent = 2;
+        s.error = None;
+        s.completed = false;
+        s.install_path = None;
+        s.game_log = None;
+    }
+
+    // -- Download files if missing or forced --
+    let install_path = Path::new(&params.install_path);
+    let q3ut4 = install_path.join("q3ut4");
+    let have_files = q3ut4.is_dir();
+    if !have_files || params.force_download {
+        {
+            let mut s = state.write().await;
+            s.stage = "downloading".to_string();
+            s.percent = 10;
+        }
+        if let Err(msg) = download_and_extract(&params.install_path).await {
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(msg);
+            return;
+        }
+    } else {
+        info!(path = %install_path.display(), "UrT files already present — skipping download");
+    }
+
+    // -- Write cfg --
+    {
+        let mut s = state.write().await;
+        s.stage = "configuring".to_string();
+        s.percent = 75;
+    }
+    let written = match tokio::task::block_in_place(|| {
+        urt_cfg::write_to_disk(install_path, &rendered_cfg)
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(format!("Writing server.cfg failed: {}", e));
+            return;
+        }
+    };
+    let games_log = install_path.join("q3ut4/games.log");
+
+    // -- Optionally register systemd unit --
+    let service_name = if params.register_systemd {
+        {
+            let mut s = state.write().await;
+            s.stage = "registering-service".to_string();
+            s.percent = 88;
+        }
+        match register_systemd_instance(&ctx, &params, install_path).await {
+            Ok(name) => Some(name),
+            Err(msg) => {
+                let mut s = state.write().await;
+                s.stage = "error".to_string();
+                s.error = Some(msg);
+                return;
+            }
+        }
+    } else {
+        None
+    };
+
+    // -- Update state marker --
+    let new_state = UrtInstallState {
+        slug: ctx.slug.clone(),
+        files_present: true,
+        install_path: Some(params.install_path.clone()),
+        configured: true,
+        service_name: service_name.clone(),
+        port: Some(params.port),
+        server_cfg_path: Some(written.server_cfg.to_string_lossy().to_string()),
+        game_log: Some(games_log.to_string_lossy().to_string()),
+    };
+    if let Err(e) = write_install_state(&ctx.state_file, &new_state) {
+        warn!(error = %e, "Failed to persist install-state marker (install still succeeded)");
+    }
+
+    {
+        let mut s = state.write().await;
+        s.stage = "complete".to_string();
+        s.percent = 100;
+        s.completed = true;
+        s.install_path = Some(params.install_path.clone());
+        s.game_log = Some(games_log.to_string_lossy().to_string());
+        s.error = None;
+    }
+
+    info!(
+        install_path = %params.install_path,
+        service = service_name.as_deref().unwrap_or("(unmanaged)"),
+        "Install wizard completed successfully"
+    );
+}
+
+/// Download the UrT 4.3 tarball and extract into `install_path`.
+/// Returns a human-readable error string on failure.
+async fn download_and_extract(install_path: &str) -> Result<(), String> {
+    let target = Path::new(install_path);
+    if let Err(e) = tokio::fs::create_dir_all(target).await {
+        return Err(format!("Failed to create directory: {}", e));
+    }
+    let tmp_path = format!("/tmp/urt43_ded_{}.tar.gz", std::process::id());
+    let dl = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "wget -q -O '{}' '{}' 2>&1 || curl -fsSL -o '{}' '{}' 2>&1",
+            tmp_path, URT_DOWNLOAD_URL, tmp_path, URT_DOWNLOAD_URL
+        ))
+        .output()
+        .await
+        .map_err(|e| format!("Failed to spawn downloader: {}", e))?;
+    if !dl.status.success() {
+        return Err(format!(
+            "Download failed: {}",
+            String::from_utf8_lossy(&dl.stderr)
+        ));
+    }
+    let ex = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "tar xzf '{}' -C '{}' --strip-components=1 2>&1 || tar xzf '{}' -C '{}' 2>&1",
+            tmp_path, install_path, tmp_path, install_path
+        ))
+        .output()
+        .await
+        .map_err(|e| format!("Failed to spawn extractor: {}", e))?;
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+    if !ex.status.success() {
+        return Err(format!(
+            "Extraction failed: {}",
+            String::from_utf8_lossy(&ex.stderr)
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// systemd drop-in registration
+// ---------------------------------------------------------------------------
+
+/// Locate the UrT dedicated server binary under `install_path`.
+fn find_urt_binary(install_path: &Path) -> Option<PathBuf> {
+    let candidates = [
+        "Quake3-UrT-Ded.x86_64",
+        "Quake3-UrT-Ded.x86",
+        "Quake3-UrT-Ded.i386",
+        "Quake3-UrT-Ded",
+    ];
+    for name in candidates {
+        let p = install_path.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+async fn register_systemd_instance(
+    ctx: &WizardContext,
+    params: &GameServerWizardParams,
+    install_path: &Path,
+) -> Result<String, String> {
+    // Guard: require the one-time scaffolding. Fail loudly with a useful hint.
+    if !Path::new("/etc/systemd/system/urt@.service").exists() {
+        return Err(
+            "systemd scaffolding is missing on this host. Run 'sudo bash install-r3.sh --add-urt' \
+             on the client machine to install it, then retry."
+                .to_string(),
+        );
+    }
+    let binary = find_urt_binary(install_path).ok_or_else(|| {
+        format!(
+            "No UrT dedicated binary found under {} (looked for Quake3-UrT-Ded*).",
+            install_path.display()
+        )
+    })?;
+    let user = std::env::var("USER").unwrap_or_else(|_| "nobody".to_string());
+
+    // Drop-in content — overrides User/Group/WorkingDirectory/ExecStart of the
+    // urt@.service template for this instance.
+    let dropin = format!(
+        "# Generated by R3 install wizard for instance {slug}.\n\
+         [Service]\n\
+         User={user}\n\
+         WorkingDirectory={install}\n\
+         ReadWritePaths={install}\n\
+         Environment=URT_PORT={port}\n\
+         ExecStart={binary} +set fs_homepath {install} +set fs_basepath {install} \
+         +set dedicated 2 +set net_port {port} +exec server.cfg\n",
+        slug = params.slug.clone().unwrap_or_else(|| ctx.slug.clone()),
+        user = user,
+        install = install_path.display(),
+        port = params.port,
+        binary = binary.display(),
+    );
+    let slug_for_unit = params.slug.clone().unwrap_or_else(|| ctx.slug.clone());
+    let dropin_path = format!(
+        "/etc/systemd/system/urt@.service.d/{}.conf",
+        slug_for_unit
+    );
+    sudo_tee_write(&dropin_path, &dropin).await?;
+
+    // Reload systemd and enable the instance.
+    run_sudo(&["systemctl", "daemon-reload"]).await?;
+    let unit = format!("urt@{}.service", slug_for_unit);
+    run_sudo(&["systemctl", "enable", &unit]).await?;
+
+    Ok(unit)
+}
+
+/// Write `content` to `path` via `sudo -n tee`. Uses the narrow NOPASSWD
+/// sudoers drop-in installed by `install-r3.sh`.
+async fn sudo_tee_write(path: &str, content: &str) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    use tokio::process::Command;
+    let mut child = Command::new("sudo")
+        .args(["-n", "tee", path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sudo tee: {}", e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(content.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write to sudo tee stdin: {}", e))?;
+        // Explicit drop via shutdown so tee sees EOF.
+        let _ = stdin.shutdown().await;
+    }
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("sudo tee wait failed: {}", e))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "sudo tee {} failed: {}. Is the R3 sudoers drop-in installed?",
+            path,
+            err.trim()
+        ));
+    }
+    Ok(())
+}
+
+async fn run_sudo(args: &[&str]) -> Result<String, String> {
+    let mut full_args = vec!["-n"];
+    full_args.extend_from_slice(args);
+    let out = tokio::process::Command::new("sudo")
+        .args(&full_args)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to spawn sudo: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "sudo {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+// ---------------------------------------------------------------------------
+// systemd service control
+// ---------------------------------------------------------------------------
+
+pub async fn handle_game_server_service(
+    action: ServiceAction,
+    ctx: &WizardContext,
+) -> ClientResponse {
+    // Find the configured service from the state marker.
+    let state = match read_install_state(&ctx.state_file) {
+        Some(s) if s.configured => s,
+        _ => {
+            return ClientResponse::Error {
+                message: "No configured game server on this client — run the install wizard first."
+                    .to_string(),
+            };
+        }
+    };
+    let service_name = match state.service_name {
+        Some(n) => n,
+        None => {
+            return ClientResponse::Error {
+                message: "This install is not managed by systemd. Re-run the wizard with \
+                          'Register systemd service' enabled to manage it from the UI."
+                    .to_string(),
+            };
+        }
+    };
+
+    let subcommand = match action {
+        ServiceAction::Start => "start",
+        ServiceAction::Stop => "stop",
+        ServiceAction::Restart => "restart",
+        ServiceAction::Enable => "enable",
+        ServiceAction::Disable => "disable",
+        ServiceAction::Status => "status",
+    };
+
+    if !matches!(action, ServiceAction::Status) {
+        if let Err(msg) = run_sudo(&["systemctl", subcommand, &service_name]).await {
+            return ClientResponse::Error {
+                message: format!("systemctl {} failed: {}", subcommand, msg),
+            };
+        }
+    }
+
+    // Always fetch status afterwards for a consistent response payload.
+    let status_out = tokio::process::Command::new("sudo")
+        .args(["-n", "systemctl", "status", &service_name, "--no-pager", "--lines=10"])
+        .output()
+        .await;
+    let status_excerpt = match &status_out {
+        Ok(o) => {
+            let mut s = String::from_utf8_lossy(&o.stdout).to_string();
+            if s.is_empty() {
+                s = String::from_utf8_lossy(&o.stderr).to_string();
+            }
+            s.lines().take(20).collect::<Vec<_>>().join("\n")
+        }
+        Err(e) => format!("(status unavailable: {})", e),
+    };
+
+    let active = tokio::process::Command::new("sudo")
+        .args(["-n", "systemctl", "is-active", &service_name])
+        .output()
+        .await
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+        .unwrap_or(false);
+    let enabled = tokio::process::Command::new("sudo")
+        .args(["-n", "systemctl", "is-enabled", &service_name])
+        .output()
+        .await
+        .map(|o| {
+            let s = String::from_utf8_lossy(&o.stdout);
+            matches!(s.trim(), "enabled" | "alias" | "static" | "enabled-runtime")
+        })
+        .unwrap_or(false);
+
+    ClientResponse::GameServerServiceStatus {
+        service_name,
+        action: subcommand.to_string(),
+        active,
+        enabled,
+        status_excerpt,
+    }
+}
+
