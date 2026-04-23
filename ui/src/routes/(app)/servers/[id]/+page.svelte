@@ -1,6 +1,7 @@
 <script>
 	import { api } from '$lib/api.svelte.js';
 	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import { Server, Wifi, WifiOff, Users, Map, Terminal, MessageSquare, ArrowLeft, UserX, ShieldBan, Send, RefreshCw, Settings, Save, Download, FileSearch, Wrench, FolderOpen, Check, AlertTriangle, Loader2, Folder, FileText, ChevronRight, Power, Search, X } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
@@ -866,12 +867,12 @@
 
 				<div class="grid gap-4 sm:grid-cols-3">
 					<!-- Install Fresh -->
-					<button onclick={() => selectMethod('install')} class="group rounded-xl border border-surface-700 bg-surface-900 p-6 text-left hover:border-accent/50 hover:bg-surface-800/80 transition-all">
+					<button onclick={() => goto(`/servers/${serverId}/install`)} class="group rounded-xl border border-surface-700 bg-surface-900 p-6 text-left hover:border-accent/50 hover:bg-surface-800/80 transition-all">
 						<div class="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
 							<Download class="h-5 w-5 text-blue-400" />
 						</div>
 						<h3 class="text-sm font-semibold text-surface-100">Install Fresh Copy</h3>
-						<p class="mt-1 text-xs text-surface-500">Download and install a fresh Urban Terror 4.3 dedicated server on the client machine.</p>
+						<p class="mt-1 text-xs text-surface-500">Launch the guided wizard: download Urban Terror 4.3, configure it, and register a managed systemd service.</p>
 					</button>
 
 					<!-- Scan Config -->

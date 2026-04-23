@@ -520,8 +520,249 @@ fn is_allowed_config_path(path: &Path) -> bool {
 // Game server installation
 // ---------------------------------------------------------------------------
 
-const URT_DOWNLOAD_URL: &str =
-    "https://www.urbanterror.info/downloads/software/urt/43/UrbanTerror43_ded.tar.gz";
+/// Archive format for a download mirror.
+#[derive(Debug, Clone, Copy)]
+enum ArchiveKind {
+    /// gzipped tar: `Quake3-UrT-Ded.*` + `q3ut4/` at top level.
+    TarGz,
+    /// zip: full UrT package; we extract and keep only `q3ut4/` + binary.
+    Zip,
+}
+
+/// A single download source.
+struct UrtMirror {
+    url: &'static str,
+    kind: ArchiveKind,
+    /// Minimum expected size in bytes — anything smaller is almost certainly
+    /// an HTML error page or a partial response.
+    min_bytes: u64,
+}
+
+/// Mirror list, tried in order. pugbot.net is primary because it's the only
+/// mirror that reliably serves the real bytes (the official urbanterror.info
+/// URL returns CMS HTML for dedicated tarballs).
+const URT_MIRRORS: &[UrtMirror] = &[
+    UrtMirror {
+        url: "https://maps.pugbot.net/q3ut4/UrbanTerror434_full.zip",
+        kind: ArchiveKind::Zip,
+        min_bytes: 500 * 1024 * 1024,
+    },
+    UrtMirror {
+        url: "https://cdn.urbanterror.info/urt/43/releases/UrbanTerror43_ded.tar.gz",
+        kind: ArchiveKind::TarGz,
+        min_bytes: 40 * 1024 * 1024,
+    },
+    UrtMirror {
+        url: "https://www.frozensand.com/downloads/UrbanTerror43_ded.tar.gz",
+        kind: ArchiveKind::TarGz,
+        min_bytes: 40 * 1024 * 1024,
+    },
+];
+
+/// Download UrT 4.3 to `install_path`, trying each mirror in order. Each
+/// candidate is validated (HTTP 2xx, minimum size, magic bytes, archive
+/// listable) before extraction. Returns a human-readable error only if
+/// every mirror fails.
+async fn download_and_extract_urt(install_path: &str) -> Result<(), String> {
+    let target = Path::new(install_path);
+    tokio::fs::create_dir_all(target)
+        .await
+        .map_err(|e| format!("Failed to create {}: {}", install_path, e))?;
+
+    let mut last_err = String::from("no mirrors configured");
+    for mirror in URT_MIRRORS {
+        info!(url = mirror.url, "Trying UrT mirror");
+        match try_mirror(mirror, install_path).await {
+            Ok(()) => {
+                info!(url = mirror.url, "Mirror succeeded");
+                return Ok(());
+            }
+            Err(e) => {
+                warn!(url = mirror.url, error = %e, "Mirror failed, trying next");
+                last_err = e;
+            }
+        }
+    }
+    Err(format!(
+        "All UrT 4.3 download mirrors failed. Last error: {}",
+        last_err
+    ))
+}
+
+async fn try_mirror(mirror: &UrtMirror, install_path: &str) -> Result<(), String> {
+    let ext = match mirror.kind {
+        ArchiveKind::TarGz => "tar.gz",
+        ArchiveKind::Zip => "zip",
+    };
+    let tmp_path = format!("/tmp/urt43_dl_{}.{}", std::process::id(), ext);
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    // Download. -f fails on non-2xx (so an HTML 200 CMS page from the wrong
+    // URL would still pass, which is why we validate afterwards). --retry
+    // handles transient network blips.
+    let dl = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "curl -fL --retry 2 --retry-delay 3 -A 'R3-Wizard/1.0' \
+             -o '{tmp}' '{url}' 2>&1 || \
+             wget -q --tries=2 --user-agent='R3-Wizard/1.0' -O '{tmp}' '{url}' 2>&1",
+            tmp = tmp_path,
+            url = mirror.url
+        ))
+        .output()
+        .await
+        .map_err(|e| format!("spawn failed: {}", e))?;
+    if !dl.status.success() {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(format!(
+            "download transport failure: {}",
+            String::from_utf8_lossy(&dl.stderr).trim()
+        ));
+    }
+
+    // Validate size.
+    let meta = tokio::fs::metadata(&tmp_path)
+        .await
+        .map_err(|e| format!("stat {} failed: {}", tmp_path, e))?;
+    if meta.len() < mirror.min_bytes {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(format!(
+            "file too small ({} bytes, expected >= {}) — mirror likely returned an HTML error page",
+            meta.len(),
+            mirror.min_bytes
+        ));
+    }
+
+    // Validate magic bytes.
+    let mut header = [0u8; 4];
+    {
+        use tokio::io::AsyncReadExt;
+        let mut f = tokio::fs::File::open(&tmp_path)
+            .await
+            .map_err(|e| format!("open tmp failed: {}", e))?;
+        f.read_exact(&mut header)
+            .await
+            .map_err(|e| format!("read magic failed: {}", e))?;
+    }
+    match mirror.kind {
+        ArchiveKind::TarGz => {
+            if &header[..2] != [0x1f, 0x8b] {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(format!(
+                    "not a gzip archive (magic={:02x}{:02x}) — mirror returned something else",
+                    header[0], header[1]
+                ));
+            }
+        }
+        ArchiveKind::Zip => {
+            if header != [0x50, 0x4b, 0x03, 0x04] {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(format!(
+                    "not a zip archive (magic={:02x}{:02x}{:02x}{:02x})",
+                    header[0], header[1], header[2], header[3]
+                ));
+            }
+        }
+    }
+
+    // Archive-integrity check + extract in one pass.
+    let (check_cmd, extract_cmd) = match mirror.kind {
+        ArchiveKind::TarGz => (
+            format!("tar -tzf '{}' >/dev/null", tmp_path),
+            format!(
+                "tar xzf '{tmp}' -C '{dst}' --strip-components=1 2>&1 || \
+                 tar xzf '{tmp}' -C '{dst}' 2>&1",
+                tmp = tmp_path,
+                dst = install_path
+            ),
+        ),
+        ArchiveKind::Zip => (
+            format!("unzip -tq '{}' >/dev/null", tmp_path),
+            format!(
+                "unzip -q -o '{}' -d '{}' 2>&1",
+                tmp_path, install_path
+            ),
+        ),
+    };
+
+    let check = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&check_cmd)
+        .output()
+        .await
+        .map_err(|e| format!("integrity check spawn failed: {}", e))?;
+    if !check.status.success() {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(format!(
+            "archive integrity check failed: {}",
+            String::from_utf8_lossy(&check.stderr).trim()
+        ));
+    }
+
+    let ex = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&extract_cmd)
+        .output()
+        .await
+        .map_err(|e| format!("extract spawn failed: {}", e))?;
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+    if !ex.status.success() {
+        return Err(format!(
+            "extraction failed: {}",
+            String::from_utf8_lossy(&ex.stderr).trim()
+        ));
+    }
+
+    // Flatten single-top-dir zips so q3ut4/ ends up at $install_path/q3ut4/.
+    if matches!(mirror.kind, ArchiveKind::Zip) {
+        flatten_single_top_dir(install_path).await;
+    }
+
+    // Final sanity: q3ut4/ must exist after extract.
+    let q3ut4 = Path::new(install_path).join("q3ut4");
+    if !q3ut4.is_dir() {
+        return Err(format!(
+            "extraction produced no q3ut4/ directory under {}",
+            install_path
+        ));
+    }
+
+    Ok(())
+}
+
+/// If `install_path` contains exactly one directory entry (a zip wrapper),
+/// move its contents up a level and remove it.
+async fn flatten_single_top_dir(install_path: &str) {
+    let path = Path::new(install_path);
+    let mut entries = match tokio::fs::read_dir(path).await {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut only: Option<PathBuf> = None;
+    let mut count = 0usize;
+    while let Ok(Some(ent)) = entries.next_entry().await {
+        count += 1;
+        if count > 1 {
+            return; // multiple top-level entries — nothing to flatten
+        }
+        only = Some(ent.path());
+    }
+    let Some(dir) = only else { return };
+    if !dir.is_dir() {
+        return;
+    }
+    // Use `mv` via shell for simplicity (tokio::fs::rename across cross-device
+    // moves would work here since it's same FS).
+    let _ = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "shopt -s dotglob nullglob && mv '{src}'/* '{dst}/' && rmdir '{src}'",
+            src = dir.display(),
+            dst = install_path
+        ))
+        .output()
+        .await;
+}
 
 /// Start downloading and installing a UrT 4.3 dedicated server.
 /// This spawns a background task and updates the shared install state.
@@ -532,8 +773,6 @@ pub fn start_install_game_server(install_path: String, state: SharedInstallState
 }
 
 async fn run_install(install_path: String, state: SharedInstallState) {
-    let target = Path::new(&install_path);
-
     // Update: downloading
     {
         let mut s = state.write().await;
@@ -543,87 +782,17 @@ async fn run_install(install_path: String, state: SharedInstallState) {
         s.completed = false;
     }
 
-    // Create target directory
-    if let Err(e) = tokio::fs::create_dir_all(target).await {
+    if let Err(msg) = download_and_extract_urt(&install_path).await {
         let mut s = state.write().await;
         s.stage = "error".to_string();
-        s.error = Some(format!("Failed to create directory: {}", e));
+        s.error = Some(msg);
         return;
     }
 
-    let tmp_path = format!("/tmp/urt43_ded_{}.tar.gz", std::process::id());
-
-    // Download
-    info!(url = URT_DOWNLOAD_URL, dest = %tmp_path, "Downloading UrT 4.3 dedicated server");
     {
         let mut s = state.write().await;
-        s.stage = "downloading".to_string();
-        s.percent = 10;
-    }
-
-    let download_result = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "wget -q -O '{}' '{}' 2>&1 || curl -fsSL -o '{}' '{}' 2>&1",
-            tmp_path, URT_DOWNLOAD_URL, tmp_path, URT_DOWNLOAD_URL
-        ))
-        .output()
-        .await;
-
-    match download_result {
-        Ok(output) if output.status.success() => {
-            let mut s = state.write().await;
-            s.stage = "extracting".to_string();
-            s.percent = 60;
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let mut s = state.write().await;
-            s.stage = "error".to_string();
-            s.error = Some(format!("Download failed: {}", stderr));
-            return;
-        }
-        Err(e) => {
-            let mut s = state.write().await;
-            s.stage = "error".to_string();
-            s.error = Some(format!("Failed to run download command: {}", e));
-            return;
-        }
-    }
-
-    // Extract
-    info!(dest = %install_path, "Extracting UrT 4.3 dedicated server");
-    let extract_result = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "tar xzf '{}' -C '{}' --strip-components=1 2>&1 || tar xzf '{}' -C '{}' 2>&1",
-            tmp_path, install_path, tmp_path, install_path
-        ))
-        .output()
-        .await;
-
-    // Clean up temp file regardless of result
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-
-    match extract_result {
-        Ok(output) if output.status.success() => {
-            let mut s = state.write().await;
-            s.stage = "configuring".to_string();
-            s.percent = 90;
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let mut s = state.write().await;
-            s.stage = "error".to_string();
-            s.error = Some(format!("Extraction failed: {}", stderr));
-            return;
-        }
-        Err(e) => {
-            let mut s = state.write().await;
-            s.stage = "error".to_string();
-            s.error = Some(format!("Failed to run extract command: {}", e));
-            return;
-        }
+        s.stage = "configuring".to_string();
+        s.percent = 90;
     }
 
     // Auto-detect game log path
@@ -1869,6 +2038,121 @@ fn slugify(input: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-instance safety: detect sibling urt@ installs on the same host
+// ---------------------------------------------------------------------------
+
+/// A sibling `urt@<slug>.service` instance found on the host, parsed from
+/// its drop-in file under `/etc/systemd/system/urt@.service.d/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiblingInstance {
+    pub slug: String,
+    pub install_path: Option<String>,
+    pub port: Option<u16>,
+}
+
+/// Default path to the systemd drop-in directory for the `urt@` template.
+pub(crate) const URT_DROPIN_DIR: &str = "/etc/systemd/system/urt@.service.d";
+
+/// Parse a single DropIn `.conf` file to extract install path + port.
+/// Returns `None` only if the file can't be read; a file with no
+/// recognisable keys returns a `SiblingInstance` with `None` fields so the
+/// caller still knows the slug exists.
+pub(crate) fn parse_dropin(path: &Path) -> Option<SiblingInstance> {
+    let slug = path.file_stem()?.to_str()?.to_string();
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut install_path: Option<String> = None;
+    let mut port: Option<u16> = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("WorkingDirectory=") {
+            install_path = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("Environment=URT_PORT=") {
+            port = rest.trim().parse().ok();
+        } else if port.is_none() {
+            // Fallback: parse +set net_port <N> out of ExecStart=.
+            if let Some(idx) = line.find("+set net_port ") {
+                let tail = &line[idx + "+set net_port ".len()..];
+                let tok = tail.split_whitespace().next().unwrap_or("");
+                port = tok.parse().ok();
+            }
+        }
+    }
+    Some(SiblingInstance {
+        slug,
+        install_path,
+        port,
+    })
+}
+
+/// Scan a DropIn directory for all `urt@<slug>.service` siblings.
+/// Returns an empty vec if the directory is missing or unreadable.
+pub(crate) fn scan_sibling_urt_instances(dropins_dir: &Path) -> Vec<SiblingInstance> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dropins_dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("conf") {
+            continue;
+        }
+        if let Some(sib) = parse_dropin(&p) {
+            out.push(sib);
+        }
+    }
+    out
+}
+
+/// Check the discovered sibling instances for conflicts with the install we
+/// are about to perform. Callers that pass `force == true` accept slug
+/// overwrites but still get errors for port / install-path collisions with
+/// *different* slugs (those are always unsafe).
+pub(crate) fn check_sibling_conflicts(
+    siblings: &[SiblingInstance],
+    my_slug: &str,
+    my_install_path: &str,
+    my_port: u16,
+    force: bool,
+) -> Result<(), String> {
+    // Normalise install path to its string form; comparisons are exact so
+    // callers should canonicalise ahead of time if necessary.
+    for sib in siblings {
+        if sib.slug == my_slug {
+            // Same slug → usually a re-install by this very client. The
+            // refuse-re-install guard in `run_wizard_install` handles the
+            // "already configured locally" case; here we only need to refuse
+            // if the sibling points at a *different* install dir (meaning
+            // another client previously claimed this slug on the host).
+            if let Some(sib_path) = sib.install_path.as_deref() {
+                if sib_path != my_install_path && !force {
+                    return Err(format!(
+                        "Another managed game server already uses slug '{}' at '{}'. \
+                         Choose a different slug or uninstall the other instance first.",
+                        my_slug, sib_path
+                    ));
+                }
+            }
+            continue;
+        }
+        if sib.install_path.as_deref() == Some(my_install_path) {
+            return Err(format!(
+                "Install path '{}' is already used by managed instance 'urt@{}.service'. \
+                 Each client must have its own install directory.",
+                my_install_path, sib.slug
+            ));
+        }
+        if sib.port == Some(my_port) {
+            return Err(format!(
+                "UDP port {} is already claimed by managed instance 'urt@{}.service'. \
+                 Pick a different port.",
+                my_port, sib.slug
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // State file I/O
 // ---------------------------------------------------------------------------
 
@@ -2044,6 +2328,38 @@ async fn run_wizard_install(
         }
     }
 
+    // -- Multi-instance safety: scan sibling urt@ drop-ins for conflicts --
+    let slug = params.slug.clone().unwrap_or_else(|| ctx.slug.clone());
+    let siblings = scan_sibling_urt_instances(Path::new(URT_DROPIN_DIR));
+    if let Err(msg) = check_sibling_conflicts(
+        &siblings,
+        &slug,
+        &params.install_path,
+        params.port,
+        params.force_download,
+    ) {
+        let mut s = state.write().await;
+        s.stage = "error".to_string();
+        s.error = Some(msg);
+        return;
+    }
+
+    // -- Active port guard: make sure the chosen UDP port is free right now.
+    //    Catches races where a sibling isn't yet registered via DropIn but
+    //    already bound the port (e.g. started by hand).
+    {
+        let (ok, detail) = try_bind(params.port, PortKind::Udp);
+        if !ok {
+            let mut s = state.write().await;
+            s.stage = "error".to_string();
+            s.error = Some(format!(
+                "UDP port {} is not available on this host: {}",
+                params.port, detail
+            ));
+            return;
+        }
+    }
+
     // -- Validate params early by rendering the cfg in-memory --
     let rendered_cfg = match urt_cfg::generate(&params, &ctx.server_name) {
         Ok(s) => s,
@@ -2157,46 +2473,13 @@ async fn run_wizard_install(
     );
 }
 
-/// Download the UrT 4.3 tarball and extract into `install_path`.
-/// Returns a human-readable error string on failure.
+/// Download the UrT 4.3 archive (from the first working mirror) and extract
+/// into `install_path`. Returns a human-readable error string on failure.
+/// Delegates to the shared `download_and_extract_urt()` helper so both the
+/// legacy `InstallGameServer` path and the wizard use the same validated
+/// mirror list.
 async fn download_and_extract(install_path: &str) -> Result<(), String> {
-    let target = Path::new(install_path);
-    if let Err(e) = tokio::fs::create_dir_all(target).await {
-        return Err(format!("Failed to create directory: {}", e));
-    }
-    let tmp_path = format!("/tmp/urt43_ded_{}.tar.gz", std::process::id());
-    let dl = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "wget -q -O '{}' '{}' 2>&1 || curl -fsSL -o '{}' '{}' 2>&1",
-            tmp_path, URT_DOWNLOAD_URL, tmp_path, URT_DOWNLOAD_URL
-        ))
-        .output()
-        .await
-        .map_err(|e| format!("Failed to spawn downloader: {}", e))?;
-    if !dl.status.success() {
-        return Err(format!(
-            "Download failed: {}",
-            String::from_utf8_lossy(&dl.stderr)
-        ));
-    }
-    let ex = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "tar xzf '{}' -C '{}' --strip-components=1 2>&1 || tar xzf '{}' -C '{}' 2>&1",
-            tmp_path, install_path, tmp_path, install_path
-        ))
-        .output()
-        .await
-        .map_err(|e| format!("Failed to spawn extractor: {}", e))?;
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-    if !ex.status.success() {
-        return Err(format!(
-            "Extraction failed: {}",
-            String::from_utf8_lossy(&ex.stderr)
-        ));
-    }
-    Ok(())
+    download_and_extract_urt(install_path).await
 }
 
 // ---------------------------------------------------------------------------
@@ -2410,6 +2693,200 @@ pub async fn handle_game_server_service(
         active,
         enabled,
         status_excerpt,
+    }
+}
+
+// ===========================================================================
+// Tests (Phase 7) — multi-instance safety
+// ===========================================================================
+
+#[cfg(test)]
+mod wizard_safety_tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Minimal RAII tempdir that avoids pulling in the `tempfile` crate
+    /// (the build server runs `cargo build --release` offline against a
+    /// pre-warmed target/ and can't fetch new deps).
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new() -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let n = TEST_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "r3-wizard-test-{}-{}-{}",
+                std::process::id(),
+                nanos,
+                n
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_dropin(dir: &Path, slug: &str, install: &str, port: u16) {
+        let content = format!(
+            "[Service]\n\
+             User=bob\n\
+             WorkingDirectory={install}\n\
+             ReadWritePaths={install}\n\
+             Environment=URT_PORT={port}\n\
+             ExecStart=/opt/urt/Quake3-UrT-Ded +set fs_homepath {install} +set net_port {port} +exec server.cfg\n",
+            install = install,
+            port = port,
+        );
+        fs::write(dir.join(format!("{}.conf", slug)), content).unwrap();
+    }
+
+    #[test]
+    fn parse_dropin_extracts_install_and_port() {
+        let tmp = TmpDir::new();
+        write_dropin(tmp.path(), "alpha", "/opt/urt-alpha", 27960);
+        let p = tmp.path().join("alpha.conf");
+        let sib = parse_dropin(&p).unwrap();
+        assert_eq!(sib.slug, "alpha");
+        assert_eq!(sib.install_path.as_deref(), Some("/opt/urt-alpha"));
+        assert_eq!(sib.port, Some(27960));
+    }
+
+    #[test]
+    fn scan_picks_up_all_conf_files_and_ignores_others() {
+        let tmp = TmpDir::new();
+        write_dropin(tmp.path(), "alpha", "/opt/urt-alpha", 27960);
+        write_dropin(tmp.path(), "bravo", "/opt/urt-bravo", 27961);
+        fs::write(tmp.path().join("README.txt"), "ignore me").unwrap();
+        let mut sibs = scan_sibling_urt_instances(tmp.path());
+        sibs.sort_by(|a, b| a.slug.cmp(&b.slug));
+        assert_eq!(sibs.len(), 2);
+        assert_eq!(sibs[0].slug, "alpha");
+        assert_eq!(sibs[1].slug, "bravo");
+    }
+
+    #[test]
+    fn scan_returns_empty_when_dir_missing() {
+        let tmp = TmpDir::new();
+        let missing = tmp.path().join("does-not-exist");
+        assert!(scan_sibling_urt_instances(&missing).is_empty());
+    }
+
+    #[test]
+    fn conflict_detects_port_reuse_by_different_slug() {
+        let siblings = vec![SiblingInstance {
+            slug: "alpha".into(),
+            install_path: Some("/opt/urt-alpha".into()),
+            port: Some(27960),
+        }];
+        let err = check_sibling_conflicts(&siblings, "bravo", "/opt/urt-bravo", 27960, false)
+            .unwrap_err();
+        assert!(err.contains("port 27960"), "got: {}", err);
+        assert!(err.contains("alpha"), "got: {}", err);
+    }
+
+    #[test]
+    fn conflict_detects_install_path_reuse_by_different_slug() {
+        let siblings = vec![SiblingInstance {
+            slug: "alpha".into(),
+            install_path: Some("/opt/shared".into()),
+            port: Some(27960),
+        }];
+        let err = check_sibling_conflicts(&siblings, "bravo", "/opt/shared", 27961, false)
+            .unwrap_err();
+        assert!(err.contains("/opt/shared"), "got: {}", err);
+        assert!(err.contains("alpha"), "got: {}", err);
+    }
+
+    #[test]
+    fn conflict_detects_slug_reused_with_different_path() {
+        // Same slug but claimed by a different install dir → refuse without force.
+        let siblings = vec![SiblingInstance {
+            slug: "alpha".into(),
+            install_path: Some("/opt/urt-alpha".into()),
+            port: Some(27960),
+        }];
+        let err =
+            check_sibling_conflicts(&siblings, "alpha", "/opt/other-dir", 27970, false).unwrap_err();
+        assert!(err.contains("slug 'alpha'"), "got: {}", err);
+    }
+
+    #[test]
+    fn conflict_allows_force_override_for_same_slug_redirect() {
+        let siblings = vec![SiblingInstance {
+            slug: "alpha".into(),
+            install_path: Some("/opt/urt-alpha".into()),
+            port: Some(27960),
+        }];
+        // With force=true, redirecting our own slug to a new dir is allowed…
+        check_sibling_conflicts(&siblings, "alpha", "/opt/other-dir", 27970, true).unwrap();
+    }
+
+    #[test]
+    fn conflict_force_does_not_override_different_slug_port_collision() {
+        // Even with force, stealing another instance's port must be refused.
+        let siblings = vec![SiblingInstance {
+            slug: "alpha".into(),
+            install_path: Some("/opt/urt-alpha".into()),
+            port: Some(27960),
+        }];
+        let err = check_sibling_conflicts(&siblings, "bravo", "/opt/urt-bravo", 27960, true)
+            .unwrap_err();
+        assert!(err.contains("port 27960"));
+    }
+
+    #[test]
+    fn conflict_allows_unique_slug_path_and_port() {
+        let siblings = vec![SiblingInstance {
+            slug: "alpha".into(),
+            install_path: Some("/opt/urt-alpha".into()),
+            port: Some(27960),
+        }];
+        check_sibling_conflicts(&siblings, "bravo", "/opt/urt-bravo", 27961, false).unwrap();
+    }
+
+    #[test]
+    fn conflict_allows_self_reinstall_same_slug_same_path() {
+        // Same slug + same install path = our own instance re-registering.
+        // That's fine (re-install guard elsewhere handles intent); conflict
+        // check should not complain here.
+        let siblings = vec![SiblingInstance {
+            slug: "alpha".into(),
+            install_path: Some("/opt/urt-alpha".into()),
+            port: Some(27960),
+        }];
+        check_sibling_conflicts(&siblings, "alpha", "/opt/urt-alpha", 27960, false).unwrap();
+    }
+
+    #[test]
+    fn conflict_ignores_sibling_with_missing_fields() {
+        // A malformed DropIn with no WorkingDirectory / URT_PORT shouldn't
+        // cause spurious collisions.
+        let siblings = vec![SiblingInstance {
+            slug: "alpha".into(),
+            install_path: None,
+            port: None,
+        }];
+        check_sibling_conflicts(&siblings, "bravo", "/opt/urt-bravo", 27961, false).unwrap();
+    }
+
+    #[test]
+    fn slugify_normalises_arbitrary_input() {
+        assert_eq!(slugify("My Server!"), "my-server");
+        assert_eq!(slugify("  Clan-One  "), "clan-one");
+        assert_eq!(slugify("a//b//c"), "a-b-c");
+        assert_eq!(slugify("Server #42"), "server-42");
     }
 }
 

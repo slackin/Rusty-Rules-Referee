@@ -123,6 +123,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/pairing/enable", post(api::pairing::enable_pairing))
         .route("/pairing/disable", post(api::pairing::disable_pairing))
         .route("/pairing/pair", post(api::pairing::pair_client))
+        // Hub orchestration (master mode)
+        .route("/hubs", get(api::hubs::list_hubs))
+        .route("/hubs/:id", get(api::hubs::get_hub))
+        .route("/hubs/:id", delete(api::hubs::delete_hub))
+        .route("/hubs/:id/metrics", get(api::hubs::get_hub_metrics))
+        .route("/hubs/:id/clients", post(api::hubs::install_client))
+        .route("/hubs/:id/clients/:slug", delete(api::hubs::uninstall_client))
+        .route("/hubs/:id/clients/:slug/action", post(api::hubs::client_action))
+        .route("/hubs/:id/game-server", post(api::hubs::install_game_server))
+        .route("/hubs/:id/restart", post(api::hubs::restart_hub))
         // Multi-server management (master mode)
         .route("/servers", get(api::servers::list_servers))
         .route("/servers/:id", get(api::servers::get_server))
@@ -140,6 +150,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/browse", post(api::servers::browse_server_files))
         .route("/servers/:id/install-server", post(api::servers::install_game_server))
         .route("/servers/:id/install-status", get(api::servers::install_status))
+        // UrT install wizard (Phase 5) — per-client game server setup
+        .route("/servers/:id/wizard/suggest", get(api::wizard::wizard_suggest))
+        .route("/servers/:id/wizard/probe-ports", post(api::wizard::wizard_probe_ports))
+        .route("/servers/:id/wizard/install", post(api::wizard::wizard_install))
+        .route("/servers/:id/wizard/service/:action", post(api::wizard::wizard_service_action))
         // Client version & forced update
         .route("/servers/:id/version", get(api::servers::get_server_version))
         .route("/servers/:id/force-update", post(api::servers::force_server_update))
@@ -267,6 +282,10 @@ pub async fn start_server(
     pending_responses: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<crate::sync::protocol::ClientResponse>>>>>,
     pending_client_requests: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, Vec<(String, crate::sync::protocol::ClientRequest)>>>>>,
     client_versions: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, crate::sync::master::ClientVersionInfo>>>>,
+    connected_hubs: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, crate::sync::master::ConnectedHub>>>>,
+    pending_hub_actions: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, Vec<(String, crate::sync::protocol::HubAction)>>>>>,
+    pending_hub_responses: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<crate::sync::protocol::HubResponse>>>>>,
+    hub_versions: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, crate::sync::master::ClientVersionInfo>>>>,
 ) -> anyhow::Result<()> {
     let jwt_secret = config
         .web
@@ -301,6 +320,10 @@ pub async fn start_server(
         pending_responses,
         pending_client_requests,
         client_versions,
+        connected_hubs,
+        pending_hub_actions,
+        pending_hub_responses,
+        hub_versions,
     };
 
     let app = build_router(state);

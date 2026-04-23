@@ -163,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
         RunMode::Standalone => run_standalone(config, config_path).await,
         RunMode::Master => run_master(config, config_path).await,
         RunMode::Client => run_client(config, config_path).await,
+        RunMode::Hub => rusty_rules_referee::hub::run_hub(config, config_path).await,
     }
 }
 
@@ -269,6 +270,10 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                 None, // No pending_responses in standalone mode
                 None, // No pending_client_requests in standalone mode
                 None, // No client_versions in standalone mode
+                None, // No connected_hubs in standalone mode
+                None, // No pending_hub_actions in standalone mode
+                None, // No pending_hub_responses in standalone mode
+                None, // No hub_versions in standalone mode
             ).await {
                 error!(error = %e, "Web admin server failed");
             }
@@ -783,6 +788,12 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // Shared client version map — updated by heartbeat, read by web API
     let client_versions = Arc::new(RwLock::new(std::collections::HashMap::<i64, sync::master::ClientVersionInfo>::new()));
 
+    // Hub orchestration shared state — used by sync API and web API
+    let connected_hubs = Arc::new(RwLock::new(std::collections::HashMap::<i64, sync::master::ConnectedHub>::new()));
+    let pending_hub_actions = Arc::new(RwLock::new(std::collections::HashMap::<i64, Vec<(String, sync::protocol::HubAction)>>::new()));
+    let pending_hub_responses = Arc::new(RwLock::new(std::collections::HashMap::<String, tokio::sync::oneshot::Sender<sync::protocol::HubResponse>>::new()));
+    let hub_versions = Arc::new(RwLock::new(std::collections::HashMap::<i64, sync::master::ClientVersionInfo>::new()));
+
     // Start the web admin server if enabled
     if config.web.enabled {
         let web_config = config.clone();
@@ -793,6 +804,10 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
         let web_pending_responses = pending_responses.clone();
         let web_pending_client_requests = pending_client_requests.clone();
         let web_client_versions = client_versions.clone();
+        let web_connected_hubs = connected_hubs.clone();
+        let web_pending_hub_actions = pending_hub_actions.clone();
+        let web_pending_hub_responses = pending_hub_responses.clone();
+        let web_hub_versions = hub_versions.clone();
         tokio::spawn(async move {
             if let Err(e) = rusty_rules_referee::web::start_server(
                 None, // No local BotContext in master mode
@@ -804,6 +819,10 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
                 Some(web_pending_responses),
                 Some(web_pending_client_requests),
                 Some(web_client_versions),
+                Some(web_connected_hubs),
+                Some(web_pending_hub_actions),
+                Some(web_pending_hub_responses),
+                Some(web_hub_versions),
             ).await {
                 error!(error = %e, "Web admin server failed");
             }
@@ -817,6 +836,12 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
     let sync_pending_responses = pending_responses.clone();
     let sync_pending_client_requests = pending_client_requests.clone();
     let sync_client_versions = client_versions.clone();
+    let sync_connected_hubs = connected_hubs.clone();
+    let sync_pending_hub_actions = pending_hub_actions.clone();
+    let sync_pending_hub_responses = pending_hub_responses.clone();
+    let sync_hub_versions = hub_versions.clone();
+    let sync_config_path = config_path.clone();
+    let sync_public_ip = config.server.public_ip.clone();
     tokio::spawn(async move {
         if let Err(e) = sync::master::start_master_api(
             &sync_config,
@@ -826,6 +851,12 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
             sync_pending_responses,
             sync_pending_client_requests,
             sync_client_versions,
+            sync_connected_hubs,
+            sync_pending_hub_actions,
+            sync_pending_hub_responses,
+            sync_hub_versions,
+            sync_config_path,
+            sync_public_ip,
         ).await {
             error!(error = %e, "Master internal API failed");
         }

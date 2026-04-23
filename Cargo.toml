@@ -71,5 +71,8 @@ rand = "0.8"
 time = "0.3"
 socket2 = "0.5"
 
+# Host telemetry (used by hub mode)
+sysinfo = { version = "0.32", default-features = false, features = ["system", "disk"] }
+
 [dev-dependencies]
-tokio-test = "0.4"
+# (intentionally empty — all tests rely on std + first-party code)

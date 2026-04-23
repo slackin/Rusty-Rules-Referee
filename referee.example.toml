@@ -245,3 +245,19 @@ enabled = false
 # ca_cert = "certs/ca.crt"
 # sync_interval = 30
 # heartbeat_interval = 15
+
+# ---- Hub mode ----
+# Uncomment to run as a hub orchestrator that manages many R3 clients on
+# this host. The hub pairs with the master like a client does, but instead
+# of running a game-server bot it manages `r3-client@<slug>.service` units.
+# [hub]
+# master_url = "https://master.example.com:9443"
+# hub_name = "host-01"
+# tls_cert = "certs/client.crt"
+# tls_key = "certs/client.key"
+# ca_cert = "certs/ca.crt"
+# clients_root = "clients"
+# urt_install_root = "urbanterror"
+# systemd_unit_template = "r3-client@.service"
+# heartbeat_interval = 30
+# host_refresh_interval = 300

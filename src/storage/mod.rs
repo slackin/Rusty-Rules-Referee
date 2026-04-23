@@ -4,7 +4,7 @@ pub mod sqlite;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -249,6 +249,27 @@ pub trait Storage: Send + Sync {
     /// Update the auto-update check interval (seconds) for a server (master-controlled).
     async fn set_server_update_interval(&self, server_id: i64, interval_secs: u64) -> Result<(), StorageError>;
     async fn delete_server(&self, server_id: i64) -> Result<(), StorageError>;
+
+    // ---- Hub orchestrators (master mode) ----
+    async fn get_hubs(&self) -> Result<Vec<Hub>, StorageError>;
+    async fn get_hub(&self, hub_id: i64) -> Result<Hub, StorageError>;
+    async fn get_hub_by_fingerprint(&self, fingerprint: &str) -> Result<Option<Hub>, StorageError>;
+    async fn save_hub(&self, hub: &Hub) -> Result<i64, StorageError>;
+    async fn delete_hub(&self, hub_id: i64) -> Result<(), StorageError>;
+    async fn upsert_host_info(&self, info: &HubHostInfo) -> Result<(), StorageError>;
+    async fn get_host_info(&self, hub_id: i64) -> Result<Option<HubHostInfo>, StorageError>;
+    async fn record_host_metric(&self, sample: &HubMetricSample) -> Result<(), StorageError>;
+    async fn get_host_metrics(
+        &self,
+        hub_id: i64,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<HubMetricSample>, StorageError>;
+    async fn prune_host_metrics(
+        &self,
+        older_than: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, StorageError>;
+    /// List all `servers` rows owned by the given hub.
+    async fn list_clients_for_hub(&self, hub_id: i64) -> Result<Vec<GameServer>, StorageError>;
 
     // ---- Sync queue (client-side offline queue) ----
     async fn enqueue_sync(&self, entity_type: &str, entity_id: Option<i64>, action: &str, payload: &str, server_id: Option<i64>) -> Result<i64, StorageError>;

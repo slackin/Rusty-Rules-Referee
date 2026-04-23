@@ -767,3 +767,190 @@ pub struct ClientResponseSubmission {
     pub request_id: String,
     pub response: ClientResponse,
 }
+
+// ---------------------------------------------------------------------------
+// Hub orchestration (master ↔ hub)
+// ---------------------------------------------------------------------------
+
+/// Static + slow-changing host facts reported by a hub.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostInfoPayload {
+    pub hostname: String,
+    pub os: String,
+    pub kernel: String,
+    pub cpu_model: String,
+    pub cpu_cores: u32,
+    pub total_ram_bytes: u64,
+    pub disk_total_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ip: Option<String>,
+    /// JSON-encoded list of detected UrT installations (`[{path, version, size_bytes}]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub urt_installs_json: Option<String>,
+}
+
+/// Periodic host metric sample reported on each heartbeat.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostMetricSample {
+    pub cpu_pct: f32,
+    pub mem_pct: f32,
+    pub disk_pct: f32,
+    pub load1: f32,
+    pub load5: f32,
+    pub load15: f32,
+    pub uptime_s: u64,
+}
+
+/// Per-client status reported by a hub on each heartbeat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubClientStatus {
+    /// systemd instance slug (`r3-client@<slug>.service`).
+    pub slug: String,
+    /// Master-assigned `server_id` (None until first successful pair).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<i64>,
+    /// systemd active state (active, inactive, failed, ...).
+    pub systemd_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rss_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_log_line: Option<String>,
+}
+
+/// Initial registration of a hub with the master after pairing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubRegisterRequest {
+    pub hub_name: String,
+    pub address: String,
+    pub cert_fingerprint: String,
+    pub version: String,
+    pub build_hash: String,
+    pub host_info: HostInfoPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubRegisterResponse {
+    pub hub_id: i64,
+}
+
+/// Periodic hub heartbeat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubHeartbeatRequest {
+    pub hub_id: i64,
+    /// Re-sent only when something changed since last heartbeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_info: Option<HostInfoPayload>,
+    pub metrics: HostMetricSample,
+    pub clients: Vec<HubClientStatus>,
+    pub version: String,
+    pub build_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubHeartbeatResponse {
+    pub ok: bool,
+    /// Pending actions queued by the master for this hub.
+    #[serde(default)]
+    pub pending_actions: Vec<PendingHubActionItem>,
+}
+
+/// Actions the master can ask a hub to perform.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action_type", content = "params")]
+pub enum HubAction {
+    /// Install a new R3 client on the hub host.
+    InstallClient {
+        slug: String,
+        server_name: String,
+        /// Optional immediate game-server install; if `Some`, the hub will
+        /// also install UrT and wire the client to it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        game_server: Option<GameServerWizardParams>,
+        #[serde(default = "default_register_systemd")]
+        register_systemd: bool,
+    },
+    UninstallClient {
+        slug: String,
+        #[serde(default)]
+        remove_data: bool,
+    },
+    StartClient { slug: String },
+    StopClient { slug: String },
+    RestartClient { slug: String },
+    /// Install only a UrT game server (no client).
+    InstallGameServer {
+        slug: String,
+        params: GameServerWizardParams,
+    },
+    RemoveGameServer { slug: String },
+    /// Force the per-client R3 binary to re-pull and apply an update.
+    UpdateClient { slug: String },
+    /// Read the last `tail_lines` of a client's journald log.
+    GetClientLogs {
+        slug: String,
+        #[serde(default = "default_tail_lines")]
+        tail_lines: u32,
+    },
+    /// Report the hub's own version/build.
+    GetHubVersion,
+    /// Restart the hub process itself (re-exec).
+    Restart,
+    /// Force the hub to check for and apply an R3 update.
+    ForceUpdate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel: Option<String>,
+    },
+}
+
+fn default_register_systemd() -> bool {
+    true
+}
+
+fn default_tail_lines() -> u32 {
+    200
+}
+
+/// A queued hub action with its tracking ID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingHubActionItem {
+    pub action_id: String,
+    pub action: HubAction,
+}
+
+/// Result envelope returned by the hub for each completed action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubResponse {
+    pub action_id: String,
+    pub ok: bool,
+    pub message: String,
+    /// Optional structured payload (logs, version info, install paths, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// Hub asks the master to mint a fresh client certificate for a sub-client
+/// it is provisioning. Authenticated by the hub's own mTLS cert.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MintClientCertRequest {
+    pub hub_id: i64,
+    pub slug: String,
+    pub server_name: String,
+    pub address: String,
+    #[serde(default)]
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MintClientCertResponse {
+    pub server_id: i64,
+    pub ca_cert: String,
+    pub client_cert: String,
+    pub client_key: String,
+    pub master_sync_url: String,
+}

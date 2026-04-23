@@ -4,7 +4,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRo
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct SqliteStorage {
@@ -55,6 +55,7 @@ impl SqliteStorage {
             include_str!("../../migrations/011_server_maps.sql"),
             include_str!("../../migrations/012_map_configs_v2.sql"),
             include_str!("../../migrations/013_server_update_interval.sql"),
+            include_str!("../../migrations/014_hubs.sql"),
         ];
         for schema in migrations {
             // Strip SQL comment lines before splitting into statements
@@ -118,6 +119,21 @@ fn parse_dt(s: &str) -> DateTime<Utc> {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|ndt| ndt.and_utc())
         .unwrap_or_default()
+}
+
+fn row_to_hub(r: &SqliteRow) -> Hub {
+    Hub {
+        id: r.get("id"),
+        name: r.get("name"),
+        address: r.get("address"),
+        status: r.get("status"),
+        last_seen: r.get("last_seen"),
+        cert_fingerprint: r.get("cert_fingerprint"),
+        hub_version: r.get("hub_version"),
+        build_hash: r.get("build_hash"),
+        created_at: r.get("created_at"),
+        updated_at: r.get("updated_at"),
+    }
 }
 
 fn row_to_client(row: &SqliteRow) -> Client {
@@ -1644,6 +1660,8 @@ impl Storage for SqliteStorage {
             update_interval: r.try_get::<i64, _>("update_interval").unwrap_or(3600) as u64,
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
+            hub_id: r.try_get("hub_id").ok(),
+            slug: r.try_get("slug").ok(),
         }).collect())
     }
 
@@ -1671,6 +1689,8 @@ impl Storage for SqliteStorage {
             update_interval: row.try_get::<i64, _>("update_interval").unwrap_or(3600) as u64,
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
+            hub_id: row.try_get("hub_id").ok(),
+            slug: row.try_get("slug").ok(),
         })
     }
 
@@ -1698,6 +1718,8 @@ impl Storage for SqliteStorage {
             update_interval: r.try_get::<i64, _>("update_interval").unwrap_or(3600) as u64,
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
+            hub_id: r.try_get("hub_id").ok(),
+            slug: r.try_get("slug").ok(),
         }))
     }
 
@@ -1707,7 +1729,8 @@ impl Storage for SqliteStorage {
                 "UPDATE servers SET name = ?, address = ?, port = ?, status = ?, \
                  current_map = ?, player_count = ?, max_clients = ?, last_seen = ?, \
                  config_json = ?, config_version = ?, cert_fingerprint = ?, \
-                 update_channel = ?, update_interval = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                 update_channel = ?, update_interval = ?, hub_id = ?, slug = ?, \
+                 updated_at = CURRENT_TIMESTAMP WHERE id = ?"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -1722,6 +1745,8 @@ impl Storage for SqliteStorage {
             .bind(&server.cert_fingerprint)
             .bind(&server.update_channel)
             .bind(server.update_interval as i64)
+            .bind(server.hub_id)
+            .bind(&server.slug)
             .bind(server.id)
             .execute(&self.pool)
             .await
@@ -1730,8 +1755,8 @@ impl Storage for SqliteStorage {
         } else {
             let result = sqlx::query(
                 "INSERT INTO servers (name, address, port, status, current_map, player_count, \
-                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel, update_interval) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel, update_interval, hub_id, slug) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -1746,6 +1771,8 @@ impl Storage for SqliteStorage {
             .bind(&server.cert_fingerprint)
             .bind(&server.update_channel)
             .bind(server.update_interval as i64)
+            .bind(server.hub_id)
+            .bind(&server.slug)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -1808,6 +1835,226 @@ impl Storage for SqliteStorage {
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(())
+    }
+
+    // ---- Hub orchestrators (master mode) ----
+
+    async fn get_hubs(&self) -> Result<Vec<Hub>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM hubs ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_hub).collect())
+    }
+
+    async fn get_hub(&self, hub_id: i64) -> Result<Hub, StorageError> {
+        let row = sqlx::query("SELECT * FROM hubs WHERE id = ?")
+            .bind(hub_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row_to_hub(&row))
+    }
+
+    async fn get_hub_by_fingerprint(&self, fingerprint: &str) -> Result<Option<Hub>, StorageError> {
+        let row = sqlx::query("SELECT * FROM hubs WHERE cert_fingerprint = ?")
+            .bind(fingerprint)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.as_ref().map(row_to_hub))
+    }
+
+    async fn save_hub(&self, hub: &Hub) -> Result<i64, StorageError> {
+        if hub.id > 0 {
+            sqlx::query(
+                "UPDATE hubs SET name = ?, address = ?, status = ?, last_seen = ?, \
+                 cert_fingerprint = ?, hub_version = ?, build_hash = ?, \
+                 updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
+            .bind(&hub.name)
+            .bind(&hub.address)
+            .bind(&hub.status)
+            .bind(&hub.last_seen)
+            .bind(&hub.cert_fingerprint)
+            .bind(&hub.hub_version)
+            .bind(&hub.build_hash)
+            .bind(hub.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(hub.id)
+        } else {
+            let result = sqlx::query(
+                "INSERT INTO hubs (name, address, status, last_seen, cert_fingerprint, hub_version, build_hash) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&hub.name)
+            .bind(&hub.address)
+            .bind(&hub.status)
+            .bind(&hub.last_seen)
+            .bind(&hub.cert_fingerprint)
+            .bind(&hub.hub_version)
+            .bind(&hub.build_hash)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(result.last_insert_rowid())
+        }
+    }
+
+    async fn delete_hub(&self, hub_id: i64) -> Result<(), StorageError> {
+        // Detach any client rows but keep them around (admin can re-home).
+        sqlx::query("UPDATE servers SET hub_id = NULL WHERE hub_id = ?")
+            .bind(hub_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        sqlx::query("DELETE FROM hubs WHERE id = ?")
+            .bind(hub_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn upsert_host_info(&self, info: &HubHostInfo) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO hub_host_info \
+                (hub_id, hostname, os, kernel, cpu_model, cpu_cores, total_ram_bytes, \
+                 disk_total_bytes, public_ip, external_ip, urt_installs_json, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) \
+             ON CONFLICT(hub_id) DO UPDATE SET \
+                hostname = excluded.hostname, os = excluded.os, kernel = excluded.kernel, \
+                cpu_model = excluded.cpu_model, cpu_cores = excluded.cpu_cores, \
+                total_ram_bytes = excluded.total_ram_bytes, disk_total_bytes = excluded.disk_total_bytes, \
+                public_ip = excluded.public_ip, external_ip = excluded.external_ip, \
+                urt_installs_json = excluded.urt_installs_json, updated_at = CURRENT_TIMESTAMP"
+        )
+        .bind(info.hub_id)
+        .bind(&info.hostname)
+        .bind(&info.os)
+        .bind(&info.kernel)
+        .bind(&info.cpu_model)
+        .bind(info.cpu_cores as i64)
+        .bind(info.total_ram_bytes as i64)
+        .bind(info.disk_total_bytes as i64)
+        .bind(&info.public_ip)
+        .bind(&info.external_ip)
+        .bind(&info.urt_installs_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_host_info(&self, hub_id: i64) -> Result<Option<HubHostInfo>, StorageError> {
+        let row = sqlx::query("SELECT * FROM hub_host_info WHERE hub_id = ?")
+            .bind(hub_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.map(|r| HubHostInfo {
+            hub_id: r.get("hub_id"),
+            hostname: r.get("hostname"),
+            os: r.get("os"),
+            kernel: r.get("kernel"),
+            cpu_model: r.get("cpu_model"),
+            cpu_cores: r.get::<i64, _>("cpu_cores") as u32,
+            total_ram_bytes: r.get::<i64, _>("total_ram_bytes") as u64,
+            disk_total_bytes: r.get::<i64, _>("disk_total_bytes") as u64,
+            public_ip: r.get("public_ip"),
+            external_ip: r.get("external_ip"),
+            urt_installs_json: r.get("urt_installs_json"),
+            updated_at: r.get("updated_at"),
+        }))
+    }
+
+    async fn record_host_metric(&self, sample: &HubMetricSample) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO hub_host_metrics \
+                (hub_id, ts, cpu_pct, mem_pct, disk_pct, load1, load5, load15, uptime_s) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(sample.hub_id)
+        .bind(sample.ts)
+        .bind(sample.cpu_pct as f64)
+        .bind(sample.mem_pct as f64)
+        .bind(sample.disk_pct as f64)
+        .bind(sample.load1 as f64)
+        .bind(sample.load5 as f64)
+        .bind(sample.load15 as f64)
+        .bind(sample.uptime_s as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_host_metrics(
+        &self,
+        hub_id: i64,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<HubMetricSample>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT * FROM hub_host_metrics WHERE hub_id = ? AND ts >= ? ORDER BY ts ASC"
+        )
+        .bind(hub_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(|r| HubMetricSample {
+            hub_id: r.get("hub_id"),
+            ts: r.get("ts"),
+            cpu_pct: r.get::<f64, _>("cpu_pct") as f32,
+            mem_pct: r.get::<f64, _>("mem_pct") as f32,
+            disk_pct: r.get::<f64, _>("disk_pct") as f32,
+            load1: r.get::<f64, _>("load1") as f32,
+            load5: r.get::<f64, _>("load5") as f32,
+            load15: r.get::<f64, _>("load15") as f32,
+            uptime_s: r.get::<i64, _>("uptime_s") as u64,
+        }).collect())
+    }
+
+    async fn prune_host_metrics(
+        &self,
+        older_than: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, StorageError> {
+        let result = sqlx::query("DELETE FROM hub_host_metrics WHERE ts < ?")
+            .bind(older_than)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.rows_affected())
+    }
+
+    async fn list_clients_for_hub(&self, hub_id: i64) -> Result<Vec<GameServer>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM servers WHERE hub_id = ? ORDER BY name")
+            .bind(hub_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(|r| GameServer {
+            id: r.get("id"),
+            name: r.get("name"),
+            address: r.get("address"),
+            port: r.get::<i32, _>("port") as u16,
+            status: r.get("status"),
+            current_map: r.get("current_map"),
+            player_count: r.get::<i32, _>("player_count") as u32,
+            max_clients: r.get::<i32, _>("max_clients") as u32,
+            last_seen: r.get("last_seen"),
+            config_json: r.get("config_json"),
+            config_version: r.get("config_version"),
+            cert_fingerprint: r.get("cert_fingerprint"),
+            update_channel: r.get("update_channel"),
+            update_interval: r.try_get::<i64, _>("update_interval").unwrap_or(3600) as u64,
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+            hub_id: r.try_get("hub_id").ok(),
+            slug: r.try_get("slug").ok(),
+        }).collect())
     }
 
     // ---- Sync queue (client-side offline queue) ----

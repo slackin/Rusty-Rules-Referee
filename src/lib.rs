@@ -10,6 +10,7 @@
 pub mod config;
 pub mod core;
 pub mod events;
+pub mod hub;
 pub mod parsers;
 pub mod plugins;
 pub mod rcon;

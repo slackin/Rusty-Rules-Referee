@@ -67,6 +67,7 @@ section "Installation Mode"
 echo -e "  ${BOLD}1)${NC} Standalone  — Single bot managing one game server (most common)"
 echo -e "  ${BOLD}2)${NC} Master      — Central hub managing multiple client bots"
 echo -e "  ${BOLD}3)${NC} Client      — Bot managed by a remote master server"
+echo -e "  ${BOLD}4)${NC} Hub         — Local orchestrator: manages many R3 clients on this host"
 echo ""
 ask "Select mode [1]: "
 read -r MODE_CHOICE
@@ -76,6 +77,7 @@ case "$MODE_CHOICE" in
     1) RUN_MODE="standalone" ;;
     2) RUN_MODE="master" ;;
     3) RUN_MODE="client" ;;
+    4) RUN_MODE="hub" ;;
     *) err "Invalid choice"; exit 1 ;;
 esac
 
@@ -108,33 +110,176 @@ download_game_server() {
         fi
     fi
 
-    local URT_URL="https://www.urbanterror.info/downloads/software/urt/43/UrbanTerror43_ded.tar.gz"
+    # Mirror list, tried in order. Each entry is "URL|KIND" where KIND is
+    # "tar" (tar.gz, dedicated-only) or "zip" (full package, we extract
+    # q3ut4/ only). pugbot.net is primary because it's the only confirmed-
+    # stable mirror; the official sites frequently return CMS HTML.
+    local MIRRORS=(
+        "https://maps.pugbot.net/q3ut4/UrbanTerror434_full.zip|zip"
+        "https://cdn.urbanterror.info/urt/43/releases/UrbanTerror43_ded.tar.gz|tar"
+        "https://www.frozensand.com/downloads/UrbanTerror43_ded.tar.gz|tar"
+    )
+    local MIN_TAR_BYTES=$((40 * 1024 * 1024))    # dedicated tarball ~60 MB
+    local MIN_ZIP_BYTES=$((500 * 1024 * 1024))   # full zip ~1.4 GB
+    local TMP_DL="/tmp/urt43_download.$$"
 
-    info "Downloading Urban Terror 4.3 dedicated server to $URT_DIR..."
     mkdir -p "$URT_DIR"
 
-    if command -v wget &>/dev/null; then
-        wget -q --show-progress -O "/tmp/urt43_ded.tar.gz" "$URT_URL" || {
-            warn "Download failed. You can install the game server manually later."
-            return 0
-        }
-    elif command -v curl &>/dev/null; then
-        curl -fL --progress-bar -o "/tmp/urt43_ded.tar.gz" "$URT_URL" || {
-            warn "Download failed. You can install the game server manually later."
-            return 0
-        }
-    else
-        warn "Neither wget nor curl found. Install the game server manually."
-        return 0
-    fi
+    local SUCCESS=0
+    local LAST_ERR=""
+    local MIRROR_ENTRY URL KIND EXT MIN_BYTES TMP_FILE
+    for MIRROR_ENTRY in "${MIRRORS[@]}"; do
+        URL="${MIRROR_ENTRY%|*}"
+        KIND="${MIRROR_ENTRY##*|}"
+        EXT="tar.gz"
+        MIN_BYTES=$MIN_TAR_BYTES
+        if [ "$KIND" = "zip" ]; then
+            EXT="zip"
+            MIN_BYTES=$MIN_ZIP_BYTES
+        fi
+        TMP_FILE="${TMP_DL}.${EXT}"
+        rm -f "$TMP_FILE"
 
-    info "Extracting to $URT_DIR..."
-    tar xzf /tmp/urt43_ded.tar.gz -C "$URT_DIR" --strip-components=1 2>/dev/null || \
-        tar xzf /tmp/urt43_ded.tar.gz -C "$URT_DIR" 2>/dev/null || {
-            warn "Extraction failed. Check the archive manually."
-            return 0
-        }
-    rm -f /tmp/urt43_ded.tar.gz
+        info "Downloading Urban Terror 4.3 from $URL ..."
+        local DL_OK=1
+        if command -v curl &>/dev/null; then
+            # -f: fail on non-2xx; -L: follow redirects; --retry: transient errors.
+            if curl -fL --retry 2 --retry-delay 3 --progress-bar \
+                -A "R3-Installer/1.0" \
+                -o "$TMP_FILE" "$URL"; then
+                DL_OK=0
+            fi
+        elif command -v wget &>/dev/null; then
+            if wget -q --show-progress --tries=2 \
+                --user-agent="R3-Installer/1.0" \
+                -O "$TMP_FILE" "$URL"; then
+                DL_OK=0
+            fi
+        else
+            err "Neither curl nor wget is installed."
+            return 1
+        fi
+
+        if [ $DL_OK -ne 0 ]; then
+            LAST_ERR="download transport failure"
+            warn "Download from mirror failed ($LAST_ERR). Trying next mirror..."
+            continue
+        fi
+
+        # Validate: size must be at least the expected minimum.
+        local BYTES=0
+        if [ -f "$TMP_FILE" ]; then
+            BYTES=$(stat -c%s "$TMP_FILE" 2>/dev/null || wc -c <"$TMP_FILE" || echo 0)
+        fi
+        if [ "$BYTES" -lt "$MIN_BYTES" ]; then
+            LAST_ERR="file too small ($BYTES bytes, expected >= $MIN_BYTES) — mirror likely returned an HTML error page"
+            warn "$LAST_ERR"
+            rm -f "$TMP_FILE"
+            continue
+        fi
+
+        # Validate: magic bytes.
+        local MAGIC
+        MAGIC=$(head -c 4 "$TMP_FILE" | od -An -tx1 | tr -d ' \n')
+        case "$KIND" in
+            tar)
+                # gzip magic: 1f 8b
+                if [ "${MAGIC:0:4}" != "1f8b" ]; then
+                    LAST_ERR="not a gzip archive (magic=${MAGIC:0:4}) — mirror returned something else"
+                    warn "$LAST_ERR"
+                    rm -f "$TMP_FILE"
+                    continue
+                fi
+                # tar -t must list actual entries.
+                if ! tar -tzf "$TMP_FILE" >/dev/null 2>&1; then
+                    LAST_ERR="tar listing failed — archive is corrupt"
+                    warn "$LAST_ERR"
+                    rm -f "$TMP_FILE"
+                    continue
+                fi
+                ;;
+            zip)
+                # zip magic: 50 4b 03 04 (PK\3\4)
+                if [ "$MAGIC" != "504b0304" ]; then
+                    LAST_ERR="not a zip archive (magic=$MAGIC) — mirror returned something else"
+                    warn "$LAST_ERR"
+                    rm -f "$TMP_FILE"
+                    continue
+                fi
+                if ! command -v unzip &>/dev/null; then
+                    LAST_ERR="unzip command not installed (required for zip-format mirror)"
+                    warn "$LAST_ERR"
+                    rm -f "$TMP_FILE"
+                    continue
+                fi
+                if ! unzip -tq "$TMP_FILE" >/dev/null 2>&1; then
+                    LAST_ERR="zip integrity check failed — archive is corrupt"
+                    warn "$LAST_ERR"
+                    rm -f "$TMP_FILE"
+                    continue
+                fi
+                ;;
+        esac
+
+        info "Download verified ($BYTES bytes, magic ok, archive listable)"
+        info "Extracting to $URT_DIR ..."
+        local EX_OK=1
+        case "$KIND" in
+            tar)
+                if tar xzf "$TMP_FILE" -C "$URT_DIR" --strip-components=1 2>/dev/null \
+                   || tar xzf "$TMP_FILE" -C "$URT_DIR" 2>/dev/null; then
+                    EX_OK=0
+                fi
+                ;;
+            zip)
+                # Full zip has Quake3-UrT-Ded.* at root and assets under q3ut4/.
+                # Extract everything to $URT_DIR; strip top-level wrapper dir
+                # only if one exists.
+                if unzip -q -o "$TMP_FILE" -d "$URT_DIR" 2>/dev/null; then
+                    EX_OK=0
+                    # If the archive has a single top-level dir, flatten it.
+                    local TOP
+                    TOP=$(cd "$URT_DIR" && ls -1 | head -1)
+                    if [ -d "$URT_DIR/$TOP" ] && [ "$(ls -1 "$URT_DIR" | wc -l)" = "1" ]; then
+                        # shellcheck disable=SC2086
+                        (cd "$URT_DIR/$TOP" && tar cf - .) | (cd "$URT_DIR" && tar xf -) \
+                            && rm -rf "$URT_DIR/$TOP"
+                    fi
+                fi
+                ;;
+        esac
+
+        rm -f "$TMP_FILE"
+
+        if [ $EX_OK -ne 0 ]; then
+            LAST_ERR="extraction failed"
+            warn "$LAST_ERR — trying next mirror"
+            continue
+        fi
+
+        # Sanity check: we expect at least q3ut4/ and a Quake3-UrT-Ded binary.
+        if [ ! -d "$URT_DIR/q3ut4" ]; then
+            LAST_ERR="archive extracted but q3ut4/ directory is missing"
+            warn "$LAST_ERR — trying next mirror"
+            continue
+        fi
+        if ! ls "$URT_DIR"/Quake3-UrT-Ded* >/dev/null 2>&1; then
+            warn "No Quake3-UrT-Ded binary found at top level after extract — may need manual fix-up"
+            # Not fatal: the binary might live under a subdir in some archives.
+        fi
+
+        SUCCESS=1
+        break
+    done
+
+    rm -f "${TMP_DL}."*
+
+    if [ $SUCCESS -ne 1 ]; then
+        err "All UrT 4.3 download mirrors failed."
+        err "Last error: $LAST_ERR"
+        err "You can install the game server manually, then re-run the installer."
+        return 1
+    fi
 
     chown -R "$REAL_USER:$REAL_GROUP" "$URT_DIR"
     info "Game server installed at $URT_DIR"
@@ -143,6 +288,7 @@ download_game_server() {
     # client mode the wizard decides the final path, not this function).
     GAME_LOG="$URT_DIR/q3ut4/games.log"
     URT_INSTALL_DIR="$URT_DIR"
+    return 0
 }
 
 # =============================================================================
@@ -377,14 +523,60 @@ case "$RUN_MODE" in
         ask "Download UrT 4.3 dedicated server files to ${CLIENT_URT_DIR}? [y/N]: "
         read -r CLIENT_URT_CHOICE
         if [ "$CLIENT_URT_CHOICE" = "y" ] || [ "$CLIENT_URT_CHOICE" = "Y" ]; then
-            download_game_server "$CLIENT_URT_DIR" quiet
-            CLIENT_URT_DOWNLOADED=true
+            if download_game_server "$CLIENT_URT_DIR" quiet; then
+                CLIENT_URT_DOWNLOADED=true
+            else
+                CLIENT_URT_DOWNLOADED=false
+                warn "Continuing without game server files — you can install them"
+                warn "manually under ${CLIENT_URT_DIR} before running the UI wizard."
+            fi
         else
             CLIENT_URT_DOWNLOADED=false
         fi
 
         # Install systemd scaffolding so the UI wizard can register a managed
         # urt@<slug>.service for this instance. Idempotent across reinstalls.
+        install_urt_service_scaffolding || warn "UrT systemd scaffolding install failed (continuing)"
+        ;;
+
+    hub)
+        section "Hub Connection"
+
+        while true; do
+            ask "Master server address (e.g. master.example.com or 10.0.0.1): "
+            read -r MASTER_HOST
+            if [ -n "$MASTER_HOST" ]; then break; fi
+            warn "Master address is required"
+        done
+
+        ask "Master web port [8080]: "
+        read -r MASTER_WEB_PORT
+        MASTER_WEB_PORT="${MASTER_WEB_PORT:-8080}"
+
+        while true; do
+            ask "Quick-connect key (from master web UI): "
+            read -r QUICK_CONNECT_KEY
+            if [ -n "$QUICK_CONNECT_KEY" ]; then break; fi
+            warn "Quick-connect key is required"
+        done
+
+        ask "Name for this hub [$(hostname -s)]: "
+        read -r HUB_NAME
+        HUB_NAME="${HUB_NAME:-$(hostname -s)}"
+
+        INSTANCE_SLUG=$(echo "$HUB_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')
+        INSTALL_DIR="$HOME_DIR/r3-hub-${INSTANCE_SLUG}"
+        SERVICE_NAME="r3-hub-${INSTANCE_SLUG}"
+
+        ask "Per-client install root [${INSTALL_DIR}/clients]: "
+        read -r HUB_CLIENTS_ROOT
+        HUB_CLIENTS_ROOT="${HUB_CLIENTS_ROOT:-${INSTALL_DIR}/clients}"
+
+        ask "Default UrT install root [${HOME_DIR}/urbanterror]: "
+        read -r HUB_URT_ROOT
+        HUB_URT_ROOT="${HUB_URT_ROOT:-${HOME_DIR}/urbanterror}"
+
+        # Hub will need to manage many `r3-client@<slug>.service` units.
         install_urt_service_scaffolding || warn "UrT systemd scaffolding install failed (continuing)"
         ;;
 esac
@@ -694,10 +886,134 @@ enabled = true
 CFGEOF
 }
 
+generate_hub_config() {
+    # ---- Pair with master via quick-connect (client_kind=hub) ----
+    info "Pairing hub with master server..."
+
+    PAIR_URL="http://${MASTER_HOST}:${MASTER_WEB_PORT}/api/v1/pairing/pair"
+    PAIR_PAYLOAD=$(cat << JSONEOF
+{"token":"${QUICK_CONNECT_KEY}","server_name":"${HUB_NAME}","client_kind":"hub"}
+JSONEOF
+    )
+
+    PAIR_RESPONSE=$(curl -sf -X POST \
+        -H "Content-Type: application/json" \
+        -d "$PAIR_PAYLOAD" \
+        "$PAIR_URL" 2>/dev/null) || {
+        err "Failed to pair hub with master at $PAIR_URL"
+        err "Check the master address and quick-connect key, then try again."
+        exit 1
+    }
+
+    if command -v python3 &>/dev/null; then
+        PAIR_HUB_ID=$(echo "$PAIR_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hub_id') or d.get('server_id'))")
+        PAIR_SERVER_ID="$PAIR_HUB_ID"
+        PAIR_CA_CERT=$(echo "$PAIR_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['ca_cert'])")
+        PAIR_CLIENT_CERT=$(echo "$PAIR_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['client_cert'])")
+        PAIR_CLIENT_KEY=$(echo "$PAIR_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['client_key'])")
+        PAIR_SYNC_URL=$(echo "$PAIR_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['master_sync_url'])")
+    else
+        err "python3 is required for JSON parsing during hub setup"
+        exit 1
+    fi
+
+    info "Hub paired! Hub ID: ${PAIR_HUB_ID}"
+
+    echo "$PAIR_CA_CERT"     > "$CERTS_DIR/ca.crt"
+    echo "$PAIR_CLIENT_CERT" > "$CERTS_DIR/client.crt"
+    echo "$PAIR_CLIENT_KEY"  > "$CERTS_DIR/client.key"
+    chmod 600 "$CERTS_DIR/client.key" "$CERTS_DIR/ca.crt" "$CERTS_DIR/client.crt"
+    info "Hub TLS certificates saved"
+
+    mkdir -p "$HUB_CLIENTS_ROOT" "$HUB_URT_ROOT"
+    chown -R "$REAL_USER:$REAL_GROUP" "$HUB_CLIENTS_ROOT" "$HUB_URT_ROOT" || true
+
+    cat > "$INSTALL_DIR/r3.toml" << CFGEOF
+# Rusty Rules Referee — Hub Configuration
+# Hub pairs with master at ${PAIR_SYNC_URL}
+# Manages many r3-client@<slug>.service units on this host.
+
+[referee]
+bot_name = "${HUB_NAME}"
+bot_prefix = "^2R3-Hub:^3"
+database = "sqlite://r3.db"
+logfile = "r3.log"
+log_level = "info"
+
+[server]
+public_ip = "0.0.0.0"
+port = 0
+rcon_password = ""
+game_log = ""
+delay = 1.0
+
+[web]
+enabled = false
+bind_address = "0.0.0.0"
+port = 8080
+jwt_secret = "${JWT_SECRET}"
+
+[update]
+enabled = false
+url = "https://r3.pugbot.net/api/updates"
+channel = "beta"
+check_interval = 3600
+auto_restart = true
+
+[hub]
+master_url = "${PAIR_SYNC_URL}"
+hub_name = "${HUB_NAME}"
+tls_cert = "${CERTS_DIR}/client.crt"
+tls_key = "${CERTS_DIR}/client.key"
+ca_cert = "${CERTS_DIR}/ca.crt"
+clients_root = "${HUB_CLIENTS_ROOT}"
+urt_install_root = "${HUB_URT_ROOT}"
+systemd_unit_template = "r3-client@.service"
+heartbeat_interval = 30
+host_refresh_interval = 300
+CFGEOF
+
+    # ---- Scaffold the r3-client@.service template unit ----
+    if [ ! -f /etc/systemd/system/r3-client@.service ]; then
+        info "Installing r3-client@.service template unit..."
+        cat > /etc/systemd/system/r3-client@.service << 'TEMPLATEEOF'
+[Unit]
+Description=Rusty Rules Referee — managed client (%i)
+After=network.target
+
+[Service]
+Type=simple
+# WorkingDirectory and Environment=R3_CONF=... are supplied by the per-instance
+# drop-in file at /etc/systemd/system/r3-client@%i.service.d/install.conf
+# written by the hub when it provisions a new client.
+ExecStart=/usr/local/bin/rusty-rules-referee --mode client r3.toml
+Restart=always
+RestartSec=3
+Environment=RUST_LOG=info
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+TEMPLATEEOF
+        # Symlink the binary to /usr/local/bin so the template's ExecStart
+        # works regardless of which install dir created it.
+        if [ -x "$INSTALL_DIR/rusty-rules-referee" ] && [ ! -e /usr/local/bin/rusty-rules-referee ]; then
+            ln -sf "$INSTALL_DIR/rusty-rules-referee" /usr/local/bin/rusty-rules-referee
+        fi
+        systemctl daemon-reload
+        info "r3-client@.service template installed"
+    fi
+}
+
 case "$RUN_MODE" in
     standalone) generate_standalone_config ;;
     master)     generate_master_config ;;
     client)     generate_client_config ;;
+    hub)        generate_hub_config ;;
 esac
 
 # ---- Client mode: write UrT install-state marker ----
@@ -837,6 +1153,17 @@ case "$RUN_MODE" in
         echo ""
         echo -e "  ${GREEN}✓  Paired with master! This bot is managed from the master web UI.${NC}"
         echo -e "  ${YELLOW}⚠  Configure game server details (IP, port, RCON) from the master dashboard.${NC}"
+        ;;
+    hub)
+        echo -e "  ${BOLD}Master${NC}         ${PAIR_SYNC_URL}"
+        echo -e "  ${BOLD}Hub ID${NC}         ${PAIR_HUB_ID:-${PAIR_SERVER_ID}}"
+        echo -e "  ${BOLD}Clients root${NC}   ${HUB_CLIENTS_ROOT}"
+        echo -e "  ${BOLD}UrT root${NC}       ${HUB_URT_ROOT}"
+        echo -e "  ${BOLD}Config${NC}         $INSTALL_DIR/r3.toml"
+        echo -e "  ${BOLD}Service${NC}        systemctl {start|stop|restart|status} ${SERVICE_NAME}"
+        echo -e "  ${BOLD}Logs${NC}           journalctl -u ${SERVICE_NAME} -f"
+        echo ""
+        echo -e "  ${GREEN}✓  Hub paired with master! Manage clients from the master web UI → Hubs tab.${NC}"
         ;;
 esac
 echo ""

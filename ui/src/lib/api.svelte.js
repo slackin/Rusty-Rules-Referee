@@ -221,6 +221,20 @@ export const api = {
 		request(`/servers/${id}/install-server`, { method: 'POST', body: JSON.stringify({ install_path }) }),
 	installStatus: (id) =>
 		request(`/servers/${id}/install-status`),
+	// UrT install wizard (Phase 6)
+	wizardSuggest: (id) => request(`/servers/${id}/wizard/suggest`),
+	wizardProbePorts: (id, ports, kind = 'udp') =>
+		request(`/servers/${id}/wizard/probe-ports`, {
+			method: 'POST',
+			body: JSON.stringify({ ports, kind })
+		}),
+	wizardInstall: (id, params) =>
+		request(`/servers/${id}/wizard/install`, {
+			method: 'POST',
+			body: JSON.stringify(params)
+		}),
+	wizardServiceAction: (id, action) =>
+		request(`/servers/${id}/wizard/service/${action}`, { method: 'POST' }),
 	serverVersion: (id) => request(`/servers/${id}/version`),
 	forceServerUpdate: (id) =>
 		request(`/servers/${id}/force-update`, { method: 'POST' }),
@@ -311,4 +325,19 @@ export const api = {
 		request('/pairing/enable', { method: 'POST', body: JSON.stringify({ expiry_minutes }) }),
 	disablePairing: () =>
 		request('/pairing/disable', { method: 'POST' }),
+
+	// Hubs (master mode)
+	hubs: () => request('/hubs').then(r => r.hubs ?? r),
+	hub: (id) => request(`/hubs/${id}`),
+	deleteHub: (id) => request(`/hubs/${id}`, { method: 'DELETE' }),
+	hubMetrics: (id, range = '1h') => request(`/hubs/${id}/metrics?range=${encodeURIComponent(range)}`),
+	hubInstallClient: (id, body) =>
+		request(`/hubs/${id}/clients`, { method: 'POST', body: JSON.stringify(body) }),
+	hubUninstallClient: (id, slug, remove_data = false) =>
+		request(`/hubs/${id}/clients/${encodeURIComponent(slug)}?remove_data=${remove_data}`, { method: 'DELETE' }),
+	hubClientAction: (id, slug, action) =>
+		request(`/hubs/${id}/clients/${encodeURIComponent(slug)}/action`, { method: 'POST', body: JSON.stringify({ action }) }),
+	hubInstallGameServer: (id, body) =>
+		request(`/hubs/${id}/game-server`, { method: 'POST', body: JSON.stringify(body) }),
+	hubRestart: (id) => request(`/hubs/${id}/restart`, { method: 'POST' }),
 };

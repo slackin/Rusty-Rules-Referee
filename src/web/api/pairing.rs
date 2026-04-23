@@ -40,6 +40,14 @@ pub struct EnableResponse {
     pub connect_command: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PairKind {
+    #[default]
+    Server,
+    Hub,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PairRequest {
     pub token: String,
@@ -48,6 +56,9 @@ pub struct PairRequest {
     pub address: String,
     #[serde(default)]
     pub port: u16,
+    /// Type of client to pair: a regular game-server bot (default) or a hub orchestrator.
+    #[serde(default)]
+    pub client_kind: PairKind,
 }
 
 fn default_pair_address() -> String {
@@ -57,6 +68,8 @@ fn default_pair_address() -> String {
 #[derive(Debug, Serialize)]
 pub struct PairResponse {
     pub server_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hub_id: Option<i64>,
     pub ca_cert: String,
     pub client_cert: String,
     pub client_key: String,
@@ -338,11 +351,16 @@ pub async fn pair_client(
         }
     };
 
-    // Generate client certificate
+    // Generate client certificate. Hubs get a CN prefix so the master can
+    // distinguish them from regular game-server clients on every mTLS request.
+    let cert_cn = match body.client_kind {
+        PairKind::Server => body.server_name.clone(),
+        PairKind::Hub => format!("hub:{}", body.server_name),
+    };
     let client_certs = match ca::generate_client_cert(
         &ca_cert_pem,
         &ca_key_pem,
-        &body.server_name,
+        &cert_cn,
         None, // Don't write to disk — return PEM strings to the client
     ) {
         Ok(c) => c,
@@ -381,34 +399,65 @@ pub async fn pair_client(
         }
     };
 
-    // Register the server in the database
-    let server = crate::core::GameServer {
-        id: 0,
-        name: body.server_name.clone(),
-        address: body.address.clone(),
-        port: body.port,
-        status: "online".to_string(),
-        current_map: None,
-        player_count: 0,
-        max_clients: 0,
-        last_seen: Some(chrono::Utc::now()),
-        config_json: None,
-        config_version: 1,
-        cert_fingerprint: Some(fingerprint),
-        update_channel: "beta".to_string(),
-        update_interval: 3600,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    };
+    // Register the server / hub in the database
+    let (server_id, hub_id) = match body.client_kind {
+        PairKind::Server => {
+            let server = crate::core::GameServer {
+                id: 0,
+                name: body.server_name.clone(),
+                address: body.address.clone(),
+                port: body.port,
+                status: "online".to_string(),
+                current_map: None,
+                player_count: 0,
+                max_clients: 0,
+                last_seen: Some(chrono::Utc::now()),
+                config_json: None,
+                config_version: 1,
+                cert_fingerprint: Some(fingerprint.clone()),
+                update_channel: "beta".to_string(),
+                update_interval: 3600,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                hub_id: None,
+                slug: None,
+            };
 
-    let server_id = match state.storage.save_server(&server).await {
-        Ok(id) => id,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to register server: {}", e)})),
-            )
-                .into_response();
+            match state.storage.save_server(&server).await {
+                Ok(id) => (id, None),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("Failed to register server: {}", e)})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        PairKind::Hub => {
+            let hub = crate::core::Hub {
+                id: 0,
+                name: body.server_name.clone(),
+                address: body.address.clone(),
+                status: "online".to_string(),
+                last_seen: Some(chrono::Utc::now()),
+                cert_fingerprint: Some(fingerprint.clone()),
+                hub_version: None,
+                build_hash: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            };
+
+            match state.storage.save_hub(&hub).await {
+                Ok(id) => (id, Some(id)),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("Failed to register hub: {}", e)})),
+                    )
+                        .into_response();
+                }
+            }
         }
     };
 
@@ -420,9 +469,11 @@ pub async fn pair_client(
 
     info!(
         server_id,
+        ?hub_id,
+        kind = ?body.client_kind,
         server_name = %body.server_name,
         address = %body.address,
-        "Client bot paired via quick-connect"
+        "Client paired via quick-connect"
     );
 
     let display_addr = if body.address == "0.0.0.0" && body.port == 0 {
@@ -436,9 +487,13 @@ pub async fn pair_client(
         .save_audit_entry(&crate::core::AuditEntry {
             id: 0,
             admin_user_id: None,
-            action: "client_paired".to_string(),
+            action: match body.client_kind {
+                PairKind::Server => "client_paired".to_string(),
+                PairKind::Hub => "hub_paired".to_string(),
+            },
             detail: format!(
-                "Client '{}' ({}) paired via quick-connect, assigned server_id={}",
+                "{} '{}' ({}) paired via quick-connect, assigned id={}",
+                match body.client_kind { PairKind::Server => "Client", PairKind::Hub => "Hub" },
                 body.server_name, display_addr, server_id
             ),
             ip_address: None,
@@ -449,6 +504,7 @@ pub async fn pair_client(
 
     Json(PairResponse {
         server_id,
+        hub_id,
         ca_cert: ca_cert_pem,
         client_cert: client_certs.cert_pem,
         client_key: client_certs.key_pem,

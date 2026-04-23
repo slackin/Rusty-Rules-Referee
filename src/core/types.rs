@@ -145,6 +145,63 @@ pub struct GameServer {
     pub update_interval: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// FK to `hubs.id` when this client lives on a hub-managed host.
+    /// `None` for standalone-installed clients.
+    #[serde(default)]
+    pub hub_id: Option<i64>,
+    /// Stable systemd-instance slug used by the owning hub
+    /// (`r3-client@<slug>.service`). `None` for non-hub clients.
+    #[serde(default)]
+    pub slug: Option<String>,
+}
+
+/// A host orchestrator (hub) registered with the master. Hubs install,
+/// start, stop and uninstall R3 client bots on their physical host.
+#[derive(Debug, Clone, Serialize)]
+pub struct Hub {
+    pub id: i64,
+    pub name: String,
+    /// Network address the hub last contacted the master from.
+    pub address: String,
+    pub status: String,
+    pub last_seen: Option<DateTime<Utc>>,
+    pub cert_fingerprint: Option<String>,
+    pub hub_version: Option<String>,
+    pub build_hash: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Static-ish host information reported by a hub on register / heartbeat.
+#[derive(Debug, Clone, Serialize)]
+pub struct HubHostInfo {
+    pub hub_id: i64,
+    pub hostname: String,
+    pub os: String,
+    pub kernel: String,
+    pub cpu_model: String,
+    pub cpu_cores: u32,
+    pub total_ram_bytes: u64,
+    pub disk_total_bytes: u64,
+    pub public_ip: Option<String>,
+    pub external_ip: Option<String>,
+    /// JSON-encoded list of detected UrT installs on the host.
+    pub urt_installs_json: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Periodic point-in-time host metric sample.
+#[derive(Debug, Clone, Serialize)]
+pub struct HubMetricSample {
+    pub hub_id: i64,
+    pub ts: DateTime<Utc>,
+    pub cpu_pct: f32,
+    pub mem_pct: f32,
+    pub disk_pct: f32,
+    pub load1: f32,
+    pub load5: f32,
+    pub load15: f32,
+    pub uptime_s: u64,
 }
 
 /// An entry in the offline sync queue (used by client bots).

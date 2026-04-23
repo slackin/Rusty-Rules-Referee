@@ -8,7 +8,7 @@
 	import {
 		LayoutDashboard, Users, Shield, Gavel, Terminal, BarChart3, Settings,
 		UserCog, LogOut, Menu, X, ChevronDown, KeyRound, ScrollText, MessageSquare,
-		Map, BookOpen, Sliders, History, Server, Link, Crosshair
+		Map, BookOpen, Sliders, History, Server, Link, Crosshair, HardDrive
 	} from 'lucide-svelte';
 
 	let { children } = $props();
@@ -43,6 +43,7 @@
 	const masterNav = [
 		{ href: '/', label: 'Dashboard', icon: LayoutDashboard },
 		{ href: '/servers', label: 'Servers', icon: Server },
+		{ href: '/hubs', label: 'Hubs', icon: HardDrive },
 		{ href: '/pairing', label: 'Pairing', icon: Link },
 		{ href: '/map-defaults', label: 'Map Defaults', icon: Sliders },
 		{ href: '/penalties', label: 'Penalties', icon: Gavel },

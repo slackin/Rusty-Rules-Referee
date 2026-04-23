@@ -13,6 +13,10 @@ pub enum RunMode {
     Master,
     /// Game server bot: runs plugins locally, syncs with a master server.
     Client,
+    /// Host orchestrator: pairs with a master, reports host telemetry, and
+    /// installs / starts / stops / uninstalls R3 client bots and game
+    /// servers on this physical host.
+    Hub,
 }
 
 impl fmt::Display for RunMode {
@@ -21,6 +25,7 @@ impl fmt::Display for RunMode {
             RunMode::Standalone => write!(f, "standalone"),
             RunMode::Master => write!(f, "master"),
             RunMode::Client => write!(f, "client"),
+            RunMode::Hub => write!(f, "hub"),
         }
     }
 }
@@ -32,7 +37,11 @@ impl std::str::FromStr for RunMode {
             "standalone" => Ok(RunMode::Standalone),
             "master" => Ok(RunMode::Master),
             "client" => Ok(RunMode::Client),
-            other => Err(format!("unknown run mode '{}': expected standalone, master, or client", other)),
+            "hub" => Ok(RunMode::Hub),
+            other => Err(format!(
+                "unknown run mode '{}': expected standalone, master, client, or hub",
+                other
+            )),
         }
     }
 }
@@ -50,6 +59,8 @@ pub struct RefereeConfig {
     pub master: Option<MasterSection>,
     #[serde(default)]
     pub client: Option<ClientSection>,
+    #[serde(default)]
+    pub hub: Option<HubSection>,
     #[serde(default)]
     pub map_repo: MapRepoSection,
     #[serde(default)]
@@ -271,6 +282,74 @@ fn default_heartbeat_interval() -> u64 {
     15
 }
 
+/// Hub configuration (used when running in hub mode).
+///
+/// A hub pairs with a master like a client does, but instead of running a
+/// game-server bot itself it manages a fleet of `r3-client@<slug>.service`
+/// systemd units on the local host (each one a full R3 client bot with its
+/// own config, certs, and database).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HubSection {
+    /// URL of the master server, e.g. "https://master.example.com:9443".
+    pub master_url: String,
+    /// Human-readable name for this hub (typically the hostname).
+    pub hub_name: String,
+    /// Path to the hub TLS certificate (PEM).
+    pub tls_cert: String,
+    /// Path to the hub TLS private key (PEM).
+    pub tls_key: String,
+    /// Path to the CA certificate for verifying the master (PEM).
+    pub ca_cert: String,
+    /// Directory under which per-client install dirs are created.
+    /// Each managed client lives at `<clients_root>/<slug>/` with its own
+    /// `r3.toml`, `certs/`, and `r3.db`.
+    #[serde(default = "default_clients_root")]
+    pub clients_root: String,
+    /// Default base directory for new Urban Terror installs requested via
+    /// the master UI. The hub will create per-instance subdirectories
+    /// underneath this path (e.g. `<urt_install_root>/<slug>/`).
+    #[serde(default = "default_urt_install_root")]
+    pub urt_install_root: String,
+    /// Absolute path to the `rusty-rules-referee` binary the hub uses
+    /// when launching managed clients. Defaults to the hub's own
+    /// executable path (resolved at runtime when empty).
+    #[serde(default)]
+    pub r3_binary_path: Option<String>,
+    /// systemd template unit name used for managed clients. Instances
+    /// are addressed as `<systemd_unit_template>@<slug>.service` after
+    /// stripping a trailing `@.service` from this value.
+    #[serde(default = "default_hub_systemd_template")]
+    pub systemd_unit_template: String,
+    /// How often (seconds) to send a heartbeat (with metrics) to master.
+    #[serde(default = "default_hub_heartbeat_interval")]
+    pub heartbeat_interval: u64,
+    /// How often (seconds) to refresh static host info (CPU model,
+    /// detected UrT installs, etc.). Cheap deltas only; metrics ride on
+    /// every heartbeat.
+    #[serde(default = "default_hub_host_refresh_interval")]
+    pub host_refresh_interval: u64,
+}
+
+fn default_clients_root() -> String {
+    "clients".to_string()
+}
+
+fn default_urt_install_root() -> String {
+    "urbanterror".to_string()
+}
+
+fn default_hub_systemd_template() -> String {
+    "r3-client@.service".to_string()
+}
+
+fn default_hub_heartbeat_interval() -> u64 {
+    30
+}
+
+fn default_hub_host_refresh_interval() -> u64 {
+    300
+}
+
 /// External `.pk3` map repository configuration.
 ///
 /// The master periodically scrapes each listed HTML autoindex, persists a
@@ -395,6 +474,23 @@ impl RefereeConfig {
                 }
                 if c.server_name.is_empty() {
                     anyhow::bail!("Client mode requires server_name in [client]");
+                }
+                Ok(())
+            }
+            RunMode::Hub => {
+                let h = self.hub.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Hub mode requires a [hub] config section with master_url and TLS paths"
+                    )
+                })?;
+                if h.master_url.is_empty() {
+                    anyhow::bail!("Hub mode requires master_url in [hub]");
+                }
+                if h.tls_cert.is_empty() || h.tls_key.is_empty() || h.ca_cert.is_empty() {
+                    anyhow::bail!("Hub mode requires tls_cert, tls_key, and ca_cert paths in [hub]");
+                }
+                if h.hub_name.is_empty() {
+                    anyhow::bail!("Hub mode requires hub_name in [hub]");
                 }
                 Ok(())
             }

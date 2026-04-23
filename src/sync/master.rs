@@ -27,6 +27,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::MasterSection;
 use crate::core::GameServer;
 use crate::storage::Storage;
+use crate::sync::ca;
 use crate::sync::protocol::*;
 use crate::sync::tls;
 
@@ -47,6 +48,21 @@ pub struct MasterState {
     /// Key: server_id → (build_hash, version, last_reported_at)
     pub client_versions:
         Arc<RwLock<HashMap<i64, ClientVersionInfo>>>,
+    /// Connected hubs by hub_id.
+    pub connected_hubs: Arc<RwLock<HashMap<i64, ConnectedHub>>>,
+    /// Pending hub actions queued by the master, polled by hubs.
+    /// Key: hub_id → Vec of (action_id, HubAction).
+    pub pending_hub_actions: Arc<RwLock<HashMap<i64, Vec<(String, HubAction)>>>>,
+    /// Pending hub action responses awaiting the hub's reply.
+    pub pending_hub_responses: Arc<RwLock<HashMap<String, oneshot::Sender<HubResponse>>>>,
+    /// Last-known hub version info, refreshed on every hub heartbeat.
+    pub hub_versions: Arc<RwLock<HashMap<i64, ClientVersionInfo>>>,
+    /// Path to the master's `r3.toml` (needed for cert minting on behalf of hubs).
+    pub config_path: String,
+    /// Master config snapshot (cloned at startup; used for sync URL/CA paths).
+    pub master_config: MasterSection,
+    /// Public IP of the master (used to build the master sync URL handed back to hubs).
+    pub public_ip: String,
 }
 
 /// Client-reported build/version info, refreshed on every heartbeat.
@@ -64,6 +80,13 @@ pub struct ConnectedClient {
     pub tx: tokio::sync::mpsc::Sender<SyncMessage>,
 }
 
+/// Represents a connected hub orchestrator.
+pub struct ConnectedHub {
+    pub hub_id: i64,
+    pub hub_name: String,
+    pub last_seen: chrono::DateTime<chrono::Utc>,
+}
+
 /// Build the internal API router.
 pub fn build_internal_router(state: MasterState) -> Router {
     Router::new()
@@ -78,6 +101,12 @@ pub fn build_internal_router(state: MasterState) -> Router {
         .route("/internal/ws", get(handle_ws))
         .route("/internal/requests/:server_id", get(handle_poll_requests))
         .route("/internal/responses", post(handle_client_response))
+        // Hub orchestration
+        .route("/internal/hub/register", post(handle_hub_register))
+        .route("/internal/hub/heartbeat", post(handle_hub_heartbeat))
+        .route("/internal/hub/actions/:hub_id", get(handle_poll_hub_actions))
+        .route("/internal/hub/responses", post(handle_hub_response))
+        .route("/internal/hub/mint-client-cert", post(handle_mint_client_cert))
         .with_state(state)
 }
 
@@ -146,6 +175,8 @@ async fn handle_register(
             update_interval: 3600,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            hub_id: None,
+            slug: None,
         };
         state.storage.save_server(&server).await.map_err(|e| {
             error!(error = %e, "Failed to save new server");
@@ -650,6 +681,12 @@ pub async fn start_master_api(
     pending_responses: Arc<RwLock<HashMap<String, oneshot::Sender<ClientResponse>>>>,
     pending_client_requests: Arc<RwLock<HashMap<i64, Vec<(String, ClientRequest)>>>>,
     client_versions: Arc<RwLock<HashMap<i64, ClientVersionInfo>>>,
+    connected_hubs: Arc<RwLock<HashMap<i64, ConnectedHub>>>,
+    pending_hub_actions: Arc<RwLock<HashMap<i64, Vec<(String, HubAction)>>>>,
+    pending_hub_responses: Arc<RwLock<HashMap<String, oneshot::Sender<HubResponse>>>>,
+    hub_versions: Arc<RwLock<HashMap<i64, ClientVersionInfo>>>,
+    config_path: String,
+    public_ip: String,
 ) -> anyhow::Result<()> {
     let tls_acceptor = tls::build_master_tls_acceptor(
         Path::new(&config.tls_cert),
@@ -664,6 +701,13 @@ pub async fn start_master_api(
         pending_responses,
         pending_client_requests,
         client_versions,
+        connected_hubs,
+        pending_hub_actions,
+        pending_hub_responses,
+        hub_versions,
+        config_path,
+        master_config: config.clone(),
+        public_ip,
     };
 
     let app = build_internal_router(state);
@@ -798,6 +842,335 @@ pub async fn send_request_to_server(
                 }
             }
             Err("Request timed out waiting for client response".to_string())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hub orchestration handlers
+// ---------------------------------------------------------------------------
+
+/// POST /internal/hub/register — hub announces itself after pairing.
+async fn handle_hub_register(
+    State(state): State<MasterState>,
+    Json(req): Json<HubRegisterRequest>,
+) -> Result<Json<HubRegisterResponse>, StatusCode> {
+    info!(name = %req.hub_name, address = %req.address, "Hub registering");
+
+    let existing = state
+        .storage
+        .get_hub_by_fingerprint(&req.cert_fingerprint)
+        .await
+        .map_err(|e| {
+            error!(error = %e, "Failed to look up hub by fingerprint");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let hub_id = if let Some(mut hub) = existing {
+        hub.name = req.hub_name.clone();
+        if !req.address.is_empty() && req.address != "0.0.0.0" {
+            hub.address = req.address;
+        }
+        hub.status = "online".to_string();
+        hub.last_seen = Some(chrono::Utc::now());
+        hub.hub_version = Some(req.version.clone());
+        hub.build_hash = Some(req.build_hash.clone());
+        state.storage.save_hub(&hub).await.map_err(|e| {
+            error!(error = %e, "Failed to update hub");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        hub.id
+    } else {
+        let hub = crate::core::Hub {
+            id: 0,
+            name: req.hub_name.clone(),
+            address: req.address,
+            status: "online".to_string(),
+            last_seen: Some(chrono::Utc::now()),
+            cert_fingerprint: Some(req.cert_fingerprint),
+            hub_version: Some(req.version.clone()),
+            build_hash: Some(req.build_hash.clone()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        state.storage.save_hub(&hub).await.map_err(|e| {
+            error!(error = %e, "Failed to save new hub");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    };
+
+    // Persist initial host info
+    let info_row = crate::core::HubHostInfo {
+        hub_id,
+        hostname: req.host_info.hostname,
+        os: req.host_info.os,
+        kernel: req.host_info.kernel,
+        cpu_model: req.host_info.cpu_model,
+        cpu_cores: req.host_info.cpu_cores,
+        total_ram_bytes: req.host_info.total_ram_bytes,
+        disk_total_bytes: req.host_info.disk_total_bytes,
+        public_ip: req.host_info.public_ip,
+        external_ip: req.host_info.external_ip,
+        urt_installs_json: req.host_info.urt_installs_json.unwrap_or_default(),
+        updated_at: chrono::Utc::now(),
+    };
+    if let Err(e) = state.storage.upsert_host_info(&info_row).await {
+        warn!(hub_id, error = %e, "Failed to persist hub host info on register");
+    }
+
+    state.connected_hubs.write().await.insert(
+        hub_id,
+        ConnectedHub {
+            hub_id,
+            hub_name: req.hub_name,
+            last_seen: chrono::Utc::now(),
+        },
+    );
+    state.hub_versions.write().await.insert(
+        hub_id,
+        ClientVersionInfo {
+            build_hash: Some(req.build_hash),
+            version: Some(req.version),
+            reported_at: chrono::Utc::now(),
+        },
+    );
+
+    info!(hub_id, "Hub registered");
+    Ok(Json(HubRegisterResponse { hub_id }))
+}
+
+/// POST /internal/hub/heartbeat — hub keepalive + telemetry + action poll.
+async fn handle_hub_heartbeat(
+    State(state): State<MasterState>,
+    Json(req): Json<HubHeartbeatRequest>,
+) -> Result<Json<HubHeartbeatResponse>, StatusCode> {
+    let hub = match state.storage.get_hub(req.hub_id).await {
+        Ok(h) => h,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+
+    // Update last_seen + version
+    let mut updated = hub;
+    updated.status = "online".to_string();
+    updated.last_seen = Some(chrono::Utc::now());
+    updated.hub_version = Some(req.version.clone());
+    updated.build_hash = Some(req.build_hash.clone());
+    let _ = state.storage.save_hub(&updated).await;
+
+    state.hub_versions.write().await.insert(
+        req.hub_id,
+        ClientVersionInfo {
+            build_hash: Some(req.build_hash.clone()),
+            version: Some(req.version.clone()),
+            reported_at: chrono::Utc::now(),
+        },
+    );
+    state.connected_hubs.write().await.insert(
+        req.hub_id,
+        ConnectedHub {
+            hub_id: req.hub_id,
+            hub_name: updated.name.clone(),
+            last_seen: chrono::Utc::now(),
+        },
+    );
+
+    if let Some(info) = req.host_info {
+        let row = crate::core::HubHostInfo {
+            hub_id: req.hub_id,
+            hostname: info.hostname,
+            os: info.os,
+            kernel: info.kernel,
+            cpu_model: info.cpu_model,
+            cpu_cores: info.cpu_cores,
+            total_ram_bytes: info.total_ram_bytes,
+            disk_total_bytes: info.disk_total_bytes,
+            public_ip: info.public_ip,
+            external_ip: info.external_ip,
+            urt_installs_json: info.urt_installs_json.unwrap_or_default(),
+            updated_at: chrono::Utc::now(),
+        };
+        if let Err(e) = state.storage.upsert_host_info(&row).await {
+            warn!(hub_id = req.hub_id, error = %e, "Failed to upsert hub host info");
+        }
+    }
+
+    let metric = crate::core::HubMetricSample {
+        hub_id: req.hub_id,
+        ts: chrono::Utc::now(),
+        cpu_pct: req.metrics.cpu_pct,
+        mem_pct: req.metrics.mem_pct,
+        disk_pct: req.metrics.disk_pct,
+        load1: req.metrics.load1,
+        load5: req.metrics.load5,
+        load15: req.metrics.load15,
+        uptime_s: req.metrics.uptime_s,
+    };
+    if let Err(e) = state.storage.record_host_metric(&metric).await {
+        debug!(hub_id = req.hub_id, error = %e, "Failed to record hub metric (non-fatal)");
+    }
+
+    // Drain any pending hub actions
+    let pending_actions = {
+        let mut pending = state.pending_hub_actions.write().await;
+        pending
+            .remove(&req.hub_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(action_id, action)| PendingHubActionItem { action_id, action })
+            .collect::<Vec<_>>()
+    };
+
+    Ok(Json(HubHeartbeatResponse {
+        ok: true,
+        pending_actions,
+    }))
+}
+
+/// GET /internal/hub/actions/:hub_id — alternate poll endpoint (non-heartbeat).
+async fn handle_poll_hub_actions(
+    State(state): State<MasterState>,
+    axum::extract::Path(hub_id): axum::extract::Path<i64>,
+) -> Json<Vec<PendingHubActionItem>> {
+    let mut pending = state.pending_hub_actions.write().await;
+    let items = pending.remove(&hub_id).unwrap_or_default();
+    let out = items
+        .into_iter()
+        .map(|(action_id, action)| PendingHubActionItem { action_id, action })
+        .collect();
+    Json(out)
+}
+
+/// POST /internal/hub/responses — hub returns the result of a queued action.
+async fn handle_hub_response(
+    State(state): State<MasterState>,
+    Json(body): Json<HubResponse>,
+) -> StatusCode {
+    let mut pending = state.pending_hub_responses.write().await;
+    if let Some(tx) = pending.remove(&body.action_id) {
+        let _ = tx.send(body);
+        StatusCode::OK
+    } else {
+        warn!(action_id = %body.action_id, "Hub response for unknown or expired action");
+        StatusCode::NOT_FOUND
+    }
+}
+
+/// POST /internal/hub/mint-client-cert — hub asks the master to mint a fresh
+/// client certificate + server_id for a sub-client it is provisioning.
+async fn handle_mint_client_cert(
+    State(state): State<MasterState>,
+    Json(req): Json<MintClientCertRequest>,
+) -> Result<Json<MintClientCertResponse>, (StatusCode, String)> {
+    // Sanity check: hub must be known.
+    let _hub = state
+        .storage
+        .get_hub(req.hub_id)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, "Unknown hub_id".to_string()))?;
+
+    let ca_cert_pem = std::fs::read_to_string(&state.master_config.ca_cert)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read CA cert: {}", e)))?;
+    let ca_key_pem = std::fs::read_to_string(&state.master_config.ca_key)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read CA key: {}", e)))?;
+
+    let cert_cn = format!("hub:{}:{}", req.hub_id, req.slug);
+    let client_certs = ca::generate_client_cert(&ca_cert_pem, &ca_key_pem, &cert_cn, None)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("mint cert: {}", e)))?;
+
+    let fingerprint = {
+        use sha2::{Digest, Sha256};
+        let mut reader = std::io::BufReader::new(client_certs.cert_pem.as_bytes());
+        let der_certs: Vec<_> = rustls_pemfile::certs(&mut reader)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_default();
+        if let Some(cert_der) = der_certs.first() {
+            let digest = Sha256::digest(cert_der.as_ref());
+            digest
+                .iter()
+                .enumerate()
+                .map(|(i, b)| if i > 0 { format!(":{:02X}", b) } else { format!("{:02X}", b) })
+                .collect::<String>()
+        } else {
+            String::new()
+        }
+    };
+
+    let server = GameServer {
+        id: 0,
+        name: req.server_name,
+        address: req.address,
+        port: req.port,
+        status: "offline".to_string(),
+        current_map: None,
+        player_count: 0,
+        max_clients: 0,
+        last_seen: None,
+        config_json: None,
+        config_version: 1,
+        cert_fingerprint: Some(fingerprint),
+        update_channel: "beta".to_string(),
+        update_interval: 3600,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        hub_id: Some(req.hub_id),
+        slug: Some(req.slug),
+    };
+    let server_id = state
+        .storage
+        .save_server(&server)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("save server: {}", e)))?;
+
+    let master_sync_url = format!("https://{}:{}", state.public_ip, state.master_config.port);
+
+    Ok(Json(MintClientCertResponse {
+        server_id,
+        ca_cert: ca_cert_pem,
+        client_cert: client_certs.cert_pem,
+        client_key: client_certs.key_pem,
+        master_sync_url,
+    }))
+}
+
+/// Queue a `HubAction` for a hub and await its response.
+pub async fn send_action_to_hub(
+    pending_hub_responses: &Arc<RwLock<HashMap<String, oneshot::Sender<HubResponse>>>>,
+    pending_hub_actions: &Arc<RwLock<HashMap<i64, Vec<(String, HubAction)>>>>,
+    hub_id: i64,
+    action: HubAction,
+    timeout: std::time::Duration,
+) -> Result<HubResponse, String> {
+    let action_id = uuid::Uuid::new_v4().to_string();
+    let (resp_tx, resp_rx) = oneshot::channel();
+
+    pending_hub_responses
+        .write()
+        .await
+        .insert(action_id.clone(), resp_tx);
+
+    {
+        let mut pending = pending_hub_actions.write().await;
+        pending
+            .entry(hub_id)
+            .or_insert_with(Vec::new)
+            .push((action_id.clone(), action));
+    }
+
+    match tokio::time::timeout(timeout, resp_rx).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => {
+            pending_hub_responses.write().await.remove(&action_id);
+            Err("Hub disconnected before responding".to_string())
+        }
+        Err(_) => {
+            pending_hub_responses.write().await.remove(&action_id);
+            {
+                let mut pending = pending_hub_actions.write().await;
+                if let Some(reqs) = pending.get_mut(&hub_id) {
+                    reqs.retain(|(id, _)| id != &action_id);
+                }
+            }
+            Err("Hub action timed out".to_string())
         }
     }
 }
