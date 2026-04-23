@@ -1114,6 +1114,22 @@ fi
 
 # ---- systemd service ----
 info "Creating systemd service (${SERVICE_NAME})..."
+
+# Hub mode needs to shell out to `sudo -n systemctl ...` and `sudo -n tee`
+# to manage r3-client@ units. NoNewPrivileges=true blocks setuid, so sudo
+# will fail with "sudo is running in a container / disable the flag" even
+# when the sudoers drop-in is correct. Relax that one bit for hub mode,
+# and grant write access to the systemd unit tree so drop-ins can be laid
+# down (ProtectSystem=strict otherwise makes /etc read-only in the mount
+# namespace regardless of sudo).
+if [ "$RUN_MODE" = "hub" ]; then
+    NO_NEW_PRIVS="no"
+    EXTRA_RW_PATHS=" /etc/systemd/system"
+else
+    NO_NEW_PRIVS="yes"
+    EXTRA_RW_PATHS=""
+fi
+
 cat > /etc/systemd/system/${SERVICE_NAME}.service << SVCEOF
 [Unit]
 Description=Rusty Rules Referee (${SERVICE_NAME}) — Urban Terror Admin Bot
@@ -1130,13 +1146,13 @@ RestartSec=3
 Environment=RUST_LOG=info
 
 # Hardening
-NoNewPrivileges=true
+NoNewPrivileges=${NO_NEW_PRIVS}
 ProtectSystem=strict
 ProtectHome=read-only
 # The bot needs write access to its own install dir, and to the game-server
 # user's home so it can import .pk3 files into q3ut4/, edit server.cfg /
 # mapcycle.txt, etc. ReadWritePaths= implicitly punches through ProtectHome=.
-ReadWritePaths=${INSTALL_DIR} ${HOME_DIR}
+ReadWritePaths=${INSTALL_DIR} ${HOME_DIR}${EXTRA_RW_PATHS}
 PrivateTmp=true
 
 [Install]
