@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
@@ -79,27 +80,56 @@ async fn systemctl_active_state(unit: &str) -> String {
     }
 }
 
-/// Run `systemctl <action> <unit>`. Used by start/stop/restart actions.
-pub async fn systemctl_action(unit: &str, action: &str) -> anyhow::Result<()> {
-    let status = Command::new("systemctl")
-        .args([action, unit])
-        .status()
-        .await?;
-    if !status.success() {
-        anyhow::bail!("systemctl {} {} failed", action, unit);
+/// Run `sudo -n <args...>` and return stdout on success. The hub process runs
+/// as an unprivileged user; the installer lays down a narrow sudoers drop-in
+/// allowing only systemctl + drop-in writes for `r3-client@*.service`.
+async fn run_sudo(args: &[&str]) -> anyhow::Result<String> {
+    let mut full = vec!["-n"];
+    full.extend_from_slice(args);
+    let out = Command::new("sudo").args(&full).output().await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "sudo {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Write `content` to `path` via `sudo -n tee` (narrow NOPASSWD rule).
+async fn sudo_tee_write(path: &Path, content: &str) -> anyhow::Result<()> {
+    let path_str = path.to_string_lossy().to_string();
+    let mut child = Command::new("sudo")
+        .args(["-n", "tee", &path_str])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(content.as_bytes()).await?;
+        let _ = stdin.shutdown().await;
+    }
+    let out = child.wait_with_output().await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "sudo tee {} failed: {}. Is the R3 sudoers drop-in installed?",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Run `sudo -n <action> <unit>`. Used by start/stop/restart actions.
+pub async fn systemctl_action(unit: &str, action: &str) -> anyhow::Result<()> {
+    run_sudo(&["systemctl", action, unit]).await?;
     Ok(())
 }
 
 /// Reload systemd unit files (after writing a new drop-in / instance config).
 pub async fn systemctl_daemon_reload() -> anyhow::Result<()> {
-    let status = Command::new("systemctl")
-        .args(["daemon-reload"])
-        .status()
-        .await?;
-    if !status.success() {
-        anyhow::bail!("systemctl daemon-reload failed");
-    }
+    run_sudo(&["systemctl", "daemon-reload"]).await?;
     Ok(())
 }
 
@@ -129,25 +159,49 @@ pub async fn install_client(
     }
 
     // Write systemd drop-in to point the template unit at this directory.
+    // The hub runs as an unprivileged user, so the drop-in directory and
+    // file are created/written via `sudo -n` against the narrow NOPASSWD
+    // sudoers rule installed by install-r3.sh (hub mode).
     let unit = unit_name(hub_cfg, slug);
     let dropin_dir = PathBuf::from(format!("/etc/systemd/system/{}.d", unit));
-    if let Err(e) = std::fs::create_dir_all(&dropin_dir) {
-        warn!(error = %e, "Could not create systemd drop-in dir (non-fatal in dev)");
+    if let Err(e) = run_sudo(&[
+        "install",
+        "-d",
+        "-m",
+        "0755",
+        &dropin_dir.to_string_lossy(),
+    ])
+    .await
+    {
+        warn!(error = %e, "Could not create systemd drop-in dir via sudo");
     }
-    let conf = format!(
-        "[Service]\nWorkingDirectory={}\nEnvironment=R3_CONF={}\n",
-        dir.canonicalize().unwrap_or(dir.clone()).display(),
-        dir.join("r3.toml").display(),
-    );
-    if let Err(e) = std::fs::write(dropin_dir.join("install.conf"), conf) {
-        warn!(error = %e, "Could not write systemd drop-in (non-fatal in dev)");
+    let conf = {
+        // Run the managed client as the hub's user so it can write r3.db,
+        // logs, and per-instance state files under its install dir.
+        let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+        let abs_dir = dir.canonicalize().unwrap_or(dir.clone());
+        format!(
+            "[Service]\n\
+             User={user}\n\
+             WorkingDirectory={wd}\n\
+             ReadWritePaths={wd}\n\
+             Environment=R3_CONF={conf}\n",
+            user = user,
+            wd = abs_dir.display(),
+            conf = dir.join("r3.toml").display(),
+        )
+    };
+    let dropin_file = dropin_dir.join("install.conf");
+    if let Err(e) = sudo_tee_write(&dropin_file, &conf).await {
+        warn!(error = %e, "Could not write systemd drop-in via sudo");
     }
 
-    let _ = systemctl_daemon_reload().await;
-    let _ = Command::new("systemctl")
-        .args(["enable", "--now", &unit])
-        .status()
-        .await;
+    if let Err(e) = systemctl_daemon_reload().await {
+        warn!(error = %e, "systemctl daemon-reload failed");
+    }
+    if let Err(e) = run_sudo(&["systemctl", "enable", "--now", &unit]).await {
+        warn!(error = %e, %unit, "systemctl enable --now failed");
+    }
 
     info!(%slug, "Client installed and enabled");
     Ok(())
@@ -160,13 +214,14 @@ pub async fn uninstall_client(
     remove_data: bool,
 ) -> anyhow::Result<()> {
     let unit = unit_name(hub_cfg, slug);
-    let _ = Command::new("systemctl")
-        .args(["disable", "--now", &unit])
-        .status()
-        .await;
+    if let Err(e) = run_sudo(&["systemctl", "disable", "--now", &unit]).await {
+        warn!(error = %e, %unit, "systemctl disable --now failed");
+    }
 
     let dropin_dir = PathBuf::from(format!("/etc/systemd/system/{}.d", unit));
-    let _ = std::fs::remove_dir_all(&dropin_dir);
+    if let Err(e) = run_sudo(&["rm", "-rf", &dropin_dir.to_string_lossy()]).await {
+        warn!(error = %e, "Failed to remove drop-in dir via sudo");
+    }
     let _ = systemctl_daemon_reload().await;
 
     if remove_data {
