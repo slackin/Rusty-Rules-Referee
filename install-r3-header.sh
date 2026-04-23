@@ -59,6 +59,7 @@ if [ -z "$REAL_USER" ] || [ "$REAL_USER" = "root" ]; then
 fi
 
 HOME_DIR=$(eval echo "~$REAL_USER")
+REAL_GROUP=$(id -gn "$REAL_USER" 2>/dev/null || echo "$REAL_USER")
 
 # ---- Mode Selection ----
 section "Installation Mode"
@@ -126,7 +127,7 @@ download_game_server() {
         }
     rm -f /tmp/urt43_ded.tar.gz
 
-    chown -R "$REAL_USER:$REAL_USER" "$URT_DIR"
+    chown -R "$REAL_USER:$REAL_GROUP" "$URT_DIR"
     info "Game server installed at $URT_DIR"
 
     # Auto-detect game log from the new install
@@ -573,7 +574,7 @@ esac
 
 # ---- Permissions ----
 info "Setting permissions..."
-chown -R "$REAL_USER:$REAL_USER" "$INSTALL_DIR"
+chown -R "$REAL_USER:$REAL_GROUP" "$INSTALL_DIR"
 chmod 700 "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/rusty-rules-referee"
 chmod 600 "$INSTALL_DIR/r3.toml"
