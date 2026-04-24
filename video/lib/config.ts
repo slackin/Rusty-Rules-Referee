@@ -19,7 +19,7 @@ export const paths = {
 };
 
 export const env = {
-  url: process.env.R3_URL ?? 'http://127.0.0.1:8080',
+  url: process.env.R3_URL ?? 'http://127.0.0.1:2727',
   adminUser: process.env.R3_ADMIN_USER ?? 'admin',
   adminPass: process.env.R3_ADMIN_PASS ?? 'demo-password-r3',
   binary: process.env.R3_BINARY ?? path.resolve(root, '..', 'target', 'release', 'rusty-rules-referee.exe'),

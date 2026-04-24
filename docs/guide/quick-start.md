@@ -119,10 +119,10 @@ Add a `[web]` section to your config:
 [web]
 enabled = true
 bind_address = "0.0.0.0"
-port = 8080
+port = 2727
 ```
 
-The dashboard will be available at `http://your-server-ip:8080`. Default login: `admin` / `changeme`.
+The dashboard will be available at `http://your-server-ip:2727`. Default login: `admin` / `changeme`.
 
 ::: warning
 Change the default password immediately after first login.

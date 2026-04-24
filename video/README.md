@@ -116,7 +116,7 @@ npm run docs:build
   contain MySQL-only statements. Rerun seed with `DEBUG=1` and inspect. The
   seeder tolerates per-file errors but requires at least `clients`.
 - **Playwright timeout on `/api/v1/server/status`** — the R3 binary isn't
-  binding to `127.0.0.1:8080`. Check `video/out/referee-demo.log`.
+  binding to `127.0.0.1:2727`. Check `video/out/referee-demo.log`.
 - **msedge-tts websocket error** — Microsoft's TTS endpoint has rate limits.
   Wait ~30s and retry; cached MP3s in `out/audio/` are skipped automatically.
 - **ffmpeg drawtext error** — install a system font, or remove the watermark

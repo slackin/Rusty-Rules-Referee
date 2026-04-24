@@ -38,7 +38,7 @@ delay = 0.33
 [web]
 enabled = false
 bind_address = "0.0.0.0"
-port = 8080
+port = 2727
 jwt_secret = ""
 
 [update]

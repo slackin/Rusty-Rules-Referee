@@ -1115,7 +1115,7 @@
 				</div>
 				<div>
 					<label for="web_port" class="mb-1.5 block text-xs font-medium text-surface-400">Port</label>
-					<input id="web_port" type="number" class="input font-mono" bind:value={web.port} placeholder="8080" />
+					<input id="web_port" type="number" class="input font-mono" bind:value={web.port} placeholder="2727" />
 					<p class="mt-1 text-xs text-amber-500/80"><Info class="inline h-3 w-3 -mt-0.5" /> Requires restart to take effect</p>
 				</div>
 				<div>

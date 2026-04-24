@@ -10,11 +10,11 @@ Add a `[web]` section to your `referee.toml`:
 [web]
 enabled = true
 bind_address = "0.0.0.0"
-port = 8080
+port = 2727
 # jwt_secret = "your-secret-key"
 ```
 
-The dashboard will be available at `http://your-server-ip:8080`.
+The dashboard will be available at `http://your-server-ip:2727`.
 
 ## Default Credentials
 

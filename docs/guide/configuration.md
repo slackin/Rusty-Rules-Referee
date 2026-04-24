@@ -86,7 +86,7 @@ Web dashboard configuration. Omit this section entirely to disable the dashboard
 [web]
 enabled = true
 bind_address = "0.0.0.0"
-port = 8080
+port = 2727
 # jwt_secret = "your-secret-key"
 ```
 
@@ -94,7 +94,7 @@ port = 8080
 |---------|------|----------|---------|-------------|
 | `enabled` | bool | No | `false` | Enable/disable the web dashboard |
 | `bind_address` | string | No | `"0.0.0.0"` | Address to bind the web server to |
-| `port` | integer | No | `8080` | Web server port |
+| `port` | integer | No | `2727` | Web server port |
 | `jwt_secret` | string | No | auto-generated | Secret key for JWT token signing |
 
 ::: warning
@@ -214,7 +214,7 @@ delay = 0.33
 [web]
 enabled = true
 bind_address = "0.0.0.0"
-port = 8080
+port = 2727
 
 [[plugins]]
 name = "admin"

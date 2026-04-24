@@ -57,7 +57,7 @@ cargo build --release
 # Backend with debug symbols
 cargo build
 
-# Frontend dev server with hot reload (proxies API to localhost:8080)
+# Frontend dev server with hot reload (proxies API to localhost:2727)
 cd ui
 npm install
 npm run dev

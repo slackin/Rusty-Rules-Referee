@@ -22,7 +22,7 @@ delay = 0.33                # Seconds between log reads
 [web]
 enabled = true              # Set to true to enable the web admin dashboard
 bind_address = "0.0.0.0"   # Listen address (use 127.0.0.1 to restrict to localhost)
-port = 8080                 # Web UI port
+port = 2727                 # Web UI port
 # jwt_secret = "your-secret" # Optional: auto-generated if not set
 
 # Default login: admin / changeme (change after first login!)

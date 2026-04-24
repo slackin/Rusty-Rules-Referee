@@ -578,7 +578,7 @@ function writeDemoConfigs() {
   const out = outPath(paths.out);
   const certsDir = outPath(path.join(paths.out, 'certs'));
 
-  // Master config (listens on web 8080 + sync 9443).
+  // Master config (listens on web 2727 + sync 9443).
   const masterToml = `# Auto-generated - master mode demo config
 [referee]
 bot_name = "R3 Master"
@@ -597,7 +597,7 @@ delay = 1.0
 [web]
 enabled = true
 bind_address = "127.0.0.1"
-port = 8080
+port = 2727
 jwt_secret = "demo-jwt-secret-do-not-use-in-production-placeholder-32chars!!"
 
 [update]
@@ -663,7 +663,7 @@ delay = 1.0
 [web]
 enabled = true
 bind_address = "127.0.0.1"
-port = 8080
+port = 2727
 jwt_secret = "demo-jwt-secret-do-not-use-in-production-placeholder-32chars!!"
 
 [update]

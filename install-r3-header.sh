@@ -454,7 +454,7 @@ GAME_LOG=""
 SERVER_IP="$DEFAULT_IP"
 SERVER_PORT=27960
 RCON_PASS=""
-WEB_PORT=8080
+WEB_PORT=2727
 MASTER_SYNC_PORT=9443
 MASTER_URL=""
 QUICK_CONNECT_KEY=""
@@ -464,17 +464,17 @@ case "$RUN_MODE" in
         download_game_server
         collect_game_config
 
-        ask "Web UI port [8080]: "
+        ask "Web UI port [2727]: "
         read -r WEB_PORT
-        WEB_PORT="${WEB_PORT:-8080}"
+        WEB_PORT="${WEB_PORT:-2727}"
         ;;
 
     master)
         section "Master Configuration"
 
-        ask "Web UI port [8080]: "
+        ask "Web UI port [2727]: "
         read -r WEB_PORT
-        WEB_PORT="${WEB_PORT:-8080}"
+        WEB_PORT="${WEB_PORT:-2727}"
 
         ask "Sync API port [9443]: "
         read -r MASTER_SYNC_PORT
@@ -495,9 +495,9 @@ case "$RUN_MODE" in
             warn "Master address is required"
         done
 
-        ask "Master web port [8080]: "
+        ask "Master web port [2727]: "
         read -r MASTER_WEB_PORT
-        MASTER_WEB_PORT="${MASTER_WEB_PORT:-8080}"
+        MASTER_WEB_PORT="${MASTER_WEB_PORT:-2727}"
 
         while true; do
             ask "Quick-connect key (from master web UI): "
@@ -552,9 +552,9 @@ case "$RUN_MODE" in
             warn "Master address is required"
         done
 
-        ask "Master web port [8080]: "
+        ask "Master web port [2727]: "
         read -r MASTER_WEB_PORT
-        MASTER_WEB_PORT="${MASTER_WEB_PORT:-8080}"
+        MASTER_WEB_PORT="${MASTER_WEB_PORT:-2727}"
 
         while true; do
             ask "Quick-connect key (from master web UI): "
@@ -832,7 +832,7 @@ delay = 0.33
 [web]
 enabled = false
 bind_address = "0.0.0.0"
-port = 8080
+port = 2727
 jwt_secret = "${JWT_SECRET}"
 
 [update]
@@ -953,7 +953,7 @@ delay = 1.0
 [web]
 enabled = false
 bind_address = "0.0.0.0"
-port = 8080
+port = 2727
 jwt_secret = "${JWT_SECRET}"
 
 [update]

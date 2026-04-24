@@ -166,7 +166,7 @@ fn default_bind_address() -> String {
 }
 
 fn default_web_port() -> u16 {
-    8080
+    2727
 }
 
 /// Auto-update configuration.
