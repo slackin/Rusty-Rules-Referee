@@ -688,9 +688,9 @@ pub async fn execute(
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 match crate::update::download_and_verify(&binary_url, &binary_sha).await {
                     Ok(temp_path) => match crate::update::apply_update(&temp_path) {
-                        Ok(_) => {
+                        Ok(exe_path) => {
                             tracing::info!("Hub force-update applied, restarting...");
-                            crate::update::restart();
+                            crate::update::restart(Some(exe_path));
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Hub force-update: apply_update failed");

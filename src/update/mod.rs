@@ -289,8 +289,31 @@ pub fn apply_update(temp_path: &PathBuf) -> anyhow::Result<PathBuf> {
 /// Restart the current process by re-executing self with the same arguments.
 /// On Unix this uses exec() to replace the process in-place (same PID),
 /// so screen/systemd sessions survive.
-pub fn restart() -> ! {
-    let exe = std::env::current_exe().expect("cannot determine current exe path");
+///
+/// `exe_override` may be supplied immediately after a successful
+/// `apply_update` to avoid relying on `std::env::current_exe()` — on Linux
+/// `/proc/self/exe` continues to point at the original (now-renamed and
+/// likely deleted) inode the process was exec'd from, so the post-update
+/// path returned by `apply_update` must be passed in explicitly. When
+/// `None`, the bare `current_exe()` value is used (correct for normal
+/// non-update restarts).
+pub fn restart(exe_override: Option<PathBuf>) -> ! {
+    let resolved = exe_override.or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .map(|p| {
+                // /proc/self/exe sometimes returns a path with a trailing
+                // " (deleted)" marker when the original binary file has been
+                // unlinked. Strip it so we hand exec() something usable.
+                let s = p.to_string_lossy().to_string();
+                if let Some(stripped) = s.strip_suffix(" (deleted)") {
+                    PathBuf::from(stripped)
+                } else {
+                    p
+                }
+            })
+    });
+    let exe = resolved.expect("cannot determine current exe path");
     let args: Vec<String> = std::env::args().collect();
 
     info!(
@@ -378,9 +401,9 @@ pub async fn startup_update_check(config: &UpdateSection, current_build_hash: &s
     };
 
     match apply_update(&temp_path) {
-        Ok(_) => {
+        Ok(exe_path) => {
             info!("Startup update applied, restarting into new binary...");
-            restart();
+            restart(Some(exe_path));
         }
         Err(e) => {
             warn!(error = %e, "Startup update: apply failed — continuing with current build");
@@ -523,14 +546,14 @@ pub async fn run_update_loop_full<F>(
                     Ok(temp_path) => {
                         // Apply the update
                         match apply_update(&temp_path) {
-                            Ok(_exe_path) => {
+                            Ok(exe_path) => {
                                 if let Some(hook) = pre_restart.as_ref() {
                                     info!("Running pre-restart hook before exec");
                                     hook();
                                 }
                                 if config.auto_restart {
                                     info!("Update applied, restarting...");
-                                    restart();
+                                    restart(Some(exe_path));
                                     // restart() does not return
                                 } else {
                                     info!(

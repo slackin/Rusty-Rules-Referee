@@ -207,6 +207,9 @@ pub async fn run_hub(config: RefereeConfig, config_path: String) -> anyhow::Resu
                                     "Adopting release channel from master"
                                 );
                                 *update_channel.write().await = remote_channel.clone();
+                                if let Err(e) = persist_hub_update_field(&config_path, "channel", toml::Value::String(remote_channel.clone())) {
+                                    warn!(error = %e, "Failed to persist hub update.channel");
+                                }
                             }
                         }
                         // Adopt any update-interval change pushed by the master.
@@ -219,6 +222,9 @@ pub async fn run_hub(config: RefereeConfig, config_path: String) -> anyhow::Resu
                                     "Adopting update check interval from master"
                                 );
                                 *update_interval.write().await = remote_interval;
+                                if let Err(e) = persist_hub_update_field(&config_path, "check_interval", toml::Value::Integer(remote_interval as i64)) {
+                                    warn!(error = %e, "Failed to persist hub update.check_interval");
+                                }
                             }
                         }
                         // Adopt any auto-update enable toggle pushed by the master.
@@ -404,10 +410,12 @@ fn restart_managed_sub_clients(clients_root: &str) {
     }
 }
 
-/// Rewrite the `[update].enabled` value in the hub's local TOML config.
-/// Called when the master toggles auto-update via heartbeat so the new
-/// state survives a restart.
-fn persist_hub_update_enabled(config_path: &str, enabled: bool) -> anyhow::Result<()> {
+/// Rewrite a single key in `[update]` of the hub's local TOML config.
+/// Used to persist master-pushed values (channel/interval/enabled) so that
+/// they survive process restarts and the startup update check uses the
+/// authoritative channel rather than whatever was last written by the
+/// installer.
+fn persist_hub_update_field(config_path: &str, key: &str, value: toml::Value) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(config_path)?;
     let mut doc: toml::Value = toml::from_str(&content)?;
 
@@ -418,11 +426,18 @@ fn persist_hub_update_enabled(config_path: &str, enabled: bool) -> anyhow::Resul
         .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
 
     if let Some(table) = update_tbl.as_table_mut() {
-        table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+        table.insert(key.to_string(), value);
     }
 
     let output = toml::to_string_pretty(&doc)?;
     std::fs::write(config_path, &output)?;
-    info!(path = config_path, enabled, "Persisted hub update_enabled");
+    info!(path = config_path, key, "Persisted hub update field");
     Ok(())
+}
+
+/// Rewrite the `[update].enabled` value in the hub's local TOML config.
+/// Called when the master toggles auto-update via heartbeat so the new
+/// state survives a restart.
+fn persist_hub_update_enabled(config_path: &str, enabled: bool) -> anyhow::Result<()> {
+    persist_hub_update_field(config_path, "enabled", toml::Value::Boolean(enabled))
 }

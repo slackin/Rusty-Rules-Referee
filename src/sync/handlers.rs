@@ -1119,9 +1119,9 @@ pub async fn handle_force_update(update_url: String, channel: String) -> ClientR
 
         match crate::update::download_and_verify(&binary_url, &binary_sha).await {
             Ok(temp_path) => match crate::update::apply_update(&temp_path) {
-                Ok(_) => {
+                Ok(exe_path) => {
                     info!("Force-update applied, restarting...");
-                    crate::update::restart();
+                    crate::update::restart(Some(exe_path));
                 }
                 Err(e) => {
                     error!(error = %e, "Force-update: apply_update failed");
@@ -1152,7 +1152,7 @@ pub async fn handle_restart() -> ClientResponse {
         // Give the caller a moment to receive the Restarting response
         tokio::time::sleep(Duration::from_secs(2)).await;
         info!("Restarting client process now");
-        crate::update::restart();
+        crate::update::restart(None);
     });
     ClientResponse::Restarting { current_build }
 }
