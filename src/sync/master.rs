@@ -762,8 +762,13 @@ pub async fn start_master_api(
                     let tower_service = app;
 
                     let hyper_service = hyper::service::service_fn(
-                        move |request: hyper::Request<hyper::body::Incoming>| {
+                        move |mut request: hyper::Request<hyper::body::Incoming>| {
                             let svc = tower_service.clone();
+                            // Expose the TLS peer address to handlers via
+                            // request extensions so endpoints like
+                            // mint-client-cert can use the hub's remote IP
+                            // when no other address is known.
+                            request.extensions_mut().insert(peer_addr);
                             async move {
                                 use tower::ServiceExt;
                                 svc.oneshot(request.map(axum::body::Body::new)).await
@@ -1124,6 +1129,7 @@ async fn handle_hub_progress(
 /// client certificate + server_id for a sub-client it is provisioning.
 async fn handle_mint_client_cert(
     State(state): State<MasterState>,
+    axum::extract::Extension(peer_addr): axum::extract::Extension<SocketAddr>,
     Json(req): Json<MintClientCertRequest>,
 ) -> Result<Json<MintClientCertResponse>, (StatusCode, String)> {
     // Sanity check: hub must be known.
@@ -1163,15 +1169,33 @@ async fn handle_mint_client_cert(
     // If the hub didn't supply a public address for this game server
     // (admin left it blank in the wizard → "auto-detect"), fall back to
     // the hub's own address so the UI doesn't immediately flag the new
-    // server as unconfigured.
-    let effective_address = if req.address.is_empty() || req.address == "0.0.0.0" {
-        if hub.address.is_empty() {
-            warn!(hub_id = req.hub_id, slug = %req.slug,
-                "mint-client-cert: no address supplied and hub has no known address");
+    // server as unconfigured. If the hub was also registered without an
+    // address, use the TLS peer IP the hub is connecting from — that's
+    // literally the public IP of the machine running the game server in
+    // the vast majority of deployments.
+    let peer_ip_str = match peer_addr.ip() {
+        std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_private() && !v4.is_unspecified() => {
+            Some(v4.to_string())
         }
-        hub.address.clone()
-    } else {
+        std::net::IpAddr::V6(v6) if !v6.is_loopback() && !v6.is_unspecified() => {
+            Some(v6.to_string())
+        }
+        _ => None,
+    };
+    let effective_address = if !req.address.is_empty() && req.address != "0.0.0.0" {
         req.address
+    } else if !hub.address.is_empty() && hub.address != "0.0.0.0" {
+        info!(hub_id = req.hub_id, slug = %req.slug, addr = %hub.address,
+            "mint-client-cert: using hub's registered address");
+        hub.address.clone()
+    } else if let Some(ref ip) = peer_ip_str {
+        info!(hub_id = req.hub_id, slug = %req.slug, addr = %ip,
+            "mint-client-cert: using TLS peer IP as fallback public address");
+        ip.clone()
+    } else {
+        warn!(hub_id = req.hub_id, slug = %req.slug, peer = %peer_addr,
+            "mint-client-cert: no address supplied, hub has no known address, and peer IP is not public");
+        String::new()
     };
 
     // If the hub supplied RCON + log/cfg paths from the fresh install,
