@@ -1779,7 +1779,7 @@ pub async fn handle_save_map_config(
     config: serde_json::Value,
 ) -> ClientResponse {
     let Some(storage) = storage else { return unavailable("SaveMapConfig"); };
-    let mc: MapConfig = match serde_json::from_value(config) {
+    let mut mc: MapConfig = match serde_json::from_value(config) {
         Ok(m) => m,
         Err(e) => {
             return ClientResponse::Error {
@@ -1787,6 +1787,23 @@ pub async fn handle_save_map_config(
             };
         }
     };
+    // Upsert by map_name when the caller didn't supply a row id. The
+    // table has UNIQUE(map_name) (or UNIQUE(server_id, map_name)) so a
+    // bare INSERT would fail with a constraint violation if a row was
+    // auto-created earlier (e.g. by the mapconfig plugin on map load).
+    if mc.id == 0 {
+        if let Ok(Some(existing)) = storage.get_map_config(&mc.map_name).await {
+            mc.id = existing.id;
+            // Preserve seeded metadata the lightweight create dialog
+            // doesn't know about, when the caller left them blank.
+            if mc.supported_gametypes.is_empty() {
+                mc.supported_gametypes = existing.supported_gametypes;
+            }
+            if mc.default_gametype.is_none() {
+                mc.default_gametype = existing.default_gametype;
+            }
+        }
+    }
     match storage.save_map_config(&mc).await {
         Ok(id) => ClientResponse::Ok {
             message: format!("Saved map_config #{} ({})", id, mc.map_name),

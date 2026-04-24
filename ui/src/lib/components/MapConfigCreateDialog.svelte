@@ -78,6 +78,9 @@
 		const cfg = {
 			id: 0,
 			map_name: mapName.trim(),
+			// `gametype` is the legacy single-value fallback; `default_gametype`
+			// is the modern field rendered by the Map Config editor. Set both
+			// so whichever read path the UI uses sees the admin's pick.
 			gametype,
 			capturelimit: null,
 			timelimit: timelimit ? Number(timelimit) : null,
@@ -98,7 +101,7 @@
 			bot: 0,
 			custom_commands: '',
 			supported_gametypes: '',
-			default_gametype: null,
+			default_gametype: gametype,
 			g_suddendeath: null,
 			g_teamdamage: null,
 			source: 'user',
