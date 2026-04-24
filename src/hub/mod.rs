@@ -119,6 +119,13 @@ pub async fn run_hub(config: RefereeConfig, config_path: String) -> anyhow::Resu
         });
     }
 
+    // Repair systemd drop-ins for managed clients in case this hub binary
+    // is newer than the one that originally installed them. Older builds
+    // wrote `ReadWritePaths=<install-dir>` only, which prevented map
+    // imports into `~/urbanterror/<slug>/q3ut4` because `ProtectHome=
+    // read-only` made the rest of the user's home unwritable.
+    client_manager::reconcile_client_dropins(hub_cfg).await;
+
     // Heartbeat / register loop with reconnection on failure.
     loop {
         // Register if we don't have a hub_id yet (or want to refresh on reconnect).
