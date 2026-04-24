@@ -7,7 +7,7 @@ use crate::core::context::BotContext;
 use crate::events::Event;
 use crate::storage::Storage;
 use crate::sync::master::{ClientVersionInfo, ConnectedClient, ConnectedHub, HubActionLog};
-use crate::sync::protocol::{ClientRequest, ClientResponse, HubAction, HubResponse};
+use crate::sync::protocol::{ClientRequest, ClientResponse, GameServerWizardParams, HubAction, HubResponse};
 
 /// Shared state for all web handlers.
 #[derive(Clone)]
@@ -37,6 +37,12 @@ pub struct AppState {
     pub hub_versions: Option<Arc<RwLock<HashMap<i64, ClientVersionInfo>>>>,
     /// In-memory per-action progress log (master mode only).
     pub hub_action_logs: Option<Arc<RwLock<HashMap<String, HubActionLog>>>>,
+    /// Wizard params most recently submitted to `/wizard/install` per server,
+    /// stashed so the install_status auto-persist can reconstruct the
+    /// `ServerConfigPayload` even when the client bot is still on an older
+    /// build that doesn't populate the extended `InstallComplete` fields
+    /// (master mode only).
+    pub pending_wizard_params: Option<Arc<RwLock<HashMap<i64, GameServerWizardParams>>>>,
 }
 
 impl AppState {

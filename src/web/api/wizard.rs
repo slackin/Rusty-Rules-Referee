@@ -145,6 +145,12 @@ pub async fn wizard_install(
         )
             .into_response();
     }
+    // Stash the wizard params so `install_status` can reconstruct a full
+    // `ServerConfigPayload` even if the client bot is still on an older
+    // build that doesn't populate the extended `InstallComplete` fields.
+    if let Some(stash) = state.pending_wizard_params.as_ref() {
+        stash.write().await.insert(server_id, params.clone());
+    }
     match send_client_request(
         &state,
         server_id,

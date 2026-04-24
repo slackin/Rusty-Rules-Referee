@@ -331,6 +331,11 @@ pub async fn start_server(
         pending_hub_responses,
         hub_versions,
         hub_action_logs,
+        pending_wizard_params: if config.master.is_some() {
+            Some(Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())))
+        } else {
+            None
+        },
     };
 
     let app = build_router(state);

@@ -664,7 +664,10 @@ pub async fn install_status(
 /// and persist it via [`persist_server_config`]. Merges with the existing
 /// stored config so we don't clobber user-edited fields (bot settings,
 /// plugin list, rcon_ip/rcon_port overrides). Falls back to the server's
-/// existing address when no `public_ip` is available.
+/// existing address when no `public_ip` is available, and to the stashed
+/// `GameServerWizardParams` (from the original `/wizard/install` POST) when
+/// the client bot is on an older build that doesn't populate the extended
+/// `InstallComplete` fields.
 async fn auto_persist_install_config(
     state: &AppState,
     server_id: i64,
@@ -688,9 +691,37 @@ async fn auto_persist_install_config(
         .as_deref()
         .and_then(|j| serde_json::from_str(j).ok());
 
+    // Recover the wizard-submitted values for any fields the client didn't
+    // populate (legacy client build support). We also remove the entry once
+    // consumed so the next install of a different wizard session starts clean.
+    let stashed = if let Some(stash) = state.pending_wizard_params.as_ref() {
+        stash.read().await.get(&server_id).cloned()
+    } else {
+        None
+    };
+
+    let port = port
+        .filter(|p| *p != 0)
+        .or(stashed.as_ref().map(|p| p.port))
+        .filter(|p| *p != 0)
+        .ok_or_else(|| "missing port (no value from client or wizard stash)".to_string())?;
+
+    let rcon_password = rcon_password
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| stashed.as_ref().map(|p| p.rcon_password.clone()))
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "missing rcon_password (no value from client or wizard stash)".to_string())?;
+
     let address = public_ip
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            stashed
+                .as_ref()
+                .map(|p| p.public_ip.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
         .or_else(|| {
             // Fall back to the currently-stored address if it's usable.
             let a = server.address.trim();
@@ -699,17 +730,13 @@ async fn auto_persist_install_config(
             } else {
                 None
             }
-        })
-        .unwrap_or_default();
+        });
 
-    let Some(port) = port.filter(|p| *p != 0) else {
-        return Err("missing port in InstallComplete".to_string());
-    };
-    let Some(rcon_password) = rcon_password
-        .map(|s| s.to_string())
-        .filter(|s| !s.is_empty())
-    else {
-        return Err("missing rcon_password in InstallComplete".to_string());
+    // Address is required by the manual-save validator; if we have nothing,
+    // skip persistence so the operator gets a clean error later rather than
+    // a half-populated config row with address "".
+    let Some(address) = address else {
+        return Err("no public_ip available from client, wizard submission, or existing config".to_string());
     };
 
     // Derive the games.log path (the handler populates it); if omitted,
@@ -718,14 +745,17 @@ async fn auto_persist_install_config(
         .map(|s| s.to_string())
         .or_else(|| Some(format!("{}/q3ut4/games.log", install_path.trim_end_matches('/'))));
 
+    let server_cfg_path = server_cfg_path
+        .map(|s| s.to_string())
+        .or_else(|| Some(format!("{}/q3ut4/server.cfg", install_path.trim_end_matches('/'))))
+        .or_else(|| existing.as_ref().and_then(|e| e.server_cfg_path.clone()));
+
     let payload = ServerConfigPayload {
         address,
         port,
         rcon_password,
         game_log,
-        server_cfg_path: server_cfg_path.map(|s| s.to_string()).or_else(|| {
-            existing.as_ref().and_then(|e| e.server_cfg_path.clone())
-        }),
+        server_cfg_path,
         rcon_ip: existing.as_ref().and_then(|e| e.rcon_ip.clone()),
         rcon_port: existing.as_ref().and_then(|e| e.rcon_port),
         delay: existing.as_ref().and_then(|e| e.delay),
@@ -736,6 +766,11 @@ async fn auto_persist_install_config(
     persist_server_config(state, server_id, payload)
         .await
         .map_err(|(_, msg)| msg)?;
+
+    // Consume the stash entry now that we've successfully saved.
+    if let Some(stash) = state.pending_wizard_params.as_ref() {
+        stash.write().await.remove(&server_id);
+    }
 
     info!(server_id, "Wizard install config auto-persisted to servers.config_json");
     Ok(())
