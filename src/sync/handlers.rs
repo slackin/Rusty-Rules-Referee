@@ -562,14 +562,14 @@ const URT_MIRRORS: &[UrtMirror] = &[
 /// Download UrT 4.3 to `install_path`, trying each mirror in order. Each
 /// candidate is validated (HTTP 2xx, minimum size, magic bytes, archive
 /// listable) before extraction. Returns a human-readable error only if
-/// every mirror fails.
+/// every mirror fails — the error lists every mirror's failure reason.
 pub async fn download_and_extract_urt(install_path: &str) -> Result<(), String> {
     let target = Path::new(install_path);
     tokio::fs::create_dir_all(target)
         .await
         .map_err(|e| format!("Failed to create {}: {}", install_path, e))?;
 
-    let mut last_err = String::from("no mirrors configured");
+    let mut per_mirror: Vec<String> = Vec::new();
     for mirror in URT_MIRRORS {
         info!(url = mirror.url, "Trying UrT mirror");
         match try_mirror(mirror, install_path).await {
@@ -579,13 +579,14 @@ pub async fn download_and_extract_urt(install_path: &str) -> Result<(), String> 
             }
             Err(e) => {
                 warn!(url = mirror.url, error = %e, "Mirror failed, trying next");
-                last_err = e;
+                per_mirror.push(format!("  - {}: {}", mirror.url, e));
             }
         }
     }
     Err(format!(
-        "All UrT 4.3 download mirrors failed. Last error: {}",
-        last_err
+        "All {} UrT 4.3 download mirrors failed:\n{}",
+        URT_MIRRORS.len(),
+        per_mirror.join("\n")
     ))
 }
 
@@ -597,26 +598,66 @@ async fn try_mirror(mirror: &UrtMirror, install_path: &str) -> Result<(), String
     let tmp_path = format!("/tmp/urt43_dl_{}.{}", std::process::id(), ext);
     let _ = tokio::fs::remove_file(&tmp_path).await;
 
-    // Download. -f fails on non-2xx (so an HTML 200 CMS page from the wrong
-    // URL would still pass, which is why we validate afterwards). --retry
-    // handles transient network blips.
-    let dl = tokio::process::Command::new("sh")
+    // Probe HEAD first so we can fail fast with a clear HTTP status before
+    // downloading half a gigabyte.
+    let probe = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "curl -fL --retry 2 --retry-delay 3 -A 'R3-Wizard/1.0' \
-             -o '{tmp}' '{url}' 2>&1 || \
-             wget -q --tries=2 --user-agent='R3-Wizard/1.0' -O '{tmp}' '{url}' 2>&1",
-            tmp = tmp_path,
+            "curl -fsSIL -A 'R3-Wizard/1.0' --max-time 20 -o /dev/null \
+             -w 'http_code=%{{http_code}} final_url=%{{url_effective}} size=%{{size_download}} \
+dl_size=%{{size_header}} time=%{{time_total}}' '{url}' 2>&1",
             url = mirror.url
         ))
         .output()
         .await
+        .map_err(|e| format!("probe spawn failed: {}", e))?;
+    let probe_out = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+    if !probe.status.success() {
+        let err_text = String::from_utf8_lossy(&probe.stderr);
+        let combined = if err_text.trim().is_empty() {
+            probe_out.clone()
+        } else {
+            format!("{} :: {}", probe_out, err_text.trim())
+        };
+        return Err(format!("HEAD probe failed ({})", combined));
+    }
+    info!(url = mirror.url, probe = %probe_out, "Mirror HEAD probe ok");
+
+    // Download. Capture combined stdout+stderr via `2>&1` into a variable so
+    // we can report the real reason if curl (and wget fallback) both fail.
+    // `set -o pipefail` is bash-only so we stick with plain sh and check each
+    // command's output.
+    let dl_script = format!(
+        "out=$(curl -fL --connect-timeout 30 --max-time 1800 --retry 2 --retry-delay 3 \
+         -A 'R3-Wizard/1.0' -o '{tmp}' '{url}' 2>&1); rc=$?; \
+         if [ $rc -ne 0 ]; then \
+           echo \"curl rc=$rc: $out\"; \
+           out2=$(wget --timeout=60 --tries=2 --user-agent='R3-Wizard/1.0' \
+                 -O '{tmp}' '{url}' 2>&1); rc2=$?; \
+           if [ $rc2 -ne 0 ]; then echo \"wget rc=$rc2: $out2\"; exit $rc2; fi; \
+         fi; exit 0",
+        tmp = tmp_path,
+        url = mirror.url
+    );
+    let dl = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&dl_script)
+        .output()
+        .await
         .map_err(|e| format!("spawn failed: {}", e))?;
     if !dl.status.success() {
+        let combined = String::from_utf8_lossy(&dl.stdout);
+        let stderr = String::from_utf8_lossy(&dl.stderr);
         let _ = tokio::fs::remove_file(&tmp_path).await;
+        let msg = if combined.trim().is_empty() {
+            stderr.trim().to_string()
+        } else {
+            combined.trim().to_string()
+        };
         return Err(format!(
-            "download transport failure: {}",
-            String::from_utf8_lossy(&dl.stderr).trim()
+            "download transport failure (exit {}): {}",
+            dl.status.code().unwrap_or(-1),
+            if msg.is_empty() { "no output captured".to_string() } else { msg }
         ));
     }
 
