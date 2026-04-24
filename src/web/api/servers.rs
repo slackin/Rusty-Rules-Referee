@@ -639,6 +639,16 @@ pub async fn install_status(
                 ..
             } = &resp
             {
+                info!(
+                    server_id,
+                    install_path = %install_path,
+                    game_log_present = game_log.is_some(),
+                    port_present = port.is_some(),
+                    rcon_password_present = rcon_password.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+                    server_cfg_path_present = server_cfg_path.is_some(),
+                    public_ip_present = public_ip.as_ref().map(|s| !s.is_empty()).unwrap_or(false),
+                    "InstallComplete received; attempting auto-persist"
+                );
                 if let Err(e) = auto_persist_install_config(
                     &state,
                     server_id,
@@ -723,21 +733,13 @@ async fn auto_persist_install_config(
                 .filter(|s| !s.is_empty())
         })
         .or_else(|| {
-            // Fall back to the currently-stored address if it's usable.
+            // Fall back to the currently-stored address (even if it's
+            // 0.0.0.0) — better to save port/rcon/paths and ask the operator
+            // to fix the IP than to discard everything.
             let a = server.address.trim();
-            if !a.is_empty() && a != "0.0.0.0" {
-                Some(a.to_string())
-            } else {
-                None
-            }
-        });
-
-    // Address is required by the manual-save validator; if we have nothing,
-    // skip persistence so the operator gets a clean error later rather than
-    // a half-populated config row with address "".
-    let Some(address) = address else {
-        return Err("no public_ip available from client, wizard submission, or existing config".to_string());
-    };
+            if a.is_empty() { None } else { Some(a.to_string()) }
+        })
+        .unwrap_or_else(|| "0.0.0.0".to_string());
 
     // Derive the games.log path (the handler populates it); if omitted,
     // use the canonical q3ut4/games.log under the install path.
@@ -772,7 +774,10 @@ async fn auto_persist_install_config(
         stash.write().await.remove(&server_id);
     }
 
-    info!(server_id, "Wizard install config auto-persisted to servers.config_json");
+    info!(
+        server_id,
+        "Wizard install config auto-persisted to servers.config_json (all fields populated from wizard + client)"
+    );
     Ok(())
 }
 
