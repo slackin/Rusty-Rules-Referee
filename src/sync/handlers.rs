@@ -541,6 +541,9 @@ struct UrtMirror {
 /// Mirror list, tried in order. pugbot.net is primary because it's the only
 /// mirror that reliably serves the real bytes (the official urbanterror.info
 /// URL returns CMS HTML for dedicated tarballs).
+/// Mirror list, tried in order. pugbot.net is primary (known-good, serves
+/// the real zip bytes); mirror2.urbanterror.info is a working secondary
+/// hosted by the UrT project.
 const URT_MIRRORS: &[UrtMirror] = &[
     UrtMirror {
         url: "https://maps.pugbot.net/q3ut4/UrbanTerror434_full.zip",
@@ -548,14 +551,9 @@ const URT_MIRRORS: &[UrtMirror] = &[
         min_bytes: 500 * 1024 * 1024,
     },
     UrtMirror {
-        url: "https://cdn.urbanterror.info/urt/43/releases/UrbanTerror43_ded.tar.gz",
-        kind: ArchiveKind::TarGz,
-        min_bytes: 40 * 1024 * 1024,
-    },
-    UrtMirror {
-        url: "https://www.frozensand.com/downloads/UrbanTerror43_ded.tar.gz",
-        kind: ArchiveKind::TarGz,
-        min_bytes: 40 * 1024 * 1024,
+        url: "https://mirror2.urbanterror.info/UrbanTerror434_full.zip",
+        kind: ArchiveKind::Zip,
+        min_bytes: 500 * 1024 * 1024,
     },
 ];
 
@@ -762,47 +760,79 @@ dl_size=%{{size_header}} time=%{{time_total}}' '{url}' 2>&1",
     // Final sanity: q3ut4/ must exist after extract.
     let q3ut4 = Path::new(install_path).join("q3ut4");
     if !q3ut4.is_dir() {
+        // List what's actually there so admins can tell what went wrong
+        // (zip structure changed, flatten failed, wrong archive, etc.).
+        let mut listing = Vec::new();
+        if let Ok(mut rd) = tokio::fs::read_dir(install_path).await {
+            while let Ok(Some(ent)) = rd.next_entry().await {
+                let kind = if ent.path().is_dir() { "d" } else { "f" };
+                listing.push(format!("{}:{}", kind, ent.file_name().to_string_lossy()));
+            }
+        }
         return Err(format!(
-            "extraction produced no q3ut4/ directory under {}",
-            install_path
+            "extraction produced no q3ut4/ directory under {} (contents: [{}])",
+            install_path,
+            listing.join(", ")
         ));
     }
 
     Ok(())
 }
 
-/// If `install_path` contains exactly one directory entry (a zip wrapper),
-/// move its contents up a level and remove it.
+/// If `install_path` contains exactly one directory entry (a zip wrapper
+/// like `UrbanTerror43/`), move its contents up a level and remove it.
+/// Uses `bash -c` with dotglob/nullglob because `/bin/sh` on Ubuntu is
+/// dash, which doesn't support `shopt`.
 async fn flatten_single_top_dir(install_path: &str) {
     let path = Path::new(install_path);
     let mut entries = match tokio::fs::read_dir(path).await {
         Ok(e) => e,
-        Err(_) => return,
+        Err(e) => {
+            warn!(path = %install_path, error = %e, "flatten: read_dir failed");
+            return;
+        }
     };
     let mut only: Option<PathBuf> = None;
     let mut count = 0usize;
     while let Ok(Some(ent)) = entries.next_entry().await {
         count += 1;
         if count > 1 {
-            return; // multiple top-level entries — nothing to flatten
+            info!(path = %install_path, "flatten: multiple top-level entries, nothing to flatten");
+            return;
         }
         only = Some(ent.path());
     }
-    let Some(dir) = only else { return };
+    let Some(dir) = only else {
+        warn!(path = %install_path, "flatten: install_path is empty after extract");
+        return;
+    };
     if !dir.is_dir() {
         return;
     }
-    // Use `mv` via shell for simplicity (tokio::fs::rename across cross-device
-    // moves would work here since it's same FS).
-    let _ = tokio::process::Command::new("sh")
+    info!(wrapper = %dir.display(), dst = %install_path, "flatten: moving contents up one level");
+    let out = tokio::process::Command::new("bash")
         .arg("-c")
         .arg(format!(
-            "shopt -s dotglob nullglob && mv '{src}'/* '{dst}/' && rmdir '{src}'",
+            "shopt -s dotglob nullglob && mv -- '{src}'/* '{dst}/' && rmdir -- '{src}'",
             src = dir.display(),
             dst = install_path
         ))
         .output()
         .await;
+    match out {
+        Ok(o) if o.status.success() => {
+            info!(wrapper = %dir.display(), "flatten: succeeded");
+        }
+        Ok(o) => {
+            warn!(
+                wrapper = %dir.display(),
+                stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                stdout = %String::from_utf8_lossy(&o.stdout).trim(),
+                "flatten: mv command exited non-zero"
+            );
+        }
+        Err(e) => warn!(wrapper = %dir.display(), error = %e, "flatten: bash spawn failed"),
+    }
 }
 
 /// Start downloading and installing a UrT 4.3 dedicated server.
