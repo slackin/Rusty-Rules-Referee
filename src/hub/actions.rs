@@ -374,6 +374,61 @@ pub async fn execute(
                 let path =
                     game_server_manager::install_game_server(hub_cfg, &slug, &params).await?;
                 data["game_server_path"] = json!(path.display().to_string());
+
+                // Seed the sub-client's install-state marker so the
+                // master UI's Start/Stop/Restart actions (which the
+                // client bot serves out of this file) recognise the
+                // hub-managed game server as configured. Without this
+                // the sub-client replies with "No configured game
+                // server on this client — run the install wizard
+                // first" even though everything else is in place.
+                let abs_install = path.canonicalize().unwrap_or_else(|_| path.clone());
+                let q3ut4 = abs_install.join("q3ut4");
+                let state = crate::sync::protocol::UrtInstallState {
+                    slug: slug.clone(),
+                    files_present: true,
+                    install_path: Some(abs_install.to_string_lossy().to_string()),
+                    configured: true,
+                    service_name: if params.register_systemd {
+                        Some(format!("urt@{}.service", slug))
+                    } else {
+                        None
+                    },
+                    port: Some(params.port),
+                    server_cfg_path: Some(q3ut4.join("server.cfg").to_string_lossy().to_string()),
+                    game_log: Some(q3ut4.join("games.log").to_string_lossy().to_string()),
+                };
+                let state_file = dir.join("state").join("urt-install.json");
+                if let Some(parent) = state_file.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        tracing::warn!(error = %e, path = %parent.display(),
+                            "Failed to create state dir for sub-client install marker");
+                    }
+                }
+                match serde_json::to_string_pretty(&state) {
+                    Ok(json_text) => {
+                        if let Err(e) = std::fs::write(&state_file, &json_text) {
+                            tracing::warn!(error = %e, path = %state_file.display(),
+                                "Failed to write urt-install.json for hub-managed client");
+                        } else {
+                            tracing::info!(
+                                %slug,
+                                path = %state_file.display(),
+                                "Wrote sub-client install-state marker"
+                            );
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(
+                                    &state_file,
+                                    std::fs::Permissions::from_mode(0o600),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e,
+                        "Failed to serialize UrtInstallState for hub-managed client"),
+                }
             }
 
             report_progress(
