@@ -26,6 +26,33 @@
 	let installBusy = $state(false);
 	let installError = $state('');
 
+	// Optional game server install alongside the client
+	let installGameServer = $state(false);
+	let gsInstallPath = $state('');
+	let gsHostname = $state('');
+	let gsPublicIp = $state('');
+	let gsPort = $state(27960);
+	let gsRconPassword = $state('');
+	let gsGameMode = $state('CTF');
+	let gsMaxClients = $state(16);
+	let gsAdminPassword = $state('');
+	let gsRegisterSystemd = $state(true);
+	let gsForceDownload = $state(false);
+
+	const GAME_MODES = [
+		{ value: 'FFA', label: 'Free for All' },
+		{ value: 'LMS', label: 'Last Man Standing' },
+		{ value: 'TDM', label: 'Team Deathmatch' },
+		{ value: 'TS', label: 'Team Survivor' },
+		{ value: 'FTL', label: 'Follow the Leader' },
+		{ value: 'CAH', label: 'Capture and Hold' },
+		{ value: 'CTF', label: 'Capture the Flag' },
+		{ value: 'BOMB', label: 'Bomb' },
+		{ value: 'JUMP', label: 'Jump' },
+		{ value: 'FREEZE', label: 'Freeze Tag' },
+		{ value: 'GUNGAME', label: 'Gun Game' },
+	];
+
 	// Per-client action busy flags
 	let busySlug = $state('');
 
@@ -95,15 +122,47 @@
 	async function submitInstall() {
 		installError = '';
 		if (!installSlug.trim()) { installError = 'Slug is required'; return; }
+		const slug = installSlug.trim();
+		const serverName = installServerName.trim() || slug;
+
+		/** @type {any} */
+		const body = {
+			slug,
+			server_name: serverName,
+			register_systemd: true
+		};
+
+		if (installGameServer) {
+			if (!gsInstallPath.trim()) { installError = 'Install path is required'; return; }
+			if (!gsRconPassword.trim()) { installError = 'RCON password is required'; return; }
+			if (!gsPort || gsPort < 1 || gsPort > 65535) { installError = 'Port must be 1–65535'; return; }
+			body.game_server = {
+				install_path: gsInstallPath.trim(),
+				hostname: (gsHostname.trim() || serverName),
+				public_ip: gsPublicIp.trim(),
+				port: Number(gsPort),
+				rcon_password: gsRconPassword,
+				game_mode: gsGameMode,
+				max_clients: Number(gsMaxClients),
+				admin_password: gsAdminPassword.trim() || null,
+				register_systemd: gsRegisterSystemd,
+				slug,
+				force_download: gsForceDownload
+			};
+		}
+
 		installBusy = true;
 		try {
-			await api.hubInstallClient(hubId, {
-				slug: installSlug.trim(),
-				server_name: installServerName.trim() || installSlug.trim(),
-				register_systemd: true
-			});
+			await api.hubInstallClient(hubId, body);
 			installSlug = '';
 			installServerName = '';
+			installGameServer = false;
+			gsInstallPath = '';
+			gsHostname = '';
+			gsPublicIp = '';
+			gsRconPassword = '';
+			gsAdminPassword = '';
+			gsForceDownload = false;
 			showInstall = false;
 			await load();
 		} catch (e) {
@@ -483,13 +542,115 @@
 									class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100 focus:border-accent focus:outline-none" />
 							</label>
 						</div>
+
+						<div class="mt-4 rounded-lg border border-surface-800 bg-surface-950 p-3">
+							<label class="flex items-start gap-2 text-sm text-surface-200 cursor-pointer">
+								<input
+									type="checkbox"
+									bind:checked={installGameServer}
+									class="mt-0.5 h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent" />
+								<span>
+									<span class="font-medium">Also install Urban Terror game server</span>
+									<span class="block text-xs text-surface-500">
+										When off, only the R3 client is installed — you can set up the game server from the
+										server's detail page later.
+									</span>
+								</span>
+							</label>
+
+							{#if installGameServer}
+								<div class="mt-3 grid gap-3 sm:grid-cols-2">
+									<label class="block sm:col-span-2">
+										<span class="text-xs text-surface-500">Install path</span>
+										<input
+											type="text"
+											bind:value={gsInstallPath}
+											placeholder="/home/urt/urt-{installSlug || 'my-server'}"
+											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+									</label>
+									<label class="block">
+										<span class="text-xs text-surface-500">Hostname (sv_hostname)</span>
+										<input
+											type="text"
+											bind:value={gsHostname}
+											placeholder="defaults to server name"
+											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100 focus:border-accent focus:outline-none" />
+									</label>
+									<label class="block">
+										<span class="text-xs text-surface-500">Public IP</span>
+										<input
+											type="text"
+											bind:value={gsPublicIp}
+											placeholder="auto if blank"
+											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+									</label>
+									<label class="block">
+										<span class="text-xs text-surface-500">Port</span>
+										<input
+											type="number"
+											min="1"
+											max="65535"
+											bind:value={gsPort}
+											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+									</label>
+									<label class="block">
+										<span class="text-xs text-surface-500">Max clients</span>
+										<input
+											type="number"
+											min="2"
+											max="64"
+											bind:value={gsMaxClients}
+											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+									</label>
+									<label class="block">
+										<span class="text-xs text-surface-500">Game mode</span>
+										<select
+											bind:value={gsGameMode}
+											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100 focus:border-accent focus:outline-none">
+											{#each GAME_MODES as m}
+												<option value={m.value}>{m.label}</option>
+											{/each}
+										</select>
+									</label>
+									<label class="block">
+										<span class="text-xs text-surface-500">RCON password</span>
+										<input
+											type="password"
+											bind:value={gsRconPassword}
+											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+									</label>
+									<label class="block">
+										<span class="text-xs text-surface-500">Admin / referee password (optional)</span>
+										<input
+											type="password"
+											bind:value={gsAdminPassword}
+											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+									</label>
+									<label class="flex items-center gap-2 text-sm text-surface-300">
+										<input
+											type="checkbox"
+											bind:checked={gsRegisterSystemd}
+											class="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent" />
+										Register systemd service
+									</label>
+									<label class="flex items-center gap-2 text-sm text-surface-300">
+										<input
+											type="checkbox"
+											bind:checked={gsForceDownload}
+											class="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent" />
+										Force re-download UrT files
+									</label>
+								</div>
+							{/if}
+						</div>
+
 						{#if installError}
 							<p class="mt-2 text-sm text-red-400">{installError}</p>
 						{/if}
 						<div class="mt-3 flex justify-end gap-2">
 							<button onclick={() => showInstall = false} class="btn-secondary text-sm" disabled={installBusy}>Cancel</button>
 							<button onclick={submitInstall} class="btn-primary text-sm" disabled={installBusy}>
-								{installBusy ? 'Installing…' : 'Install'}
+								{installBusy ? 'Installing…' : (installGameServer ? 'Install client + game server' : 'Install client only')}
 							</button>
 						</div>
 					</div>
