@@ -7,6 +7,16 @@ use crate::sync::protocol::{HubAction, HubProgressEvent, MintClientCertRequest, 
 
 use super::{client_manager, game_server_manager};
 
+/// Generate a short random hex password suitable for RCON / admin use.
+/// 6 hex chars (3 bytes of entropy) — enough to avoid casual collisions
+/// while staying easy to copy/paste from the UI.
+fn random_pass() -> String {
+    use rand::RngCore;
+    let mut buf = [0u8; 3];
+    rand::thread_rng().fill_bytes(&mut buf);
+    format!("{:02x}{:02x}{:02x}", buf[0], buf[1], buf[2])
+}
+
 /// Try to discover the hub host's public IPv4 address by querying a small
 /// set of well-known echo services. Returns `None` only if every probe
 /// fails. Called when the admin leaves the "public IP" wizard field blank.
@@ -169,6 +179,45 @@ pub async fn execute(
             game_server,
             register_systemd: _,
         } => {
+            // Normalize and fill in game-server params so the rest of the
+            // install flow has a single source of truth (passwords, IP,
+            // log paths) without sprinkling defaults at every call site.
+            // Generating here means admins never see the "Configuration
+            // Required" panel after a hub install, even if the UI forgot
+            // to send a password or an IP couldn't be detected.
+            let game_server = if let Some(mut params) = game_server {
+                if params.rcon_password.trim().is_empty() {
+                    params.rcon_password = random_pass();
+                    tracing::info!(
+                        %slug,
+                        "Hub auto-generated RCON password for new game server"
+                    );
+                }
+                if params
+                    .admin_password
+                    .as_deref()
+                    .map(|s| s.trim().is_empty())
+                    .unwrap_or(true)
+                {
+                    params.admin_password = Some(random_pass());
+                    tracing::info!(
+                        %slug,
+                        "Hub auto-generated admin/referee password for new game server"
+                    );
+                }
+                if params.public_ip.trim().is_empty() || params.public_ip.trim() == "0.0.0.0" {
+                    if let Some(ip) = detect_public_ip(http).await {
+                        params.public_ip = ip;
+                    }
+                    // If detection failed, leave it blank here — the mint
+                    // block below will fall back to the hub's registered
+                    // address or 127.0.0.1 so config_json still seeds.
+                }
+                Some(params)
+            } else {
+                None
+            };
+
             report_progress(
                 http,
                 base_url,
@@ -187,14 +236,15 @@ pub async fn execute(
             //    in the UI instead of the "Configuration Required" panel.
             let (address, port, rcon_password, game_log, server_cfg_path) =
                 if let Some(params) = &game_server {
-                    // Resolve the effective public IP: use whatever the admin
-                    // typed; if blank, probe a few public-facing services
-                    // before giving up and letting the master fall back to
-                    // the hub's registered address.
+                    // Public IP was already resolved above (admin-supplied
+                    // → detect_public_ip → blank). If still blank, fall
+                    // back to 127.0.0.1 since bot + game server live on
+                    // the same hub host and local RCON works fine; admins
+                    // can edit the address later in the UI.
                     let addr = if params.public_ip.trim().is_empty()
                         || params.public_ip.trim() == "0.0.0.0"
                     {
-                        detect_public_ip(http).await.unwrap_or_default()
+                        "127.0.0.1".to_string()
                     } else {
                         params.public_ip.trim().to_string()
                     };
