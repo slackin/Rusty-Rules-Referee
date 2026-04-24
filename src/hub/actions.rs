@@ -25,6 +25,9 @@ async fn detect_public_ip(http: &reqwest::Client) -> Option<String> {
         "https://api.ipify.org",
         "https://ifconfig.me/ip",
         "https://icanhazip.com",
+        "https://ipv4.icanhazip.com",
+        "https://checkip.amazonaws.com",
+        "https://ident.me",
     ];
     for url in PROBES {
         match http
@@ -36,10 +39,14 @@ async fn detect_public_ip(http: &reqwest::Client) -> Option<String> {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.text().await {
                     let ip = body.trim();
-                    // Reject anything that doesn't parse as an IPv4/6 addr.
-                    if ip.parse::<std::net::IpAddr>().is_ok() {
-                        tracing::info!(url = %url, ip = %ip, "Detected hub public IP");
-                        return Some(ip.to_string());
+                    // Reject anything that doesn't parse as an IPv4 addr or is RFC1918.
+                    if let Ok(parsed) = ip.parse::<std::net::IpAddr>() {
+                        if is_public_addr(&parsed) {
+                            tracing::info!(url = %url, ip = %ip, "Detected hub public IP");
+                            return Some(ip.to_string());
+                        } else {
+                            tracing::debug!(url = %url, ip = %ip, "Probe returned non-public IP, skipping");
+                        }
                     }
                 }
             }
@@ -52,6 +59,38 @@ async fn detect_public_ip(http: &reqwest::Client) -> Option<String> {
         }
     }
     None
+}
+
+/// True if `addr` is a globally-routable public address (not loopback,
+/// link-local, unspecified, or in an RFC1918 private block).
+fn is_public_addr(addr: &std::net::IpAddr) -> bool {
+    if addr.is_loopback() || addr.is_unspecified() || addr.is_multicast() {
+        return false;
+    }
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            if v4.is_private() || v4.is_link_local() || v4.is_broadcast() {
+                return false;
+            }
+            // 100.64.0.0/10 — CGNAT
+            let o = v4.octets();
+            if o[0] == 100 && (o[1] & 0xC0) == 64 {
+                return false;
+            }
+            true
+        }
+        std::net::IpAddr::V6(v6) => {
+            // Conservative: reject unique local (fc00::/7) and link-local (fe80::/10).
+            let seg = v6.segments()[0];
+            if (seg & 0xFE00) == 0xFC00 {
+                return false;
+            }
+            if (seg & 0xFFC0) == 0xFE80 {
+                return false;
+            }
+            true
+        }
+    }
 }
 
 /// Helper that posts a single progress event to the master. Failure is
@@ -237,14 +276,15 @@ pub async fn execute(
             let (address, port, rcon_password, game_log, server_cfg_path) =
                 if let Some(params) = &game_server {
                     // Public IP was already resolved above (admin-supplied
-                    // → detect_public_ip → blank). If still blank, fall
-                    // back to 127.0.0.1 since bot + game server live on
-                    // the same hub host and local RCON works fine; admins
-                    // can edit the address later in the UI.
+                    // → detect_public_ip). If still blank the master will
+                    // fall back to the hub's registered address, but we
+                    // must NOT bind a LAN/loopback address here — the UrT
+                    // dedicated server announces itself on this value and
+                    // players connect directly to it.
                     let addr = if params.public_ip.trim().is_empty()
                         || params.public_ip.trim() == "0.0.0.0"
                     {
-                        "127.0.0.1".to_string()
+                        String::new()
                     } else {
                         params.public_ip.trim().to_string()
                     };

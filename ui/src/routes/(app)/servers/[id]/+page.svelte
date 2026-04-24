@@ -463,6 +463,25 @@
 		restarting = false;
 	}
 
+	// --- Game server (urt@<slug>) service control ---
+	let gsServiceBusy = $state('');
+	let gsServiceResult = $state(null);
+	async function gameServerAction(action) {
+		if (action === 'stop' && !confirm('Stop the Urban Terror game server? Connected players will be disconnected.')) return;
+		if (action === 'restart' && !confirm('Restart the Urban Terror game server? Connected players will be briefly disconnected.')) return;
+		gsServiceBusy = action;
+		gsServiceResult = null;
+		try {
+			const res = await api.wizardServiceAction(serverId, action);
+			gsServiceResult = { ok: true, action, data: res };
+		} catch (e) {
+			gsServiceResult = { ok: false, action, message: e.message || `${action} failed` };
+		}
+		gsServiceBusy = '';
+		// Give the unit a beat to settle, then refresh status.
+		setTimeout(() => loadServer(), 2000);
+	}
+
 	async function changeUpdateChannel(newChannel) {
 		if (!server || newChannel === server.update_channel) return;
 		const previous = server.update_channel;
@@ -1221,6 +1240,50 @@
 		{/if}
 
 		{#if server.online}
+			<!-- Game Server (urt@<slug>) controls -->
+			<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
+				<h2 class="mb-1 flex items-center gap-2 text-base font-semibold text-surface-100">
+					<Power class="h-4 w-4 text-accent" />
+					Game Server
+				</h2>
+				<p class="mb-4 text-xs text-surface-500">Start, stop, or restart the Urban Terror dedicated server (<code>urt@{server.slug || '<slug>'}.service</code>). Requires the client to be online so it can run <code>systemctl</code> on the host.</p>
+				<div class="flex flex-wrap gap-2">
+					<button
+						onclick={() => gameServerAction('start')}
+						disabled={gsServiceBusy !== ''}
+						class="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 transition-colors disabled:opacity-50">
+						{#if gsServiceBusy === 'start'}<Loader2 class="h-4 w-4 animate-spin" />Starting…{:else}<Power class="h-4 w-4" />Start{/if}
+					</button>
+					<button
+						onclick={() => gameServerAction('stop')}
+						disabled={gsServiceBusy !== ''}
+						class="flex items-center gap-2 rounded-lg bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-800 transition-colors disabled:opacity-50">
+						{#if gsServiceBusy === 'stop'}<Loader2 class="h-4 w-4 animate-spin" />Stopping…{:else}<Power class="h-4 w-4" />Stop{/if}
+					</button>
+					<button
+						onclick={() => gameServerAction('restart')}
+						disabled={gsServiceBusy !== ''}
+						class="flex items-center gap-2 rounded-lg bg-surface-800 px-4 py-2 text-sm font-medium text-white hover:bg-surface-700 transition-colors disabled:opacity-50 border border-surface-700">
+						{#if gsServiceBusy === 'restart'}<Loader2 class="h-4 w-4 animate-spin" />Restarting…{:else}<RefreshCw class="h-4 w-4" />Restart{/if}
+					</button>
+					<button
+						onclick={() => gameServerAction('status')}
+						disabled={gsServiceBusy !== ''}
+						class="flex items-center gap-2 rounded-lg bg-surface-800 px-4 py-2 text-sm font-medium text-white hover:bg-surface-700 transition-colors disabled:opacity-50 border border-surface-700">
+						{#if gsServiceBusy === 'status'}<Loader2 class="h-4 w-4 animate-spin" />…{:else}<FileText class="h-4 w-4" />Status{/if}
+					</button>
+				</div>
+				{#if gsServiceResult}
+					<div class="mt-3 rounded-lg px-3 py-2 text-xs font-mono whitespace-pre-wrap {gsServiceResult.ok ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30' : 'bg-red-500/10 text-red-300 border border-red-500/30'}">
+						{#if gsServiceResult.ok}
+							{gsServiceResult.data?.data?.message || gsServiceResult.data?.message || `${gsServiceResult.action} accepted`}
+						{:else}
+							{gsServiceResult.message}
+						{/if}
+					</div>
+				{/if}
+			</div>
+
 			<!-- RCON Console -->
 			<div class="rounded-xl border border-surface-800 bg-surface-900 p-6">
 				<h2 class="mb-4 flex items-center gap-2 text-base font-semibold text-surface-100">
