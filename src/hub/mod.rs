@@ -58,9 +58,7 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
     let hub_id_state: Arc<RwLock<Option<i64>>> = Arc::new(RwLock::new(None));
 
     let version = env!("CARGO_PKG_VERSION").to_string();
-    let build_hash = option_env!("R3_BUILD_HASH")
-        .unwrap_or("unknown")
-        .to_string();
+    let build_hash = env!("BUILD_HASH").to_string();
 
     // Release channel the master wants us to follow; seeded from local config
     // and updated on every heartbeat.
@@ -76,7 +74,7 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
         tokio::spawn(async move {
             crate::update::run_update_loop_with_overrides(
                 update_cfg,
-                option_env!("R3_BUILD_HASH").unwrap_or("unknown"),
+                env!("BUILD_HASH"),
                 Some(channel_watch),
                 None,
             )
