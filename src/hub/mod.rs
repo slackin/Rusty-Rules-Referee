@@ -65,18 +65,25 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
     let update_channel: Arc<RwLock<String>> =
         Arc::new(RwLock::new(config.update.channel.clone()));
 
+    // Auto-update check interval (seconds). Seeded from local config and
+    // replaced with whatever the master sends on every heartbeat so admins
+    // can retune it without restarting the hub.
+    let update_interval: Arc<RwLock<u64>> =
+        Arc::new(RwLock::new(config.update.check_interval));
+
     // Kick off a periodic auto-update checker if enabled. The channel is
     // read from the shared `update_channel` state so live changes from the
     // master take effect on the next tick without a restart.
     if config.update.enabled {
         let update_cfg = config.update.clone();
         let channel_watch = update_channel.clone();
+        let interval_watch = update_interval.clone();
         tokio::spawn(async move {
             crate::update::run_update_loop_with_overrides(
                 update_cfg,
                 env!("BUILD_HASH"),
                 Some(channel_watch),
-                None,
+                Some(interval_watch),
             )
             .await;
         });
@@ -170,6 +177,18 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
                                     "Adopting release channel from master"
                                 );
                                 *update_channel.write().await = remote_channel.clone();
+                            }
+                        }
+                        // Adopt any update-interval change pushed by the master.
+                        if let Some(remote_interval) = body.update_interval {
+                            let current = *update_interval.read().await;
+                            if current != remote_interval {
+                                info!(
+                                    from = current,
+                                    to = remote_interval,
+                                    "Adopting update check interval from master"
+                                );
+                                *update_interval.write().await = remote_interval;
                             }
                         }
                         // Dispatch any queued actions.

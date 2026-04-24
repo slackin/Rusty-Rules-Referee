@@ -137,6 +137,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/hubs/:id/version", get(api::hubs::get_hub_version))
         .route("/hubs/:id/force-update", post(api::hubs::force_hub_update))
         .route("/hubs/:id/update-channel", put(api::hubs::set_hub_update_channel))
+        .route("/hubs/:id/update-interval", put(api::hubs::set_hub_update_interval))
         // Multi-server management (master mode)
         .route("/servers", get(api::servers::list_servers))
         .route("/servers/:id", get(api::servers::get_server))

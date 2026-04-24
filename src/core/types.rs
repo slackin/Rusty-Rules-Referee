@@ -170,6 +170,10 @@ pub struct Hub {
     pub build_hash: Option<String>,
     /// Release channel this hub pulls R3 updates from (production|beta|alpha|dev).
     pub update_channel: String,
+    /// Auto-update check interval in seconds. Master-controlled; pushed
+    /// back to the hub in every heartbeat response so changes take effect
+    /// without a restart.
+    pub update_interval: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

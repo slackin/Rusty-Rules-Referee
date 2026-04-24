@@ -466,9 +466,13 @@ pub async fn get_hub_version(
     };
 
     // Channel comes from the hub row in the DB.
-    let (channel, db_build) = match state.storage.get_hub(hub_id).await {
-        Ok(h) => (h.update_channel, h.build_hash),
-        Err(_) => (state.config.update.channel.clone(), None),
+    let (channel, db_build, update_interval) = match state.storage.get_hub(hub_id).await {
+        Ok(h) => (h.update_channel, h.build_hash, h.update_interval),
+        Err(_) => (
+            state.config.update.channel.clone(),
+            None,
+            state.config.update.check_interval,
+        ),
     };
 
     let update_url = state.config.update.url.clone();
@@ -493,6 +497,7 @@ pub async fn get_hub_version(
         "cached": cached,
         "db_build_hash": db_build,
         "channel": channel,
+        "update_interval": update_interval,
         "latest": latest,
         "master_update_url": update_url,
     }))
@@ -569,6 +574,52 @@ pub async fn set_hub_update_channel(
         "ok": true,
         "message": format!("Channel set to {}", channel),
         "channel": channel,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetHubUpdateIntervalBody {
+    pub interval_secs: u64,
+}
+
+/// PUT /api/v1/hubs/:id/update-interval — set the auto-update check
+/// interval (seconds) for this hub. Persisted in the DB and pushed to the
+/// hub on its next heartbeat.
+pub async fn set_hub_update_interval(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path(hub_id): Path<i64>,
+    Json(body): Json<SetHubUpdateIntervalBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_master(&state) {
+        return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
+    }
+    let interval = body.interval_secs;
+    // Reasonable bounds: 60s minimum, 7 days maximum — matches servers.
+    if interval < 60 || interval > 604_800 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Invalid interval {}s — must be between 60 and 604800 seconds.",
+                    interval
+                )
+            })),
+        )
+            .into_response();
+    }
+    if let Err(e) = state.storage.set_hub_update_interval(hub_id, interval).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "message": format!("Update interval set to {}s. Applied on next heartbeat.", interval),
+        "interval_secs": interval,
     }))
     .into_response()
 }

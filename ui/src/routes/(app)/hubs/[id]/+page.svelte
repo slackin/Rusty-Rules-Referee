@@ -76,6 +76,9 @@
 	let channelSaving = $state(false);
 	let channelResult = $state(null);
 	let channelValue = $state('beta');
+	let intervalDraft = $state('3600');
+	let intervalSaving = $state(false);
+	let intervalResult = $state(null);
 
 	const CHANNELS = ['production', 'beta', 'alpha', 'dev'];
 
@@ -251,6 +254,7 @@
 		try {
 			versionInfo = await api.hubVersion(hubId);
 			if (versionInfo?.channel) channelValue = versionInfo.channel;
+			if (versionInfo?.update_interval) intervalDraft = String(versionInfo.update_interval);
 		} catch (e) {
 			versionError = e.message || 'Failed to load version';
 		}
@@ -283,6 +287,28 @@
 			channelResult = { ok: false, error: e.message || 'Failed to update channel' };
 		}
 		channelSaving = false;
+	}
+
+	async function saveUpdateInterval() {
+		const parsed = Math.floor(Number(intervalDraft));
+		if (!Number.isFinite(parsed) || parsed < 60 || parsed > 604800) {
+			intervalResult = { ok: false, error: 'Enter a value between 60 and 604800 seconds.' };
+			return;
+		}
+		if (versionInfo?.update_interval && parsed === versionInfo.update_interval) {
+			intervalResult = { ok: true, message: 'No change.' };
+			return;
+		}
+		intervalSaving = true;
+		intervalResult = null;
+		try {
+			const r = await api.setHubUpdateInterval(hubId, parsed);
+			intervalResult = r;
+			await loadVersion();
+		} catch (e) {
+			intervalResult = { ok: false, error: e.message || 'Failed to update interval' };
+		}
+		intervalSaving = false;
 	}
 
 	function fmtBytes(n) {
@@ -546,6 +572,22 @@
 							{channelSaving ? 'Saving...' : 'Save'}
 						</button>
 					</div>
+
+					<div class="flex items-center gap-2">
+						<label class="text-xs text-surface-500">Check interval (s)</label>
+						<input
+							type="number"
+							min="60"
+							max="604800"
+							bind:value={intervalDraft}
+							class="w-28 rounded-md border border-surface-700 bg-surface-950 px-2 py-1 text-sm text-surface-100" />
+						<button
+							onclick={saveUpdateInterval}
+							disabled={intervalSaving || String(versionInfo.update_interval ?? '') === String(intervalDraft)}
+							class="btn-secondary text-sm disabled:opacity-50">
+							{intervalSaving ? 'Saving...' : 'Save'}
+						</button>
+					</div>
 				</div>
 
 				{#if forceUpdateResult}
@@ -556,6 +598,11 @@
 				{#if channelResult}
 					<div class="mt-2 rounded-lg border px-3 py-2 text-xs {channelResult.ok === false ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-green-500/20 bg-green-500/10 text-green-400'}">
 						{channelResult.error ?? channelResult.message ?? JSON.stringify(channelResult)}
+					</div>
+				{/if}
+				{#if intervalResult}
+					<div class="mt-2 rounded-lg border px-3 py-2 text-xs {intervalResult.ok === false ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-green-500/20 bg-green-500/10 text-green-400'}">
+						{intervalResult.error ?? intervalResult.message ?? JSON.stringify(intervalResult)}
 					</div>
 				{/if}
 			{:else if !versionLoading}

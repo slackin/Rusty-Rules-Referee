@@ -924,6 +924,7 @@ async fn handle_hub_register(
             hub_version: Some(req.version.clone()),
             build_hash: Some(req.build_hash.clone()),
             update_channel: "beta".to_string(),
+            update_interval: 3600,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
@@ -1058,6 +1059,7 @@ async fn handle_hub_heartbeat(
         ok: true,
         pending_actions,
         update_channel: Some(updated.update_channel.clone()),
+        update_interval: Some(updated.update_interval),
     }))
 }
 

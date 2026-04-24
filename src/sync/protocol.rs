@@ -873,6 +873,10 @@ pub struct HubHeartbeatResponse {
     /// persist it locally so it survives restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_channel: Option<String>,
+    /// Authoritative auto-update check interval (seconds). When set, hubs
+    /// adopt it for their own update loop without requiring a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_interval: Option<u64>,
 }
 
 /// Actions the master can ask a hub to perform.

@@ -346,4 +346,6 @@ export const api = {
 	forceHubUpdate: (id) => request(`/hubs/${id}/force-update`, { method: 'POST' }),
 	setHubUpdateChannel: (id, channel) =>
 		request(`/hubs/${id}/update-channel`, { method: 'PUT', body: JSON.stringify({ channel }) }),
+	setHubUpdateInterval: (id, interval_secs) =>
+		request(`/hubs/${id}/update-interval`, { method: 'PUT', body: JSON.stringify({ interval_secs }) }),
 };

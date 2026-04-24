@@ -257,6 +257,8 @@ pub trait Storage: Send + Sync {
     async fn save_hub(&self, hub: &Hub) -> Result<i64, StorageError>;
     /// Update the update-channel string for a hub (master-controlled).
     async fn set_hub_update_channel(&self, hub_id: i64, channel: &str) -> Result<(), StorageError>;
+    /// Update the auto-update check interval (seconds) for a hub (master-controlled).
+    async fn set_hub_update_interval(&self, hub_id: i64, interval_secs: u64) -> Result<(), StorageError>;
     async fn delete_hub(&self, hub_id: i64) -> Result<(), StorageError>;
     async fn upsert_host_info(&self, info: &HubHostInfo) -> Result<(), StorageError>;
     async fn get_host_info(&self, hub_id: i64) -> Result<Option<HubHostInfo>, StorageError>;

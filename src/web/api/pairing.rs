@@ -445,6 +445,7 @@ pub async fn pair_client(
                 hub_version: None,
                 build_hash: None,
                 update_channel: "beta".to_string(),
+                update_interval: 3600,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             };
