@@ -16,7 +16,12 @@
 			const resp = await api.serverLive(serverId);
 			// ClientResponse is serialized as { response_type, data }.
 			// Fall back to the legacy untagged shape just in case.
-			live = resp?.data ?? resp?.LiveStatus ?? null;
+			if (resp?.response_type === 'Error') {
+				error = resp?.data?.message || 'Client returned an error';
+				live = null;
+			} else {
+				live = resp?.data ?? resp?.LiveStatus ?? null;
+			}
 		} catch (e) {
 			error = e.message || 'Failed to load live status';
 		} finally {

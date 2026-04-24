@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use rusty_rules_referee::config::{RefereeConfig, RunMode};
 use rusty_rules_referee::core::context::BotContext;
@@ -522,6 +522,8 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                                 let mut auth: Option<String> = None;
                                 let mut cg_rgb: Option<String> = None;
                                 let mut current_name: Option<String> = None;
+                                let mut cl_guid: Option<String> = None;
+                                let mut ip_str: Option<String> = None;
                                 for line in raw.lines() {
                                     let trimmed = line.trim();
                                     let mut parts = trimmed.splitn(2, char::is_whitespace);
@@ -532,6 +534,12 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                                             "authl" => auth = Some(val.to_string()),
                                             "cg_rgb" => cg_rgb = Some(val.to_string()),
                                             "name" | "n" => current_name = Some(val.to_string()),
+                                            "cl_guid" => cl_guid = Some(val.to_string()),
+                                            "ip" => {
+                                                ip_str = Some(
+                                                    val.split(':').next().unwrap_or(val).to_string(),
+                                                );
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -541,6 +549,94 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                                 let rgb = cg_rgb;
                                 let cn = current_name;
                                 let need_auth_save = a.as_ref().map_or(false, |v| !v.is_empty());
+
+                                // Promote in-memory client to DB when its
+                                // guid was empty at CONNECT time but has
+                                // now appeared in dumpuser. Without this
+                                // the client's id stays 0 forever, which
+                                // breaks chatlogger's FK and leaves
+                                // auth/stats persistence silently dead.
+                                if client.id == 0 && client.guid.is_empty() {
+                                    if let Some(ref g_val) = cl_guid {
+                                        if !g_val.is_empty() {
+                                            let resolved = match poller_storage
+                                                .get_client_by_guid(g_val)
+                                                .await
+                                            {
+                                                Ok(existing) => Some(existing),
+                                                Err(storage::StorageError::NotFound) => {
+                                                    let mut new_c = Client::new(
+                                                        g_val,
+                                                        cn.as_deref().unwrap_or(""),
+                                                    );
+                                                    new_c.cid = Some(cid.clone());
+                                                    if let Some(ref ip) = ip_str {
+                                                        if let Ok(parsed) = ip.parse() {
+                                                            new_c.ip = Some(parsed);
+                                                        }
+                                                    }
+                                                    match poller_storage
+                                                        .save_client(&new_c)
+                                                        .await
+                                                    {
+                                                        Ok(id) => {
+                                                            new_c.id = id;
+                                                            Some(new_c)
+                                                        }
+                                                        Err(e) => match poller_storage
+                                                            .get_client_by_guid(g_val)
+                                                            .await
+                                                        {
+                                                            Ok(existing) => Some(existing),
+                                                            Err(_) => {
+                                                                warn!(
+                                                                    guid = %g_val,
+                                                                    error = %e,
+                                                                    "Poller: failed to \
+                                                                     promote empty-guid \
+                                                                     client"
+                                                                );
+                                                                None
+                                                            }
+                                                        },
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!(
+                                                        guid = %g_val,
+                                                        error = %e,
+                                                        "Poller: get_client_by_guid \
+                                                         failed while promoting"
+                                                    );
+                                                    None
+                                                }
+                                            };
+                                            if let Some(resolved) = resolved {
+                                                let resolved_id = resolved.id;
+                                                let resolved_guid = resolved.guid.clone();
+                                                let resolved_name = resolved.name.clone();
+                                                let resolved_group_bits = resolved.group_bits;
+                                                poller_clients
+                                                    .update(cid, |c| {
+                                                        c.id = resolved_id;
+                                                        c.guid = resolved_guid.clone();
+                                                        if c.name.is_empty() {
+                                                            c.name = resolved_name.clone();
+                                                        }
+                                                        c.group_bits = resolved_group_bits;
+                                                    })
+                                                    .await;
+                                                info!(
+                                                    cid = %cid,
+                                                    id = resolved_id,
+                                                    guid = %resolved.guid,
+                                                    "Poller: promoted late-guid client to DB"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
                                 poller_clients.update(cid, |c| {
                                     if let Some(ref v) = g { c.gear = Some(v.clone()); }
                                     if let Some(ref v) = a {
@@ -997,9 +1093,16 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                 // Re-read the config file that the sync manager updated
                 let new_config = RefereeConfig::from_file(std::path::Path::new(&config_path))?;
                 if new_config.server.is_configured() {
-                    info!("Configuration is valid, restarting client with game server connection");
-                    // Recursive call with the new config — clean restart of the full client
-                    return Box::pin(run_client(new_config, config_path)).await;
+                    info!("Configuration is valid, exiting for supervisor restart with game server connection");
+                    // Exit the process so the supervisor (systemd / hub) restarts us
+                    // cleanly with the freshly-written referee.toml. A recursive
+                    // `run_client` call would leave the first sync_manager task
+                    // still running, producing two concurrent pollers for the
+                    // same server_id — one of which has no BotContext attached
+                    // and answers master-initiated requests (GetLiveStatus,
+                    // GetPlayers, etc.) with "bot not fully initialised".
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    std::process::exit(0);
                 }
                 warn!("Received config update but game server still not configured, continuing to wait...");
             }
@@ -1226,8 +1329,51 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                     let cid_str = cid.to_string();
                     match handler_parser_raw.dumpuser(&cid_str).await {
                         Ok(info) => {
-                            let db_client = if !info.guid.is_empty() {
-                                handler_storage.get_client_by_guid(&info.guid).await.ok()
+                            // UrT often reports `ClientConnect` before the
+                            // client's userinfo (cl_guid, name) has landed
+                            // on the server. If guid is still empty here,
+                            // don't touch the DB — an empty-guid INSERT
+                            // collides with the UNIQUE(guid) index on
+                            // every subsequent connect and leaves us with
+                            // a zero-id client that later breaks chat/FK
+                            // and trips namechecker's duplicate-name
+                            // detection. The background RCON poller
+                            // (dumpuser every 15s) and EVT_CLIENT_AUTH
+                            // will fill in the real guid/auth/name once
+                            // the client has finished handshaking, at
+                            // which point we persist below.
+                            let guid_ready = !info.guid.is_empty();
+
+                            // Distinguish NotFound from a query error so a
+                            // transient DB hiccup doesn't cause a phantom
+                            // insert that then collides on the next
+                            // attempt.
+                            let db_client = if guid_ready {
+                                match handler_storage
+                                    .get_client_by_guid(&info.guid)
+                                    .await
+                                {
+                                    Ok(existing) => Some(existing),
+                                    Err(storage::StorageError::NotFound) => None,
+                                    Err(e) => {
+                                        warn!(
+                                            guid = %info.guid,
+                                            error = %e,
+                                            "CONNECT: get_client_by_guid failed — \
+                                             skipping DB insert to avoid duplicate row"
+                                        );
+                                        // Build an in-memory client (id=0)
+                                        // so gameplay keeps working;
+                                        // persistence retries next AUTH /
+                                        // poller cycle.
+                                        let mut c = Client::new(&info.guid, &info.name);
+                                        c.cid = Some(cid_str.clone());
+                                        if let Ok(ip) = info.ip.parse() {
+                                            c.ip = Some(ip);
+                                        }
+                                        Some(c)
+                                    }
+                                }
                             } else {
                                 None
                             };
@@ -1240,9 +1386,43 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                                     if let Ok(ip) = info.ip.parse() {
                                         c.ip = Some(ip);
                                     }
-                                    match handler_storage.save_client(&c).await {
-                                        Ok(new_id) => c.id = new_id,
-                                        Err(e) => error!(error = %e, "Failed to save new client"),
+                                    if guid_ready {
+                                        match handler_storage.save_client(&c).await {
+                                            Ok(new_id) => c.id = new_id,
+                                            Err(e) => {
+                                                // Another task (poller,
+                                                // startup sync) likely
+                                                // beat us to the insert —
+                                                // recover by fetching the
+                                                // row that now exists
+                                                // instead of proceeding
+                                                // with id=0 (which
+                                                // poisons FKs for
+                                                // chatlogger/stats).
+                                                if let Ok(existing) = handler_storage
+                                                    .get_client_by_guid(&info.guid)
+                                                    .await
+                                                {
+                                                    debug!(
+                                                        guid = %info.guid,
+                                                        "CONNECT: insert race lost — \
+                                                         using existing row"
+                                                    );
+                                                    c = existing;
+                                                } else {
+                                                    error!(
+                                                        error = %e,
+                                                        "Failed to save new client"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        debug!(
+                                            cid = %cid,
+                                            "CONNECT: userinfo not ready yet (empty guid) — \
+                                             deferring DB persist to poller/AUTH"
+                                        );
                                     }
                                     c
                                 }
@@ -1428,6 +1608,8 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                                 let mut auth: Option<String> = None;
                                 let mut cg_rgb: Option<String> = None;
                                 let mut current_name: Option<String> = None;
+                                let mut cl_guid: Option<String> = None;
+                                let mut ip_str: Option<String> = None;
                                 for line in raw.lines() {
                                     let trimmed = line.trim();
                                     let mut parts = trimmed.splitn(2, char::is_whitespace);
@@ -1438,6 +1620,12 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                                             "authl" => auth = Some(val.to_string()),
                                             "cg_rgb" => cg_rgb = Some(val.to_string()),
                                             "name" | "n" => current_name = Some(val.to_string()),
+                                            "cl_guid" => cl_guid = Some(val.to_string()),
+                                            "ip" => {
+                                                ip_str = Some(
+                                                    val.split(':').next().unwrap_or(val).to_string(),
+                                                );
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -1447,6 +1635,94 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                                 let rgb = cg_rgb;
                                 let cn = current_name;
                                 let need_auth_save = a.as_ref().map_or(false, |v| !v.is_empty());
+
+                                // Promote in-memory client to DB when its
+                                // guid was empty at CONNECT time but has
+                                // now appeared in dumpuser. Without this
+                                // the client's id stays 0 forever, which
+                                // breaks chatlogger's FK and leaves
+                                // auth/stats persistence silently dead.
+                                if client.id == 0 && client.guid.is_empty() {
+                                    if let Some(ref g_val) = cl_guid {
+                                        if !g_val.is_empty() {
+                                            let resolved = match poller_storage
+                                                .get_client_by_guid(g_val)
+                                                .await
+                                            {
+                                                Ok(existing) => Some(existing),
+                                                Err(storage::StorageError::NotFound) => {
+                                                    let mut new_c = Client::new(
+                                                        g_val,
+                                                        cn.as_deref().unwrap_or(""),
+                                                    );
+                                                    new_c.cid = Some(cid.clone());
+                                                    if let Some(ref ip) = ip_str {
+                                                        if let Ok(parsed) = ip.parse() {
+                                                            new_c.ip = Some(parsed);
+                                                        }
+                                                    }
+                                                    match poller_storage
+                                                        .save_client(&new_c)
+                                                        .await
+                                                    {
+                                                        Ok(id) => {
+                                                            new_c.id = id;
+                                                            Some(new_c)
+                                                        }
+                                                        Err(e) => match poller_storage
+                                                            .get_client_by_guid(g_val)
+                                                            .await
+                                                        {
+                                                            Ok(existing) => Some(existing),
+                                                            Err(_) => {
+                                                                warn!(
+                                                                    guid = %g_val,
+                                                                    error = %e,
+                                                                    "Poller: failed to \
+                                                                     promote empty-guid \
+                                                                     client"
+                                                                );
+                                                                None
+                                                            }
+                                                        },
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!(
+                                                        guid = %g_val,
+                                                        error = %e,
+                                                        "Poller: get_client_by_guid \
+                                                         failed while promoting"
+                                                    );
+                                                    None
+                                                }
+                                            };
+                                            if let Some(resolved) = resolved {
+                                                let resolved_id = resolved.id;
+                                                let resolved_guid = resolved.guid.clone();
+                                                let resolved_name = resolved.name.clone();
+                                                let resolved_group_bits = resolved.group_bits;
+                                                poller_clients
+                                                    .update(cid, |c| {
+                                                        c.id = resolved_id;
+                                                        c.guid = resolved_guid.clone();
+                                                        if c.name.is_empty() {
+                                                            c.name = resolved_name.clone();
+                                                        }
+                                                        c.group_bits = resolved_group_bits;
+                                                    })
+                                                    .await;
+                                                info!(
+                                                    cid = %cid,
+                                                    id = resolved_id,
+                                                    guid = %resolved.guid,
+                                                    "Poller: promoted late-guid client to DB"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
                                 poller_clients.update(cid, |c| {
                                     if let Some(ref v) = g { c.gear = Some(v.clone()); }
                                     if let Some(ref v) = a {
@@ -1576,6 +1852,40 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                 }
             }
             info!("Startup sync: player teams loaded");
+        }
+
+        // Also fetch initial serverinfo so the very first heartbeat to the
+        // master carries a real map name + sv_maxclients instead of 0/—
+        // (otherwise the UI sits on stale zeros until the 30s poller
+        // tick fires).
+        match rcon.send("serverinfo").await {
+            Ok(raw) => {
+                let mut g = game.write().await;
+                for line in raw.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with("Server info") { continue; }
+                    let mut parts = line.splitn(2, char::is_whitespace);
+                    if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+                        let (key, val) = (key.trim().to_string(), val.trim().to_string());
+                        match key.as_str() {
+                            "sv_hostname" => g.hostname = Some(val.clone()),
+                            "sv_maxclients" => g.max_clients = val.parse().ok(),
+                            "g_gametype" => g.game_type = Some(val.clone()),
+                            "mapname" => g.map_name = Some(val.clone()),
+                            _ => {}
+                        }
+                        g.server_info.insert(key, val);
+                    }
+                }
+                info!(
+                    map = ?g.map_name,
+                    max_clients = ?g.max_clients,
+                    "Startup sync: serverinfo loaded"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "Startup sync: serverinfo RCON query failed — heartbeat will report empty map/max_clients until poller tick");
+            }
         }
     }
 
