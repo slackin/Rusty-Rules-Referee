@@ -995,6 +995,17 @@ pub struct MintClientCertRequest {
     pub address: String,
     #[serde(default)]
     pub port: u16,
+    /// RCON password for the freshly-installed game server. When set, the
+    /// master seeds `config_json` so the UI doesn't show the "Game Server
+    /// Configuration Required" panel for a hub-installed client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rcon_password: Option<String>,
+    /// Absolute path to `games.log` on the hub host (for log tail).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_log: Option<String>,
+    /// Absolute path to `server.cfg` on the hub host (for the cfg editor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_cfg_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

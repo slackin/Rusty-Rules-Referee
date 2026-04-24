@@ -7,6 +7,43 @@ use crate::sync::protocol::{HubAction, HubProgressEvent, MintClientCertRequest, 
 
 use super::{client_manager, game_server_manager};
 
+/// Try to discover the hub host's public IPv4 address by querying a small
+/// set of well-known echo services. Returns `None` only if every probe
+/// fails. Called when the admin leaves the "public IP" wizard field blank.
+async fn detect_public_ip(http: &reqwest::Client) -> Option<String> {
+    const PROBES: &[&str] = &[
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+        "https://icanhazip.com",
+    ];
+    for url in PROBES {
+        match http
+            .get(*url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(body) = resp.text().await {
+                    let ip = body.trim();
+                    // Reject anything that doesn't parse as an IPv4/6 addr.
+                    if ip.parse::<std::net::IpAddr>().is_ok() {
+                        tracing::info!(url = %url, ip = %ip, "Detected hub public IP");
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+            Ok(resp) => {
+                tracing::debug!(url = %url, status = %resp.status(), "Public IP probe non-2xx");
+            }
+            Err(e) => {
+                tracing::debug!(url = %url, error = %e, "Public IP probe failed");
+            }
+        }
+    }
+    None
+}
+
 /// Helper that posts a single progress event to the master. Failure is
 /// logged and swallowed — progress reporting is best-effort and must
 /// never cause the owning action to fail.
@@ -144,17 +181,48 @@ pub async fn execute(
             .await;
             // 1) Mint a client certificate + register the GameServer row
             //    on the master via the hub's mTLS-authenticated endpoint.
-            let (address, port) = if let Some(params) = &game_server {
-                (params.public_ip.clone(), params.port)
-            } else {
-                (String::new(), 0u16)
-            };
+            //    When the wizard included game_server params, also pass
+            //    the RCON + file paths through so the master seeds
+            //    `config_json` and the new server shows up pre-configured
+            //    in the UI instead of the "Configuration Required" panel.
+            let (address, port, rcon_password, game_log, server_cfg_path) =
+                if let Some(params) = &game_server {
+                    // Resolve the effective public IP: use whatever the admin
+                    // typed; if blank, probe a few public-facing services
+                    // before giving up and letting the master fall back to
+                    // the hub's registered address.
+                    let addr = if params.public_ip.trim().is_empty()
+                        || params.public_ip.trim() == "0.0.0.0"
+                    {
+                        detect_public_ip(http).await.unwrap_or_default()
+                    } else {
+                        params.public_ip.trim().to_string()
+                    };
+                    // Install path is deterministic: <urt_install_root>/<slug>/q3ut4.
+                    // Canonicalize so config_json has absolute paths (the log
+                    // tailer + cfg editor on the client need absolute paths).
+                    let inst = game_server_manager::install_path(hub_cfg, &slug);
+                    let abs = inst.canonicalize().unwrap_or(inst);
+                    let q3ut4 = abs.join("q3ut4");
+                    (
+                        addr,
+                        params.port,
+                        Some(params.rcon_password.clone()),
+                        Some(q3ut4.join("games.log").to_string_lossy().to_string()),
+                        Some(q3ut4.join("server.cfg").to_string_lossy().to_string()),
+                    )
+                } else {
+                    (String::new(), 0u16, None, None, None)
+                };
             let mint_req = MintClientCertRequest {
                 hub_id,
                 slug: slug.clone(),
                 server_name: server_name.clone(),
                 address,
                 port,
+                rcon_password,
+                game_log,
+                server_cfg_path,
             };
             let resp = http
                 .post(format!("{}/internal/hub/mint-client-cert", base_url))

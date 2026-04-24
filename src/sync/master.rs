@@ -1172,6 +1172,37 @@ async fn handle_mint_client_cert(
         req.address
     };
 
+    // If the hub supplied RCON + log/cfg paths from the fresh install,
+    // seed config_json so the server is considered fully configured
+    // immediately — no second wizard required on the master UI.
+    let (config_json, config_version) = if req.port != 0
+        && !effective_address.is_empty()
+        && effective_address != "0.0.0.0"
+        && req.rcon_password.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+    {
+        let payload = crate::sync::protocol::ServerConfigPayload {
+            address: effective_address.clone(),
+            port: req.port,
+            rcon_password: req.rcon_password.clone().unwrap_or_default(),
+            game_log: req.game_log.clone(),
+            server_cfg_path: req.server_cfg_path.clone(),
+            rcon_ip: None,
+            rcon_port: None,
+            delay: None,
+            bot: None,
+            plugins: None,
+        };
+        match serde_json::to_string(&payload) {
+            Ok(s) => (Some(s), 1),
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize initial config_json");
+                (None, 1)
+            }
+        }
+    } else {
+        (None, 1)
+    };
+
     let server = GameServer {
         id: 0,
         name: req.server_name,
@@ -1182,8 +1213,8 @@ async fn handle_mint_client_cert(
         player_count: 0,
         max_clients: 0,
         last_seen: None,
-        config_json: None,
-        config_version: 1,
+        config_json,
+        config_version,
         cert_fingerprint: Some(fingerprint),
         update_channel: "beta".to_string(),
         update_interval: 3600,
