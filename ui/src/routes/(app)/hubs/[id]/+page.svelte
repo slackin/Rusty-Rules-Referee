@@ -27,17 +27,21 @@
 	let installError = $state('');
 
 	// Optional game server install alongside the client
-	let installGameServer = $state(false);
+	let installGameServer = $state(true);
+	let showAdvanced = $state(false);
 	let gsInstallPath = $state('');
-	let gsHostname = $state('');
 	let gsPublicIp = $state('');
 	let gsPort = $state(27960);
-	let gsRconPassword = $state('');
 	let gsGameMode = $state('CTF');
 	let gsMaxClients = $state(16);
-	let gsAdminPassword = $state('');
-	let gsRegisterSystemd = $state(true);
 	let gsForceDownload = $state(false);
+
+	/** Generate a short random hex password (6 chars). */
+	function randomPass() {
+		const buf = new Uint8Array(3);
+		(globalThis.crypto ?? window.crypto).getRandomValues(buf);
+		return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+	}
 
 	const GAME_MODES = [
 		{ value: 'FFA', label: 'Free for All' },
@@ -133,19 +137,20 @@
 		};
 
 		if (installGameServer) {
-			if (!gsInstallPath.trim()) { installError = 'Install path is required'; return; }
-			if (!gsRconPassword.trim()) { installError = 'RCON password is required'; return; }
 			if (!gsPort || gsPort < 1 || gsPort > 65535) { installError = 'Port must be 1–65535'; return; }
+			// Auto-fill fields admins rarely need to touch.
+			const installPath = gsInstallPath.trim() || `/home/urt/urt-${slug}`;
+			const publicIp = gsPublicIp.trim(); // empty → hub auto-detects
 			body.game_server = {
-				install_path: gsInstallPath.trim(),
-				hostname: (gsHostname.trim() || serverName),
-				public_ip: gsPublicIp.trim(),
+				install_path: installPath,
+				hostname: serverName,
+				public_ip: publicIp,
 				port: Number(gsPort),
-				rcon_password: gsRconPassword,
+				rcon_password: randomPass(),
+				admin_password: randomPass(),
 				game_mode: gsGameMode,
 				max_clients: Number(gsMaxClients),
-				admin_password: gsAdminPassword.trim() || null,
-				register_systemd: gsRegisterSystemd,
+				register_systemd: true,
 				slug,
 				force_download: gsForceDownload
 			};
@@ -156,12 +161,13 @@
 			await api.hubInstallClient(hubId, body);
 			installSlug = '';
 			installServerName = '';
-			installGameServer = false;
+			installGameServer = true;
+			showAdvanced = false;
 			gsInstallPath = '';
-			gsHostname = '';
 			gsPublicIp = '';
-			gsRconPassword = '';
-			gsAdminPassword = '';
+			gsPort = 27960;
+			gsMaxClients = 16;
+			gsGameMode = 'CTF';
 			gsForceDownload = false;
 			showInstall = false;
 			await load();
@@ -560,39 +566,6 @@
 
 							{#if installGameServer}
 								<div class="mt-3 grid gap-3 sm:grid-cols-2">
-									<label class="block sm:col-span-2">
-										<span class="text-xs text-surface-500">Install path</span>
-										<input
-											type="text"
-											bind:value={gsInstallPath}
-											placeholder="/home/urt/urt-{installSlug || 'my-server'}"
-											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
-									</label>
-									<label class="block">
-										<span class="text-xs text-surface-500">Hostname (sv_hostname)</span>
-										<input
-											type="text"
-											bind:value={gsHostname}
-											placeholder="defaults to server name"
-											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100 focus:border-accent focus:outline-none" />
-									</label>
-									<label class="block">
-										<span class="text-xs text-surface-500">Public IP</span>
-										<input
-											type="text"
-											bind:value={gsPublicIp}
-											placeholder="auto if blank"
-											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
-									</label>
-									<label class="block">
-										<span class="text-xs text-surface-500">Port</span>
-										<input
-											type="number"
-											min="1"
-											max="65535"
-											bind:value={gsPort}
-											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
-									</label>
 									<label class="block">
 										<span class="text-xs text-surface-500">Max clients</span>
 										<input
@@ -612,35 +585,57 @@
 											{/each}
 										</select>
 									</label>
-									<label class="block">
-										<span class="text-xs text-surface-500">RCON password</span>
-										<input
-											type="password"
-											bind:value={gsRconPassword}
-											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
-									</label>
-									<label class="block">
-										<span class="text-xs text-surface-500">Admin / referee password (optional)</span>
-										<input
-											type="password"
-											bind:value={gsAdminPassword}
-											class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
-									</label>
-									<label class="flex items-center gap-2 text-sm text-surface-300">
-										<input
-											type="checkbox"
-											bind:checked={gsRegisterSystemd}
-											class="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent" />
-										Register systemd service
-									</label>
-									<label class="flex items-center gap-2 text-sm text-surface-300">
-										<input
-											type="checkbox"
-											bind:checked={gsForceDownload}
-											class="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent" />
-										Force re-download UrT files
-									</label>
 								</div>
+
+								<p class="mt-3 text-xs text-surface-500">
+									Install path, public IP, and port are chosen automatically. RCON and referee passwords
+									are generated as short random strings — you can view or rotate them later from the
+									server detail page.
+								</p>
+
+								<button
+									type="button"
+									onclick={() => showAdvanced = !showAdvanced}
+									class="mt-2 text-xs text-accent hover:text-accent/80">
+									{showAdvanced ? '▾ Hide advanced options' : '▸ Advanced options'}
+								</button>
+
+								{#if showAdvanced}
+									<div class="mt-3 grid gap-3 sm:grid-cols-2 rounded-lg border border-surface-800 bg-surface-900 p-3">
+										<label class="block sm:col-span-2">
+											<span class="text-xs text-surface-500">Install path</span>
+											<input
+												type="text"
+												bind:value={gsInstallPath}
+												placeholder="/home/urt/urt-{installSlug || 'my-server'}"
+												class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+										</label>
+										<label class="block">
+											<span class="text-xs text-surface-500">Public IP</span>
+											<input
+												type="text"
+												bind:value={gsPublicIp}
+												placeholder="auto if blank"
+												class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+										</label>
+										<label class="block">
+											<span class="text-xs text-surface-500">Port</span>
+											<input
+												type="number"
+												min="1"
+												max="65535"
+												bind:value={gsPort}
+												class="mt-1 w-full rounded bg-surface-800 border border-surface-700 px-3 py-2 font-mono text-sm text-surface-100 focus:border-accent focus:outline-none" />
+										</label>
+										<label class="flex items-center gap-2 text-sm text-surface-300 sm:col-span-2">
+											<input
+												type="checkbox"
+												bind:checked={gsForceDownload}
+												class="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent" />
+											Force re-download UrT files
+										</label>
+									</div>
+								{/if}
 							{/if}
 						</div>
 
