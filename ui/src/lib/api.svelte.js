@@ -244,6 +244,8 @@ export const api = {
 		request(`/servers/${id}/update-channel`, { method: 'PUT', body: JSON.stringify({ channel }) }),
 	setServerUpdateInterval: (id, interval_secs) =>
 		request(`/servers/${id}/update-interval`, { method: 'PUT', body: JSON.stringify({ interval_secs }) }),
+	setServerUpdateEnabled: (id, enabled) =>
+		request(`/servers/${id}/update-enabled`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
 	checkServerGameLog: (id, path) =>
 		request(`/servers/${id}/check-game-log`, { method: 'POST', body: JSON.stringify({ path }) }),
 	checkGameLog: (path) =>
@@ -353,4 +355,6 @@ export const api = {
 		request(`/hubs/${id}/update-channel`, { method: 'PUT', body: JSON.stringify({ channel }) }),
 	setHubUpdateInterval: (id, interval_secs) =>
 		request(`/hubs/${id}/update-interval`, { method: 'PUT', body: JSON.stringify({ interval_secs }) }),
+	setHubUpdateEnabled: (id, enabled) =>
+		request(`/hubs/${id}/update-enabled`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
 };

@@ -672,12 +672,13 @@ pub async fn get_hub_version(
     };
 
     // Channel comes from the hub row in the DB.
-    let (channel, db_build, update_interval) = match state.storage.get_hub(hub_id).await {
-        Ok(h) => (h.update_channel, h.build_hash, h.update_interval),
+    let (channel, db_build, update_interval, update_enabled) = match state.storage.get_hub(hub_id).await {
+        Ok(h) => (h.update_channel, h.build_hash, h.update_interval, h.update_enabled),
         Err(_) => (
             state.config.update.channel.clone(),
             None,
             state.config.update.check_interval,
+            state.config.update.enabled,
         ),
     };
 
@@ -704,6 +705,7 @@ pub async fn get_hub_version(
         "db_build_hash": db_build,
         "channel": channel,
         "update_interval": update_interval,
+        "update_enabled": update_enabled,
         "latest": latest,
         "master_update_url": update_url,
     }))
@@ -826,6 +828,38 @@ pub async fn set_hub_update_interval(
         "ok": true,
         "message": format!("Update interval set to {}s. Applied on next heartbeat.", interval),
         "interval_secs": interval,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetHubUpdateEnabledBody {
+    pub enabled: bool,
+}
+
+/// PUT /api/v1/hubs/:id/update-enabled — toggle auto-update on/off for this
+/// hub. Persisted in the DB and pushed to the hub on its next heartbeat.
+pub async fn set_hub_update_enabled(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path(hub_id): Path<i64>,
+    Json(body): Json<SetHubUpdateEnabledBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_master(&state) {
+        return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
+    }
+    if let Err(e) = state.storage.set_hub_update_enabled(hub_id, body.enabled).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "message": format!("Auto-update {}. Applied on next heartbeat.",
+            if body.enabled { "enabled" } else { "disabled" }),
+        "enabled": body.enabled,
     }))
     .into_response()
 }

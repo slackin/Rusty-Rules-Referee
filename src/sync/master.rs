@@ -191,6 +191,7 @@ async fn handle_register(
             cert_fingerprint: Some(req.cert_fingerprint),
             update_channel: "beta".to_string(),
             update_interval: 3600,
+            update_enabled: true,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             hub_id: None,
@@ -262,6 +263,7 @@ async fn handle_heartbeat(
     let config_version = server_row.as_ref().map(|s| s.config_version).unwrap_or(0);
     let update_channel = server_row.as_ref().map(|s| s.update_channel.clone());
     let update_interval = server_row.as_ref().map(|s| s.update_interval);
+    let update_enabled = server_row.as_ref().map(|s| s.update_enabled);
 
     Ok(Json(HeartbeatResponse {
         ok: true,
@@ -269,6 +271,7 @@ async fn handle_heartbeat(
         pending_global_bans: Vec::new(), // TODO: track pending bans since last heartbeat
         update_channel,
         update_interval,
+        update_enabled,
     }))
 }
 
@@ -930,6 +933,7 @@ async fn handle_hub_register(
             build_hash: Some(req.build_hash.clone()),
             update_channel: "beta".to_string(),
             update_interval: 3600,
+            update_enabled: true,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
@@ -1065,6 +1069,7 @@ async fn handle_hub_heartbeat(
         pending_actions,
         update_channel: Some(updated.update_channel.clone()),
         update_interval: Some(updated.update_interval),
+        update_enabled: Some(updated.update_enabled),
     }))
 }
 
@@ -1266,6 +1271,7 @@ async fn handle_mint_client_cert(
         cert_fingerprint: Some(fingerprint),
         update_channel: "beta".to_string(),
         update_interval: 3600,
+        update_enabled: true,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         hub_id: Some(req.hub_id),

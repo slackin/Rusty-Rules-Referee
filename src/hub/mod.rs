@@ -23,15 +23,15 @@ pub mod game_server_manager;
 pub mod host_info;
 
 /// Entry point for `--mode hub`.
-pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Result<()> {
+pub async fn run_hub(config: RefereeConfig, config_path: String) -> anyhow::Result<()> {
     info!("Starting in HUB mode");
 
     // Legacy installs shipped with [update].enabled=false. Fleet-managed
     // hubs need auto-update on by default — migrate the file once.
     let mut config = config;
-    match RefereeConfig::migrate_update_enabled_default(Path::new(&_config_path)) {
+    match RefereeConfig::migrate_update_enabled_default(Path::new(&config_path)) {
         Ok(true) => {
-            warn!("Migrated legacy [update].enabled=false → true in {}", _config_path);
+            warn!("Migrated legacy [update].enabled=false → true in {}", config_path);
             config.update.enabled = true;
         }
         Ok(false) => {}
@@ -83,19 +83,19 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
     let update_interval: Arc<RwLock<u64>> =
         Arc::new(RwLock::new(config.update.check_interval));
 
-    // Kick off a periodic auto-update checker if enabled. The channel is
-    // read from the shared `update_channel` state so live changes from the
-    // master take effect on the next tick without a restart.
-    // Always run the auto-update loop in hub mode. The hub is the control
-    // plane for many sub-clients that share its binary via the
-    // /usr/local/bin/rusty-rules-referee symlink, so keeping the hub up to
-    // date also keeps the managed clients up to date (after a restart). We
-    // still respect `config.update.enabled=false` for operators who want to
-    // pin a specific build — but the installed default is now `true`.
-    if config.update.enabled {
+    // Auto-update enable flag. Seeded from local config and toggled at
+    // runtime when the master pushes a new value via heartbeat.
+    let update_enabled: Arc<RwLock<bool>> =
+        Arc::new(RwLock::new(config.update.enabled));
+
+    // Kick off a periodic auto-update checker. The loop runs unconditionally
+    // and gates each tick on `update_enabled`, so the master can toggle
+    // auto-update on or off without restarting the hub.
+    {
         let update_cfg = config.update.clone();
         let channel_watch = update_channel.clone();
         let interval_watch = update_interval.clone();
+        let enabled_watch = update_enabled.clone();
         let clients_root = hub_cfg.clients_root.clone();
         tokio::spawn(async move {
             // After the new hub binary has been laid down (and just before
@@ -112,15 +112,11 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
                 env!("BUILD_HASH"),
                 Some(channel_watch),
                 Some(interval_watch),
+                Some(enabled_watch),
                 Some(pre_restart),
             )
             .await;
         });
-    } else {
-        tracing::warn!(
-            "Hub auto-update is disabled in r3.toml ([update].enabled = false). \
-             Set it to true so the hub and its managed sub-clients stay on the selected channel."
-        );
     }
 
     // Heartbeat / register loop with reconnection on failure.
@@ -223,6 +219,21 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
                                     "Adopting update check interval from master"
                                 );
                                 *update_interval.write().await = remote_interval;
+                            }
+                        }
+                        // Adopt any auto-update enable toggle pushed by the master.
+                        if let Some(remote_enabled) = body.update_enabled {
+                            let current = *update_enabled.read().await;
+                            if current != remote_enabled {
+                                info!(
+                                    from = current,
+                                    to = remote_enabled,
+                                    "Adopting auto-update enabled from master"
+                                );
+                                *update_enabled.write().await = remote_enabled;
+                                if let Err(e) = persist_hub_update_enabled(&config_path, remote_enabled) {
+                                    warn!(error = %e, "Failed to persist hub update_enabled");
+                                }
                             }
                         }
                         // Dispatch any queued actions.
@@ -391,4 +402,27 @@ fn restart_managed_sub_clients(clients_root: &str) {
             }
         }
     }
+}
+
+/// Rewrite the `[update].enabled` value in the hub's local TOML config.
+/// Called when the master toggles auto-update via heartbeat so the new
+/// state survives a restart.
+fn persist_hub_update_enabled(config_path: &str, enabled: bool) -> anyhow::Result<()> {
+    let content = std::fs::read_to_string(config_path)?;
+    let mut doc: toml::Value = toml::from_str(&content)?;
+
+    let update_tbl = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Config root is not a table"))?
+        .entry("update".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+
+    if let Some(table) = update_tbl.as_table_mut() {
+        table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+    }
+
+    let output = toml::to_string_pretty(&doc)?;
+    std::fs::write(config_path, &output)?;
+    info!(path = config_path, enabled, "Persisted hub update_enabled");
+    Ok(())
 }

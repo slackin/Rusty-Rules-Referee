@@ -142,6 +142,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/hubs/:id/force-update", post(api::hubs::force_hub_update))
         .route("/hubs/:id/update-channel", put(api::hubs::set_hub_update_channel))
         .route("/hubs/:id/update-interval", put(api::hubs::set_hub_update_interval))
+        .route("/hubs/:id/update-enabled", put(api::hubs::set_hub_update_enabled))
         // Multi-server management (master mode)
         .route("/servers", get(api::servers::list_servers))
         .route("/servers/:id", get(api::servers::get_server))
@@ -170,6 +171,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/restart", post(api::servers::restart_server))
         .route("/servers/:id/update-channel", put(api::servers::set_server_update_channel))
         .route("/servers/:id/update-interval", put(api::servers::set_server_update_interval))
+        .route("/servers/:id/update-enabled", put(api::servers::set_server_update_enabled))
         .route("/servers/:id/check-game-log", post(api::servers::check_server_game_log))
         // Map repo: per-server import + missing-map diff
         .route("/servers/:id/maps/import", post(api::servers::import_map))

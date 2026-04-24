@@ -33,6 +33,8 @@ pub struct ServerInfo {
     pub update_channel: String,
     /// Auto-update check interval in seconds (master-controlled).
     pub update_interval: u64,
+    /// Auto-update enable flag (master-controlled).
+    pub update_enabled: bool,
     /// Last client-reported build hash (from heartbeat).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_hash: Option<String>,
@@ -178,6 +180,7 @@ pub async fn list_servers(
                 online,
                 update_channel: s.update_channel,
                 update_interval: s.update_interval,
+                update_enabled: s.update_enabled,
                 build_hash,
                 version,
             }
@@ -224,6 +227,7 @@ pub async fn get_server(
         online,
         update_channel: s.update_channel,
         update_interval: s.update_interval,
+        update_enabled: s.update_enabled,
         build_hash,
         version,
     }))
@@ -1026,6 +1030,39 @@ pub async fn set_server_update_interval(
     Json(CommandResponse {
         ok: true,
         message: format!("Update interval set to {}s. Applied on next heartbeat.", interval),
+    })
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetUpdateEnabledRequest {
+    pub enabled: bool,
+}
+
+/// PUT /api/v1/servers/:id/update-enabled — toggle auto-update on/off for
+/// this server. Persisted in the DB and pushed to the client on its next
+/// heartbeat.
+pub async fn set_server_update_enabled(
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+    Json(req): Json<SetUpdateEnabledRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = state.storage.set_server_update_enabled(server_id, req.enabled).await {
+        error!(error = %e, server_id, "Failed to update server update_enabled");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(CommandResponse { ok: false, message: e.to_string() }),
+        )
+            .into_response();
+    }
+
+    info!(server_id, enabled = req.enabled, "Server auto-update toggled");
+    Json(CommandResponse {
+        ok: true,
+        message: format!(
+            "Auto-update {}. Applied on next heartbeat.",
+            if req.enabled { "enabled" } else { "disabled" }
+        ),
     })
     .into_response()
 }

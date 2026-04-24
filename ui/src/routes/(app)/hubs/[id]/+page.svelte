@@ -92,6 +92,9 @@
 	let intervalDraft = $state('3600');
 	let intervalSaving = $state(false);
 	let intervalResult = $state(null);
+	let updateEnabled = $state(true);
+	let updateEnabledSaving = $state(false);
+	let updateEnabledResult = $state(null);
 
 	const CHANNELS = ['production', 'beta', 'alpha', 'dev'];
 
@@ -268,6 +271,7 @@
 			versionInfo = await api.hubVersion(hubId);
 			if (versionInfo?.channel) channelValue = versionInfo.channel;
 			if (versionInfo?.update_interval) intervalDraft = String(versionInfo.update_interval);
+			if (typeof versionInfo?.update_enabled === 'boolean') updateEnabled = versionInfo.update_enabled;
 		} catch (e) {
 			versionError = e.message || 'Failed to load version';
 		}
@@ -322,6 +326,20 @@
 			intervalResult = { ok: false, error: e.message || 'Failed to update interval' };
 		}
 		intervalSaving = false;
+	}
+
+	async function toggleUpdateEnabled() {
+		const next = !updateEnabled;
+		updateEnabledSaving = true;
+		updateEnabledResult = null;
+		try {
+			const r = await api.setHubUpdateEnabled(hubId, next);
+			updateEnabled = next;
+			updateEnabledResult = r;
+		} catch (e) {
+			updateEnabledResult = { ok: false, error: e.message || 'Failed to toggle auto-update' };
+		}
+		updateEnabledSaving = false;
 	}
 
 	/** Open the Configure-Game-Server modal for a given client row. */
@@ -692,6 +710,17 @@
 							{intervalSaving ? 'Saving...' : 'Save'}
 						</button>
 					</div>
+
+					<div class="flex items-center gap-2">
+						<label class="text-xs text-surface-500">Auto-update</label>
+						<button
+							onclick={toggleUpdateEnabled}
+							disabled={updateEnabledSaving}
+							class="btn-secondary text-sm disabled:opacity-50"
+							title="Toggle whether this hub checks for and applies new builds automatically">
+							{updateEnabledSaving ? 'Saving...' : (updateEnabled ? 'Enabled' : 'Disabled')}
+						</button>
+					</div>
 				</div>
 
 				{#if forceUpdateResult}
@@ -707,6 +736,11 @@
 				{#if intervalResult}
 					<div class="mt-2 rounded-lg border px-3 py-2 text-xs {intervalResult.ok === false ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-green-500/20 bg-green-500/10 text-green-400'}">
 						{intervalResult.error ?? intervalResult.message ?? JSON.stringify(intervalResult)}
+					</div>
+				{/if}
+				{#if updateEnabledResult}
+					<div class="mt-2 rounded-lg border px-3 py-2 text-xs {updateEnabledResult.ok === false ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-green-500/20 bg-green-500/10 text-green-400'}">
+						{updateEnabledResult.error ?? updateEnabledResult.message ?? JSON.stringify(updateEnabledResult)}
 					</div>
 				{/if}
 			{:else if !versionLoading}

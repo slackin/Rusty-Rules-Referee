@@ -52,6 +52,9 @@ pub struct ClientSyncManager {
     /// Auto-update check interval (seconds). May be updated at runtime when
     /// the master sends a new value in the heartbeat response.
     update_interval: Arc<RwLock<u64>>,
+    /// Auto-update enable flag. May be toggled at runtime when the master
+    /// sends a new value in the heartbeat response.
+    update_enabled: Arc<RwLock<bool>>,
     storage: Arc<dyn Storage>,
     queue: SyncQueue,
     server_id: Arc<RwLock<Option<i64>>>,
@@ -117,6 +120,7 @@ impl ClientSyncManager {
         config_path: String,
         update_channel: Arc<RwLock<String>>,
         update_interval: Arc<RwLock<u64>>,
+        update_enabled: Arc<RwLock<bool>>,
     ) -> (Self, SyncHandle) {
         let (event_tx, event_rx) = mpsc::channel::<Event>(1024);
         let (command_tx, command_rx) = mpsc::channel::<SyncMessage>(256);
@@ -131,6 +135,7 @@ impl ClientSyncManager {
             config_path,
             update_channel,
             update_interval,
+            update_enabled,
             storage,
             queue,
             server_id: server_id.clone(),
@@ -385,6 +390,22 @@ impl ClientSyncManager {
                                             *self.update_interval.write().await = remote_interval;
                                             if let Err(e) = self.persist_update_interval(remote_interval) {
                                                 warn!(error = %e, "Failed to persist update interval to config file");
+                                            }
+                                        }
+                                    }
+
+                                    // Apply master-controlled auto-update enable toggle if it changed.
+                                    if let Some(remote_enabled) = hb_resp.update_enabled {
+                                        let current = *self.update_enabled.read().await;
+                                        if remote_enabled != current {
+                                            info!(
+                                                old = current,
+                                                new = remote_enabled,
+                                                "Master toggled auto-update — applying"
+                                            );
+                                            *self.update_enabled.write().await = remote_enabled;
+                                            if let Err(e) = self.persist_update_enabled(remote_enabled) {
+                                                warn!(error = %e, "Failed to persist update_enabled to config file");
                                             }
                                         }
                                     }
@@ -902,6 +923,28 @@ impl ClientSyncManager {
         let output = toml::to_string_pretty(&doc)?;
         std::fs::write(&self.config_path, &output)?;
         info!(path = %self.config_path, interval_secs, "Persisted new update interval");
+        Ok(())
+    }
+
+    /// Rewrite the `[update].enabled` value in the local TOML config file.
+    /// Called when the master toggles this client's auto-update flag.
+    fn persist_update_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        let content = std::fs::read_to_string(&self.config_path)?;
+        let mut doc: toml::Value = toml::from_str(&content)?;
+
+        let update_tbl = doc
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("Config root is not a table"))?
+            .entry("update".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+
+        if let Some(table) = update_tbl.as_table_mut() {
+            table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+        }
+
+        let output = toml::to_string_pretty(&doc)?;
+        std::fs::write(&self.config_path, &output)?;
+        info!(path = %self.config_path, enabled, "Persisted new update_enabled");
         Ok(())
     }
 }

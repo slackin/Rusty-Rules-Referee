@@ -124,6 +124,10 @@
 	let intervalResult = $state(null);
 	let intervalDraft = $state('');
 
+	// Auto-update enable toggle
+	let updateEnabledSaving = $state(false);
+	let updateEnabledResult = $state(null);
+
 	async function loadServer() {
 		try {
 			server = await api.server(serverId);
@@ -539,6 +543,24 @@
 		intervalSaving = false;
 	}
 
+	async function toggleUpdateEnabled() {
+		if (!server) return;
+		const previous = server.update_enabled !== false;
+		const next = !previous;
+		server = { ...server, update_enabled: next };
+		updateEnabledSaving = true;
+		updateEnabledResult = null;
+		try {
+			const res = await api.setServerUpdateEnabled(serverId, next);
+			updateEnabledResult = { ok: true, message: res?.message || (next ? 'Auto-update enabled' : 'Auto-update disabled') };
+		} catch (e) {
+			server = { ...server, update_enabled: previous };
+			updateEnabledResult = { ok: false, message: e.message || 'Failed to toggle auto-update' };
+			console.error('[R3] setServerUpdateEnabled failed', e);
+		}
+		updateEnabledSaving = false;
+	}
+
 	$effect(() => { loadServer(); loadConfig(); loadVersion(); });
 </script>
 
@@ -840,6 +862,38 @@
 					{#if intervalResult}
 						<div class="mt-2 rounded-lg px-3 py-2 text-xs {intervalResult.ok ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}">
 							{intervalResult.message}
+						</div>
+					{/if}
+				</div>
+
+				<!-- Auto-update toggle -->
+				<div class="mt-4 border-t border-surface-800 pt-4">
+					<div class="flex items-start justify-between gap-4 flex-wrap">
+						<div class="flex-1 min-w-[200px]">
+							<label class="mb-1 block text-xs font-medium text-surface-400">Auto-update</label>
+							<p class="text-xs text-surface-600">When enabled, this server's bot automatically downloads and applies new releases on its update channel. Toggle takes effect on the next heartbeat; no restart required.</p>
+						</div>
+						<div class="flex items-center gap-2">
+							<button
+								type="button"
+								class="btn-secondary text-xs"
+								onclick={toggleUpdateEnabled}
+								disabled={updateEnabledSaving}
+							>
+								{#if updateEnabledSaving}
+									<Loader2 class="h-3 w-3 animate-spin" />
+								{:else}
+									{server.update_enabled === false ? 'Enable' : 'Disable'}
+								{/if}
+							</button>
+						</div>
+					</div>
+					<div class="mt-1 text-xs text-surface-600">
+						Current: <span class="font-mono {server.update_enabled === false ? 'text-red-400' : 'text-emerald-400'}">{server.update_enabled === false ? 'disabled' : 'enabled'}</span>
+					</div>
+					{#if updateEnabledResult}
+						<div class="mt-2 rounded-lg px-3 py-2 text-xs {updateEnabledResult.ok ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}">
+							{updateEnabledResult.message}
 						</div>
 					{/if}
 				</div>

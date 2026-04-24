@@ -143,6 +143,10 @@ pub struct GameServer {
     /// Auto-update check interval in seconds. Master-controlled; pushed to
     /// the client via heartbeat response.
     pub update_interval: u64,
+    /// Whether auto-update is enabled on this server bot. Master-controlled
+    /// toggle; pushed to the client via heartbeat response so the client
+    /// can start or pause its update loop without a restart.
+    pub update_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// FK to `hubs.id` when this client lives on a hub-managed host.
@@ -174,6 +178,9 @@ pub struct Hub {
     /// back to the hub in every heartbeat response so changes take effect
     /// without a restart.
     pub update_interval: u64,
+    /// Whether auto-update is enabled on this hub. Master-controlled
+    /// toggle; pushed to the hub via heartbeat response.
+    pub update_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

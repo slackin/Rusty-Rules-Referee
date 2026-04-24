@@ -1063,6 +1063,11 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
     // config at startup; master may push a new value via heartbeat response.
     let update_interval = std::sync::Arc::new(tokio::sync::RwLock::new(config.update.check_interval));
 
+    // Shared auto-update enable flag. Populated from local config at startup;
+    // master may toggle via heartbeat response so the loop can be paused or
+    // resumed at runtime without restarting the bot.
+    let update_enabled = std::sync::Arc::new(tokio::sync::RwLock::new(config.update.enabled));
+
     // Set up the sync manager (always needed)
     let (sync_manager, mut sync_handle) = sync::client::ClientSyncManager::new(
         client_config.clone(),
@@ -1070,6 +1075,7 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         config_path.clone(),
         update_channel.clone(),
         update_interval.clone(),
+        update_enabled.clone(),
     );
 
     // Spawn the sync manager
@@ -1083,17 +1089,20 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         info!("Game server not configured — waiting for configuration from master...");
         info!("Configure this server from the master's web dashboard.");
 
-        // Start auto-update checker if enabled
-        if config.update.enabled {
+        // Always spawn the auto-update loop. The loop gates each tick on
+        // `update_enabled`, so the master can flip it on/off at runtime.
+        {
             let update_config = config.update.clone();
             let channel_watch = update_channel.clone();
             let interval_watch = update_interval.clone();
+            let enabled_watch = update_enabled.clone();
             tokio::spawn(async move {
-                rusty_rules_referee::update::run_update_loop_with_overrides(
+                rusty_rules_referee::update::run_update_loop_with_all_overrides(
                     update_config,
                     BUILD_HASH,
                     Some(channel_watch),
                     Some(interval_watch),
+                    Some(enabled_watch),
                 ).await;
             });
         }
@@ -1303,17 +1312,20 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
         }
     });
 
-    // Start auto-update checker if enabled
-    if config.update.enabled {
+    // Always spawn the auto-update loop. The loop gates each tick on
+    // `update_enabled`, so the master can flip it on/off at runtime.
+    {
         let update_config = config.update.clone();
         let channel_watch = update_channel.clone();
         let interval_watch = update_interval.clone();
+        let enabled_watch = update_enabled.clone();
         tokio::spawn(async move {
-            rusty_rules_referee::update::run_update_loop_with_overrides(
+            rusty_rules_referee::update::run_update_loop_with_all_overrides(
                 update_config,
                 BUILD_HASH,
                 Some(channel_watch),
                 Some(interval_watch),
+                Some(enabled_watch),
             ).await;
         });
     }

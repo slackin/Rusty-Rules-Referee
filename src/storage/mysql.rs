@@ -583,6 +583,18 @@ impl MysqlStorage {
         .execute(&mut *conn)
         .await;
 
+        // 017_update_enabled — per-server and per-hub auto-update enable flag.
+        let _ = sqlx::query(
+            "ALTER TABLE servers ADD COLUMN update_enabled TINYINT(1) NOT NULL DEFAULT 1"
+        )
+        .execute(&mut *conn)
+        .await;
+        let _ = sqlx::query(
+            "ALTER TABLE hubs ADD COLUMN update_enabled TINYINT(1) NOT NULL DEFAULT 1"
+        )
+        .execute(&mut *conn)
+        .await;
+
         // Re-enable foreign key checks
         sqlx::query("SET FOREIGN_KEY_CHECKS=1")
             .execute(&mut *conn)
@@ -638,6 +650,10 @@ fn my_row_to_hub(r: &MySqlRow) -> Hub {
             .try_get::<i64, _>("update_interval")
             .map(|v| v as u64)
             .unwrap_or(3600),
+        update_enabled: r
+            .try_get::<i8, _>("update_enabled")
+            .map(|v| v != 0)
+            .unwrap_or(true),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     }
@@ -2084,6 +2100,7 @@ impl Storage for MysqlStorage {
             cert_fingerprint: r.get("cert_fingerprint"),
             update_channel: r.get("update_channel"),
             update_interval: r.try_get::<i32, _>("update_interval").unwrap_or(3600) as u64,
+            update_enabled: r.try_get::<i8, _>("update_enabled").map(|v| v != 0).unwrap_or(true),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
             hub_id: r.try_get("hub_id").ok(),
@@ -2113,6 +2130,7 @@ impl Storage for MysqlStorage {
             cert_fingerprint: row.get("cert_fingerprint"),
             update_channel: row.get("update_channel"),
             update_interval: row.try_get::<i32, _>("update_interval").unwrap_or(3600) as u64,
+            update_enabled: row.try_get::<i8, _>("update_enabled").map(|v| v != 0).unwrap_or(true),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
             hub_id: row.try_get("hub_id").ok(),
@@ -2142,6 +2160,7 @@ impl Storage for MysqlStorage {
             cert_fingerprint: r.get("cert_fingerprint"),
             update_channel: r.get("update_channel"),
             update_interval: r.try_get::<i32, _>("update_interval").unwrap_or(3600) as u64,
+            update_enabled: r.try_get::<i8, _>("update_enabled").map(|v| v != 0).unwrap_or(true),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
             hub_id: r.try_get("hub_id").ok(),
@@ -2155,7 +2174,7 @@ impl Storage for MysqlStorage {
                 "UPDATE servers SET name = ?, address = ?, port = ?, status = ?, \
                  current_map = ?, player_count = ?, max_clients = ?, last_seen = ?, \
                  config_json = ?, config_version = ?, cert_fingerprint = ?, \
-                 update_channel = ?, update_interval = ?, hub_id = ?, slug = ?, \
+                 update_channel = ?, update_interval = ?, update_enabled = ?, hub_id = ?, slug = ?, \
                  updated_at = NOW() WHERE id = ?"
             )
             .bind(&server.name)
@@ -2171,6 +2190,7 @@ impl Storage for MysqlStorage {
             .bind(&server.cert_fingerprint)
             .bind(&server.update_channel)
             .bind(server.update_interval as i64)
+            .bind(server.update_enabled as i8)
             .bind(server.hub_id)
             .bind(&server.slug)
             .bind(server.id)
@@ -2181,8 +2201,8 @@ impl Storage for MysqlStorage {
         } else {
             let result = sqlx::query(
                 "INSERT INTO servers (name, address, port, status, current_map, player_count, \
-                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel, update_interval, hub_id, slug) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 max_clients, last_seen, config_json, config_version, cert_fingerprint, update_channel, update_interval, update_enabled, hub_id, slug) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&server.name)
             .bind(&server.address)
@@ -2197,6 +2217,7 @@ impl Storage for MysqlStorage {
             .bind(&server.cert_fingerprint)
             .bind(&server.update_channel)
             .bind(server.update_interval as i64)
+            .bind(server.update_enabled as i8)
             .bind(server.hub_id)
             .bind(&server.slug)
             .execute(&self.pool)
@@ -2223,6 +2244,18 @@ impl Storage for MysqlStorage {
             "UPDATE servers SET update_interval = ?, updated_at = NOW() WHERE id = ?"
         )
         .bind(interval_secs as i64)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_server_update_enabled(&self, server_id: i64, enabled: bool) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE servers SET update_enabled = ?, updated_at = NOW() WHERE id = ?"
+        )
+        .bind(enabled as i8)
         .bind(server_id)
         .execute(&self.pool)
         .await
@@ -2296,7 +2329,7 @@ impl Storage for MysqlStorage {
             sqlx::query(
                 "UPDATE hubs SET name = ?, address = ?, status = ?, last_seen = ?, \
                  cert_fingerprint = ?, hub_version = ?, build_hash = ?, update_channel = ?, \
-                 update_interval = ?, updated_at = NOW() WHERE id = ?"
+                 update_interval = ?, update_enabled = ?, updated_at = NOW() WHERE id = ?"
             )
             .bind(&hub.name)
             .bind(&hub.address)
@@ -2307,6 +2340,7 @@ impl Storage for MysqlStorage {
             .bind(&hub.build_hash)
             .bind(&hub.update_channel)
             .bind(hub.update_interval as i64)
+            .bind(hub.update_enabled as i8)
             .bind(hub.id)
             .execute(&self.pool)
             .await
@@ -2314,8 +2348,8 @@ impl Storage for MysqlStorage {
             Ok(hub.id)
         } else {
             let result = sqlx::query(
-                "INSERT INTO hubs (name, address, status, last_seen, cert_fingerprint, hub_version, build_hash, update_channel, update_interval) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO hubs (name, address, status, last_seen, cert_fingerprint, hub_version, build_hash, update_channel, update_interval, update_enabled) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&hub.name)
             .bind(&hub.address)
@@ -2326,6 +2360,7 @@ impl Storage for MysqlStorage {
             .bind(&hub.build_hash)
             .bind(&hub.update_channel)
             .bind(hub.update_interval as i64)
+            .bind(hub.update_enabled as i8)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -2350,6 +2385,18 @@ impl Storage for MysqlStorage {
             "UPDATE hubs SET update_interval = ?, updated_at = NOW() WHERE id = ?"
         )
         .bind(interval_secs as i64)
+        .bind(hub_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_hub_update_enabled(&self, hub_id: i64, enabled: bool) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE hubs SET update_enabled = ?, updated_at = NOW() WHERE id = ?"
+        )
+        .bind(enabled as i8)
         .bind(hub_id)
         .execute(&self.pool)
         .await
@@ -2503,6 +2550,7 @@ impl Storage for MysqlStorage {
             cert_fingerprint: r.get("cert_fingerprint"),
             update_channel: r.get("update_channel"),
             update_interval: r.try_get::<i32, _>("update_interval").unwrap_or(3600) as u64,
+            update_enabled: r.try_get::<i8, _>("update_enabled").map(|v| v != 0).unwrap_or(true),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
             hub_id: r.try_get("hub_id").ok(),

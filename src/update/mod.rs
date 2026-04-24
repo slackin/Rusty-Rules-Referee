@@ -426,6 +426,29 @@ pub async fn run_update_loop_with_overrides(
         channel_override,
         interval_override,
         None,
+        None,
+    )
+    .await;
+}
+
+/// Same as [`run_update_loop_with_overrides`] but also accepts an
+/// `enabled_override` that gates each tick — when the flag flips to `false`
+/// the loop keeps running but skips the actual update check, allowing the
+/// master to toggle auto-update without restarting the process.
+pub async fn run_update_loop_with_all_overrides(
+    config: UpdateSection,
+    current_build_hash: &str,
+    channel_override: Option<std::sync::Arc<tokio::sync::RwLock<String>>>,
+    interval_override: Option<std::sync::Arc<tokio::sync::RwLock<u64>>>,
+    enabled_override: Option<std::sync::Arc<tokio::sync::RwLock<bool>>>,
+) {
+    run_update_loop_full::<fn()>(
+        config,
+        current_build_hash,
+        channel_override,
+        interval_override,
+        enabled_override,
+        None,
     )
     .await;
 }
@@ -439,6 +462,7 @@ pub async fn run_update_loop_full<F>(
     current_build_hash: &str,
     channel_override: Option<std::sync::Arc<tokio::sync::RwLock<String>>>,
     interval_override: Option<std::sync::Arc<tokio::sync::RwLock<u64>>>,
+    enabled_override: Option<std::sync::Arc<tokio::sync::RwLock<bool>>>,
     pre_restart: Option<F>,
 ) where
     F: Fn() + Send + Sync + 'static,
@@ -460,6 +484,22 @@ pub async fn run_update_loop_full<F>(
     tokio::time::sleep(Duration::from_secs(30)).await;
 
     loop {
+        // Honour runtime enable toggle. When disabled, sleep one tick and
+        // re-check; this lets the master flip the flag back on without us
+        // having to spawn/cancel the task.
+        let enabled = match enabled_override.as_ref() {
+            Some(lock) => *lock.read().await,
+            None => config.enabled,
+        };
+        if !enabled {
+            let sleep_secs = match interval_override.as_ref() {
+                Some(lock) => *lock.read().await,
+                None => config.check_interval,
+            };
+            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+            continue;
+        }
+
         let channel = match channel_override.as_ref() {
             Some(lock) => lock.read().await.clone(),
             None => config.channel.clone(),

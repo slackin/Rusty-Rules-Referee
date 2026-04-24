@@ -68,6 +68,11 @@ pub struct HeartbeatResponse {
     /// its local config and uses this interval for subsequent update checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_interval: Option<u64>,
+    /// Master-controlled auto-update enable/disable toggle. When present
+    /// the client adopts this state for its auto-update loop and persists
+    /// it to the local TOML config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_enabled: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -909,6 +914,10 @@ pub struct HubHeartbeatResponse {
     /// adopt it for their own update loop without requiring a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_interval: Option<u64>,
+    /// Authoritative auto-update enable/disable toggle. When set, hubs
+    /// adopt it and persist it to local config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_enabled: Option<bool>,
 }
 
 /// Actions the master can ask a hub to perform.
