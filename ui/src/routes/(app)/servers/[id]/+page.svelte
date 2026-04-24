@@ -220,22 +220,33 @@
 		while (installPolling) {
 			try {
 				const resp = await api.installStatus(serverId);
-				if (resp.InstallProgress) {
-					installProgress = resp.InstallProgress;
-				} else if (resp.InstallComplete) {
+				// ClientResponse is serialized as { response_type, data }; older
+				// code also handled the untagged { InstallComplete } shape.
+				const tagged = resp?.response_type;
+				const payload = resp?.data ?? resp?.InstallComplete ?? resp?.InstallProgress ?? resp;
+				const isComplete = tagged === 'InstallComplete' || resp?.InstallComplete;
+				const isProgress = tagged === 'InstallProgress' || resp?.InstallProgress;
+				if (isProgress && !isComplete) {
+					installProgress = payload;
+				} else if (isComplete) {
 					installProgress = { stage: 'Complete!', percent: 100 };
 					installPolling = false;
-					// Pre-fill config from install results
-					if (resp.InstallComplete.game_log) {
-						configGameLog = resp.InstallComplete.game_log;
-					}
-					if (resp.InstallComplete.install_path) {
-						installPath = resp.InstallComplete.install_path;
-					}
-					// Move to manual config step with pre-filled game_log
+					// Pre-fill local form state from install results...
+					if (payload?.game_log) configGameLog = payload.game_log;
+					if (payload?.install_path) installPath = payload.install_path;
+					if (payload?.port) configPort = payload.port;
+					if (payload?.rcon_password) configRconPassword = payload.rcon_password;
+					if (payload?.public_ip) configAddress = payload.public_ip;
+					if (payload?.server_cfg_path) configServerCfgPath = payload.server_cfg_path;
+					// ...and refresh from the server — the master auto-persists
+					// the wizard's effective config into servers.config_json on
+					// InstallComplete, so the Manual Configuration card is now
+					// authoritative.
+					await loadConfig();
+					await loadServer();
 					setupStep = 2;
-				} else if (resp.Error) {
-					installError = resp.Error.message || 'Installation failed';
+				} else if (resp?.Error || tagged === 'Error') {
+					installError = payload?.message || 'Installation failed';
 					installPolling = false;
 				}
 			} catch (e) {

@@ -348,6 +348,13 @@
 				<div class="text-sm text-surface-300 space-y-1">
 					<div>Install path: <code class="text-surface-200">{installStatus?.install_path || installPath}</code></div>
 					{#if installStatus?.game_log}<div>Game log: <code class="text-surface-200">{installStatus.game_log}</code></div>{/if}
+					{#if installStatus?.public_ip}<div>Public IP: <code class="text-surface-200">{installStatus.public_ip}</code></div>{/if}
+					{#if installStatus?.port}<div>Port: <code class="text-surface-200">{installStatus.port}/udp</code></div>{/if}
+					{#if installStatus?.service_name}<div>Service: <code class="text-surface-200">{installStatus.service_name}</code></div>{/if}
+				</div>
+				<div class="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-300">
+					<CheckCircle2 class="h-3.5 w-3.5 inline mr-1" />
+					These values have been saved to the server's Manual Configuration and pushed to the client. No further setup is required — you can start the game server now.
 				</div>
 				<div class="flex gap-2">
 					<a href={`/servers/${serverId}`} class="px-3 py-2 rounded-md border border-surface-700 text-sm hover:bg-surface-800">Back to server</a>

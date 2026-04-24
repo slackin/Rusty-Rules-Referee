@@ -79,6 +79,17 @@ pub fn generate(params: &GameServerWizardParams, server_name: &str) -> Result<St
         _ => String::from("// set auth_owners <password>  (optional)"),
     };
 
+    // Bind IP: only set net_ip when we have a concrete address, otherwise
+    // leave a commented placeholder so UrT binds to all interfaces.
+    let net_ip_line = {
+        let ip = params.public_ip.trim();
+        if ip.is_empty() || contains_cfg_breaking_chars(ip) {
+            String::from("// set net_ip                  \"0.0.0.0\"  // bind to all interfaces")
+        } else {
+            format!("set net_ip                   \"{}\"", ip)
+        }
+    };
+
     // Sanitize server name for the join message (strip quotes).
     let safe_server_name = server_name.replace('"', "'");
 
@@ -90,6 +101,7 @@ pub fn generate(params: &GameServerWizardParams, server_name: &str) -> Result<St
     out = out.replace("{{RCON_PASSWORD}}", &params.rcon_password);
     out = out.replace("{{G_GAMETYPE}}", &gt.to_string());
     out = out.replace("{{ADMIN_PASSWORD_LINE}}", &admin_line);
+    out = out.replace("{{NET_IP_LINE}}", &net_ip_line);
     Ok(out)
 }
 

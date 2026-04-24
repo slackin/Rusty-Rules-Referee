@@ -437,40 +437,42 @@ pub async fn update_server_config(
         }
     }
 
-    let mut server = match state.storage.get_server(server_id).await {
-        Ok(s) => s,
-        Err(_) => {
-            return (StatusCode::NOT_FOUND, Json(CommandResponse {
-                ok: false,
-                message: "Server not found".to_string(),
-            })).into_response();
-        }
-    };
+    match persist_server_config(&state, server_id, payload).await {
+        Ok(()) => Json(CommandResponse {
+            ok: true,
+            message: "Configuration saved and pushed".to_string(),
+        }).into_response(),
+        Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
+    }
+}
 
-    let config_json = match serde_json::to_string(&payload) {
-        Ok(j) => j,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(CommandResponse {
-                ok: false,
-                message: format!("Failed to serialize config: {}", e),
-            })).into_response();
-        }
-    };
+/// Persist a `ServerConfigPayload` into `servers.config_json`, bump the
+/// version, and push a `ConfigUpdate` to the connected client. Shared by the
+/// manual save endpoint and the install-wizard auto-persist path.
+pub(crate) async fn persist_server_config(
+    state: &AppState,
+    server_id: i64,
+    payload: ServerConfigPayload,
+) -> Result<(), (StatusCode, String)> {
+    let mut server = state
+        .storage
+        .get_server(server_id)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, "Server not found".to_string()))?;
+
+    let config_json = serde_json::to_string(&payload)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize config: {}", e)))?;
 
     server.config_json = Some(config_json.clone());
     server.config_version += 1;
     server.address = payload.address.clone();
     server.port = payload.port;
 
-    if let Err(e) = state.storage.save_server(&server).await {
+    state.storage.save_server(&server).await.map_err(|e| {
         error!(error = %e, "Failed to save server config");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(CommandResponse {
-            ok: false,
-            message: "Failed to save configuration".to_string(),
-        })).into_response();
-    }
+        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save configuration".to_string())
+    })?;
 
-    // Push to connected client if online
     if let Some(clients) = state.connected_clients.as_ref() {
         let clients_guard = clients.read().await;
         if let Some(client) = clients_guard.get(&server_id) {
@@ -485,11 +487,7 @@ pub async fn update_server_config(
     }
 
     info!(server_id, version = server.config_version, "Server config updated");
-
-    Json(CommandResponse {
-        ok: true,
-        message: "Configuration saved and pushed".to_string(),
-    }).into_response()
+    Ok(())
 }
 
 // ---- Server setup endpoints (config scan, install, browse) ----
@@ -624,9 +622,123 @@ pub async fn install_status(
         ClientRequest::InstallStatus,
         std::time::Duration::from_secs(30),
     ).await {
-        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()).into_response(),
+        Ok(resp) => {
+            // When the install finishes, transparently persist the effective
+            // game-server config into `servers.config_json` so the operator
+            // doesn't have to re-enter everything on the Manual Configuration
+            // page. Idempotent: repeated polls after completion will re-save
+            // the same values (cheap; bumps config_version which the client
+            // dedupes via its own config-sync handler).
+            if let ClientResponse::InstallComplete {
+                install_path,
+                game_log,
+                port,
+                rcon_password,
+                server_cfg_path,
+                public_ip,
+                ..
+            } = &resp
+            {
+                if let Err(e) = auto_persist_install_config(
+                    &state,
+                    server_id,
+                    install_path,
+                    game_log.as_deref(),
+                    *port,
+                    rcon_password.as_deref(),
+                    server_cfg_path.as_deref(),
+                    public_ip.as_deref(),
+                )
+                .await
+                {
+                    warn!(server_id, error = %e, "Failed to auto-persist wizard install config");
+                }
+            }
+            Json(serde_json::to_value(&resp).unwrap_or_default()).into_response()
+        }
         Err((status, msg)) => (status, Json(CommandResponse { ok: false, message: msg })).into_response(),
     }
+}
+
+/// Build a `ServerConfigPayload` from the wizard's `InstallComplete` response
+/// and persist it via [`persist_server_config`]. Merges with the existing
+/// stored config so we don't clobber user-edited fields (bot settings,
+/// plugin list, rcon_ip/rcon_port overrides). Falls back to the server's
+/// existing address when no `public_ip` is available.
+async fn auto_persist_install_config(
+    state: &AppState,
+    server_id: i64,
+    install_path: &str,
+    game_log: Option<&str>,
+    port: Option<u16>,
+    rcon_password: Option<&str>,
+    server_cfg_path: Option<&str>,
+    public_ip: Option<&str>,
+) -> Result<(), String> {
+    // Load the existing row so we can (a) merge, (b) fall back to the
+    // stored address if we have no detected public IP.
+    let server = state
+        .storage
+        .get_server(server_id)
+        .await
+        .map_err(|e| format!("load server: {}", e))?;
+
+    let existing: Option<ServerConfigPayload> = server
+        .config_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok());
+
+    let address = public_ip
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            // Fall back to the currently-stored address if it's usable.
+            let a = server.address.trim();
+            if !a.is_empty() && a != "0.0.0.0" {
+                Some(a.to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    let Some(port) = port.filter(|p| *p != 0) else {
+        return Err("missing port in InstallComplete".to_string());
+    };
+    let Some(rcon_password) = rcon_password
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return Err("missing rcon_password in InstallComplete".to_string());
+    };
+
+    // Derive the games.log path (the handler populates it); if omitted,
+    // use the canonical q3ut4/games.log under the install path.
+    let game_log = game_log
+        .map(|s| s.to_string())
+        .or_else(|| Some(format!("{}/q3ut4/games.log", install_path.trim_end_matches('/'))));
+
+    let payload = ServerConfigPayload {
+        address,
+        port,
+        rcon_password,
+        game_log,
+        server_cfg_path: server_cfg_path.map(|s| s.to_string()).or_else(|| {
+            existing.as_ref().and_then(|e| e.server_cfg_path.clone())
+        }),
+        rcon_ip: existing.as_ref().and_then(|e| e.rcon_ip.clone()),
+        rcon_port: existing.as_ref().and_then(|e| e.rcon_port),
+        delay: existing.as_ref().and_then(|e| e.delay),
+        bot: existing.as_ref().and_then(|e| e.bot.clone()),
+        plugins: existing.as_ref().and_then(|e| e.plugins.clone()),
+    };
+
+    persist_server_config(state, server_id, payload)
+        .await
+        .map_err(|(_, msg)| msg)?;
+
+    info!(server_id, "Wizard install config auto-persisted to servers.config_json");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

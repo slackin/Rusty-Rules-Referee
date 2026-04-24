@@ -31,6 +31,14 @@ pub struct InstallState {
     pub completed: bool,
     pub install_path: Option<String>,
     pub game_log: Option<String>,
+    /// Wizard-derived fields populated on completion so the master can
+    /// auto-persist a full `ServerConfigPayload` without a second round trip.
+    pub port: Option<u16>,
+    pub rcon_password: Option<String>,
+    pub server_cfg_path: Option<String>,
+    pub public_ip: Option<String>,
+    pub service_name: Option<String>,
+    pub slug: Option<String>,
 }
 
 impl Default for InstallState {
@@ -42,6 +50,12 @@ impl Default for InstallState {
             completed: false,
             install_path: None,
             game_log: None,
+            port: None,
+            rcon_password: None,
+            server_cfg_path: None,
+            public_ip: None,
+            service_name: None,
+            slug: None,
         }
     }
 }
@@ -1024,6 +1038,12 @@ pub async fn handle_install_status(state: &SharedInstallState) -> ClientResponse
         ClientResponse::InstallComplete {
             install_path: s.install_path.clone().unwrap_or_default(),
             game_log: s.game_log.clone(),
+            port: s.port,
+            rcon_password: s.rcon_password.clone(),
+            server_cfg_path: s.server_cfg_path.clone(),
+            public_ip: s.public_ip.clone(),
+            service_name: s.service_name.clone(),
+            slug: s.slug.clone(),
         }
     } else if s.error.is_some() {
         ClientResponse::InstallProgress {
@@ -2525,6 +2545,20 @@ async fn run_wizard_install(
         }
     }
 
+    // -- Resolve public IP: user-provided value wins, otherwise probe via
+    //    a lightweight HTTPS lookup. Blank on failure — the master will
+    //    fall back to the client's TLS peer address.
+    let mut effective_params = params;
+    if effective_params.public_ip.trim().is_empty() {
+        if let Some(ip) = detect_public_ip().await {
+            info!(%ip, "Auto-detected public IP for wizard install");
+            effective_params.public_ip = ip;
+        } else {
+            warn!("Public IP auto-detection failed; master will fall back to client peer IP");
+        }
+    }
+    let params = effective_params;
+
     // -- Multi-instance safety: scan sibling urt@ drop-ins for conflicts --
     let slug = params.slug.clone().unwrap_or_else(|| ctx.slug.clone());
     let siblings = scan_sibling_urt_instances(Path::new(URT_DROPIN_DIR));
@@ -2660,6 +2694,16 @@ async fn run_wizard_install(
         s.completed = true;
         s.install_path = Some(params.install_path.clone());
         s.game_log = Some(games_log.to_string_lossy().to_string());
+        s.port = Some(params.port);
+        s.rcon_password = Some(params.rcon_password.clone());
+        s.server_cfg_path = Some(written.server_cfg.to_string_lossy().to_string());
+        s.public_ip = if params.public_ip.trim().is_empty() {
+            None
+        } else {
+            Some(params.public_ip.clone())
+        };
+        s.service_name = service_name.clone();
+        s.slug = Some(params.slug.clone().unwrap_or_else(|| ctx.slug.clone()));
         s.error = None;
     }
 
@@ -2677,6 +2721,46 @@ async fn run_wizard_install(
 /// mirror list.
 async fn download_and_extract(install_path: &str) -> Result<(), String> {
     download_and_extract_urt(install_path).await
+}
+
+/// Try to discover the host's public IPv4 via a short list of well-known
+/// echo services. Returns `None` if every probe fails (offline host, DNS
+/// broken, captive portal, etc.). Kept deliberately simple and bounded —
+/// the master has a peer-IP fallback if this fails.
+async fn detect_public_ip() -> Option<String> {
+    // Services that return a bare IPv4 as plain text. Ordered by reliability.
+    const PROBES: &[&str] = &[
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+        "https://ipv4.icanhazip.com",
+    ];
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .user_agent(concat!("rusty-rules-referee/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+    for url in PROBES {
+        match client.get(*url).send().await {
+            Ok(r) if r.status().is_success() => {
+                if let Ok(body) = r.text().await {
+                    let trimmed = body.trim();
+                    if is_plausible_ipv4(trimmed) {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Quick sanity check that a string looks like a dotted-quad IPv4 address
+/// (guards against captive portals returning HTML).
+fn is_plausible_ipv4(s: &str) -> bool {
+    s.parse::<std::net::Ipv4Addr>()
+        .map(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local())
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

@@ -410,9 +410,34 @@ pub enum ClientResponse {
         error: Option<String>,
     },
     /// Game server installation completed.
+    ///
+    /// The extra fields beyond `install_path` / `game_log` were added in v2.0
+    /// so the master can auto-persist a complete `ServerConfigPayload` into
+    /// `servers.config_json` without a second round-trip. All are
+    /// `#[serde(default)]` for compatibility with older clients that only
+    /// populated the first two fields.
     InstallComplete {
         install_path: String,
         game_log: Option<String>,
+        /// UDP port the game server was configured to bind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port: Option<u16>,
+        /// RCON password written into the generated `server.cfg`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rcon_password: Option<String>,
+        /// Absolute path to the generated `server.cfg` (for the cfg editor).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_cfg_path: Option<String>,
+        /// Public IP the client believes the server is reachable on
+        /// (wizard input, auto-detected, or empty if neither succeeded).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        public_ip: Option<String>,
+        /// Systemd unit name (`urt@<slug>.service`) if one was registered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_name: Option<String>,
+        /// Slug used for this instance (paths and service name).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slug: Option<String>,
     },
     /// Current client version info.
     Version {
