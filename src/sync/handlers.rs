@@ -563,7 +563,7 @@ const URT_MIRRORS: &[UrtMirror] = &[
 /// candidate is validated (HTTP 2xx, minimum size, magic bytes, archive
 /// listable) before extraction. Returns a human-readable error only if
 /// every mirror fails.
-async fn download_and_extract_urt(install_path: &str) -> Result<(), String> {
+pub async fn download_and_extract_urt(install_path: &str) -> Result<(), String> {
     let target = Path::new(install_path);
     tokio::fs::create_dir_all(target)
         .await
