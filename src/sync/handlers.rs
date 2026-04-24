@@ -562,15 +562,34 @@ const URT_MIRRORS: &[UrtMirror] = &[
 /// listable) before extraction. Returns a human-readable error only if
 /// every mirror fails — the error lists every mirror's failure reason.
 pub async fn download_and_extract_urt(install_path: &str) -> Result<(), String> {
+    download_and_extract_urt_cached(install_path, None).await
+}
+
+/// Same as [`download_and_extract_urt`] but with an optional persistent
+/// cache directory for the downloaded archive. When `cache_dir` is
+/// provided, the archive is stored there (named after the mirror's
+/// URL basename) and reused on subsequent calls if it still validates
+/// (size + magic + archive integrity). When `None`, the archive is
+/// written to `/tmp` and deleted after extraction.
+pub async fn download_and_extract_urt_cached(
+    install_path: &str,
+    cache_dir: Option<&Path>,
+) -> Result<(), String> {
     let target = Path::new(install_path);
     tokio::fs::create_dir_all(target)
         .await
         .map_err(|e| format!("Failed to create {}: {}", install_path, e))?;
 
+    if let Some(dir) = cache_dir {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| format!("Failed to create cache dir {}: {}", dir.display(), e))?;
+    }
+
     let mut per_mirror: Vec<String> = Vec::new();
     for mirror in URT_MIRRORS {
         info!(url = mirror.url, "Trying UrT mirror");
-        match try_mirror(mirror, install_path).await {
+        match try_mirror(mirror, install_path, cache_dir).await {
             Ok(()) => {
                 info!(url = mirror.url, "Mirror succeeded");
                 return Ok(());
@@ -588,163 +607,224 @@ pub async fn download_and_extract_urt(install_path: &str) -> Result<(), String> 
     ))
 }
 
-async fn try_mirror(mirror: &UrtMirror, install_path: &str) -> Result<(), String> {
+async fn try_mirror(
+    mirror: &UrtMirror,
+    install_path: &str,
+    cache_dir: Option<&Path>,
+) -> Result<(), String> {
     let ext = match mirror.kind {
         ArchiveKind::TarGz => "tar.gz",
         ArchiveKind::Zip => "zip",
     };
-    let tmp_path = format!("/tmp/urt43_dl_{}.{}", std::process::id(), ext);
-    let _ = tokio::fs::remove_file(&tmp_path).await;
 
-    // Probe HEAD first so we can fail fast with a clear HTTP status before
-    // downloading half a gigabyte.
-    let probe = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "curl -fsSIL -A 'R3-Wizard/1.0' --max-time 20 -o /dev/null \
-             -w 'http_code=%{{http_code}} final_url=%{{url_effective}} size=%{{size_download}} \
-dl_size=%{{size_header}} time=%{{time_total}}' '{url}' 2>&1",
-            url = mirror.url
-        ))
-        .output()
-        .await
-        .map_err(|e| format!("probe spawn failed: {}", e))?;
-    let probe_out = String::from_utf8_lossy(&probe.stdout).trim().to_string();
-    if !probe.status.success() {
-        let err_text = String::from_utf8_lossy(&probe.stderr);
-        let combined = if err_text.trim().is_empty() {
-            probe_out.clone()
-        } else {
-            format!("{} :: {}", probe_out, err_text.trim())
-        };
-        return Err(format!("HEAD probe failed ({})", combined));
-    }
-    info!(url = mirror.url, probe = %probe_out, "Mirror HEAD probe ok");
+    // Derive a stable filename from the mirror URL basename so that
+    // identical archives across mirrors share a cache slot.
+    let fname = mirror
+        .url
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("urt43_download")
+        .to_string();
 
-    // Download. Capture combined stdout+stderr via `2>&1` into a variable so
-    // we can report the real reason if curl (and wget fallback) both fail.
-    // `set -o pipefail` is bash-only so we stick with plain sh and check each
-    // command's output.
-    let dl_script = format!(
-        "out=$(curl -fL --connect-timeout 30 --max-time 1800 --retry 2 --retry-delay 3 \
-         -A 'R3-Wizard/1.0' -o '{tmp}' '{url}' 2>&1); rc=$?; \
-         if [ $rc -ne 0 ]; then \
-           echo \"curl rc=$rc: $out\"; \
-           out2=$(wget --timeout=60 --tries=2 --user-agent='R3-Wizard/1.0' \
-                 -O '{tmp}' '{url}' 2>&1); rc2=$?; \
-           if [ $rc2 -ne 0 ]; then echo \"wget rc=$rc2: $out2\"; exit $rc2; fi; \
-         fi; exit 0",
-        tmp = tmp_path,
-        url = mirror.url
-    );
-    let dl = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&dl_script)
-        .output()
-        .await
-        .map_err(|e| format!("spawn failed: {}", e))?;
-    if !dl.status.success() {
-        let combined = String::from_utf8_lossy(&dl.stdout);
-        let stderr = String::from_utf8_lossy(&dl.stderr);
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        let msg = if combined.trim().is_empty() {
-            stderr.trim().to_string()
-        } else {
-            combined.trim().to_string()
-        };
-        return Err(format!(
-            "download transport failure (exit {}): {}",
-            dl.status.code().unwrap_or(-1),
-            if msg.is_empty() { "no output captured".to_string() } else { msg }
-        ));
-    }
-
-    // Validate size.
-    let meta = tokio::fs::metadata(&tmp_path)
-        .await
-        .map_err(|e| format!("stat {} failed: {}", tmp_path, e))?;
-    if meta.len() < mirror.min_bytes {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(format!(
-            "file too small ({} bytes, expected >= {}) — mirror likely returned an HTML error page",
-            meta.len(),
-            mirror.min_bytes
-        ));
-    }
-
-    // Validate magic bytes.
-    let mut header = [0u8; 4];
-    {
-        use tokio::io::AsyncReadExt;
-        let mut f = tokio::fs::File::open(&tmp_path)
-            .await
-            .map_err(|e| format!("open tmp failed: {}", e))?;
-        f.read_exact(&mut header)
-            .await
-            .map_err(|e| format!("read magic failed: {}", e))?;
-    }
-    match mirror.kind {
-        ArchiveKind::TarGz => {
-            if &header[..2] != [0x1f, 0x8b] {
-                let _ = tokio::fs::remove_file(&tmp_path).await;
-                return Err(format!(
-                    "not a gzip archive (magic={:02x}{:02x}) — mirror returned something else",
-                    header[0], header[1]
-                ));
-            }
-        }
-        ArchiveKind::Zip => {
-            if header != [0x50, 0x4b, 0x03, 0x04] {
-                let _ = tokio::fs::remove_file(&tmp_path).await;
-                return Err(format!(
-                    "not a zip archive (magic={:02x}{:02x}{:02x}{:02x})",
-                    header[0], header[1], header[2], header[3]
-                ));
-            }
-        }
-    }
-
-    // Archive-integrity check + extract in one pass.
-    let (check_cmd, extract_cmd) = match mirror.kind {
-        ArchiveKind::TarGz => (
-            format!("tar -tzf '{}' >/dev/null", tmp_path),
-            format!(
-                "tar xzf '{tmp}' -C '{dst}' --strip-components=1 2>&1 || \
-                 tar xzf '{tmp}' -C '{dst}' 2>&1",
-                tmp = tmp_path,
-                dst = install_path
-            ),
-        ),
-        ArchiveKind::Zip => (
-            format!("unzip -tq '{}' >/dev/null", tmp_path),
-            format!(
-                "unzip -q -o '{}' -d '{}' 2>&1",
-                tmp_path, install_path
-            ),
+    // When caching, persist to the cache dir; otherwise use /tmp and
+    // delete on exit. `keep_on_success` tracks whether we should leave
+    // the archive on disk after a successful extraction.
+    let (archive_path, keep_on_success): (String, bool) = match cache_dir {
+        Some(dir) => (dir.join(&fname).to_string_lossy().into_owned(), true),
+        None => (
+            format!("/tmp/urt43_dl_{}.{}", std::process::id(), ext),
+            false,
         ),
     };
 
-    let check = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&check_cmd)
-        .output()
-        .await
-        .map_err(|e| format!("integrity check spawn failed: {}", e))?;
-    if !check.status.success() {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(format!(
-            "archive integrity check failed: {}",
-            String::from_utf8_lossy(&check.stderr).trim()
-        ));
+    // If a cached archive already exists, try to reuse it. We validate
+    // size + magic + archive integrity before skipping the download.
+    let mut have_cached = false;
+    if keep_on_success {
+        if let Ok(meta) = tokio::fs::metadata(&archive_path).await {
+            if meta.len() >= mirror.min_bytes
+                && validate_archive(&archive_path, mirror).await.is_ok()
+            {
+                info!(
+                    url = mirror.url,
+                    path = %archive_path,
+                    bytes = meta.len(),
+                    "Reusing cached UrT archive"
+                );
+                have_cached = true;
+            } else {
+                info!(
+                    url = mirror.url,
+                    path = %archive_path,
+                    "Cached archive invalid or too small; re-downloading"
+                );
+                let _ = tokio::fs::remove_file(&archive_path).await;
+            }
+        }
+    } else {
+        // Non-cache path: always start clean.
+        let _ = tokio::fs::remove_file(&archive_path).await;
+    }
+    let tmp_path = archive_path;
+
+    // Helper: remove the archive unless we're keeping it in the cache.
+    let cleanup = |path: String, keep: bool| async move {
+        if !keep {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+    };
+
+    if !have_cached {
+        // Probe HEAD first so we can fail fast with a clear HTTP status before
+        // downloading half a gigabyte.
+        let probe = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "curl -fsSIL -A 'R3-Wizard/1.0' --max-time 20 -o /dev/null \
+                 -w 'http_code=%{{http_code}} final_url=%{{url_effective}} size=%{{size_download}} \
+dl_size=%{{size_header}} time=%{{time_total}}' '{url}' 2>&1",
+                url = mirror.url
+            ))
+            .output()
+            .await
+            .map_err(|e| format!("probe spawn failed: {}", e))?;
+        let probe_out = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+        if !probe.status.success() {
+            let err_text = String::from_utf8_lossy(&probe.stderr);
+            let combined = if err_text.trim().is_empty() {
+                probe_out.clone()
+            } else {
+                format!("{} :: {}", probe_out, err_text.trim())
+            };
+            return Err(format!("HEAD probe failed ({})", combined));
+        }
+        info!(url = mirror.url, probe = %probe_out, "Mirror HEAD probe ok");
+
+        // Download. Capture combined stdout+stderr via `2>&1` into a variable so
+        // we can report the real reason if curl (and wget fallback) both fail.
+        // `set -o pipefail` is bash-only so we stick with plain sh and check each
+        // command's output.
+        let dl_script = format!(
+            "out=$(curl -fL --connect-timeout 30 --max-time 1800 --retry 2 --retry-delay 3 \
+             -A 'R3-Wizard/1.0' -o '{tmp}' '{url}' 2>&1); rc=$?; \
+             if [ $rc -ne 0 ]; then \
+               echo \"curl rc=$rc: $out\"; \
+               out2=$(wget --timeout=60 --tries=2 --user-agent='R3-Wizard/1.0' \
+                     -O '{tmp}' '{url}' 2>&1); rc2=$?; \
+               if [ $rc2 -ne 0 ]; then echo \"wget rc=$rc2: $out2\"; exit $rc2; fi; \
+             fi; exit 0",
+            tmp = tmp_path,
+            url = mirror.url
+        );
+        let dl = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&dl_script)
+            .output()
+            .await
+            .map_err(|e| format!("spawn failed: {}", e))?;
+        if !dl.status.success() {
+            let combined = String::from_utf8_lossy(&dl.stdout);
+            let stderr = String::from_utf8_lossy(&dl.stderr);
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            let msg = if combined.trim().is_empty() {
+                stderr.trim().to_string()
+            } else {
+                combined.trim().to_string()
+            };
+            return Err(format!(
+                "download transport failure (exit {}): {}",
+                dl.status.code().unwrap_or(-1),
+                if msg.is_empty() { "no output captured".to_string() } else { msg }
+            ));
+        }
+
+        // Validate size.
+        let meta = tokio::fs::metadata(&tmp_path)
+            .await
+            .map_err(|e| format!("stat {} failed: {}", tmp_path, e))?;
+        if meta.len() < mirror.min_bytes {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(format!(
+                "file too small ({} bytes, expected >= {}) — mirror likely returned an HTML error page",
+                meta.len(),
+                mirror.min_bytes
+            ));
+        }
+
+        // Validate magic bytes.
+        let mut header = [0u8; 4];
+        {
+            use tokio::io::AsyncReadExt;
+            let mut f = tokio::fs::File::open(&tmp_path)
+                .await
+                .map_err(|e| format!("open tmp failed: {}", e))?;
+            f.read_exact(&mut header)
+                .await
+                .map_err(|e| format!("read magic failed: {}", e))?;
+        }
+        match mirror.kind {
+            ArchiveKind::TarGz => {
+                if &header[..2] != [0x1f, 0x8b] {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return Err(format!(
+                        "not a gzip archive (magic={:02x}{:02x}) — mirror returned something else",
+                        header[0], header[1]
+                    ));
+                }
+            }
+            ArchiveKind::Zip => {
+                if header != [0x50, 0x4b, 0x03, 0x04] {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return Err(format!(
+                        "not a zip archive (magic={:02x}{:02x}{:02x}{:02x})",
+                        header[0], header[1], header[2], header[3]
+                    ));
+                }
+            }
+        }
+
+        // Archive-integrity check for freshly-downloaded archives only
+        // (cached archives were already validated above).
+        let check_cmd = match mirror.kind {
+            ArchiveKind::TarGz => format!("tar -tzf '{}' >/dev/null", tmp_path),
+            ArchiveKind::Zip => format!("unzip -tq '{}' >/dev/null", tmp_path),
+        };
+        let check = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&check_cmd)
+            .output()
+            .await
+            .map_err(|e| format!("integrity check spawn failed: {}", e))?;
+        if !check.status.success() {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(format!(
+                "archive integrity check failed: {}",
+                String::from_utf8_lossy(&check.stderr).trim()
+            ));
+        }
     }
 
+    // Extract.
+    let extract_cmd = match mirror.kind {
+        ArchiveKind::TarGz => format!(
+            "tar xzf '{tmp}' -C '{dst}' --strip-components=1 2>&1 || \
+             tar xzf '{tmp}' -C '{dst}' 2>&1",
+            tmp = tmp_path,
+            dst = install_path
+        ),
+        ArchiveKind::Zip => format!(
+            "unzip -q -o '{}' -d '{}' 2>&1",
+            tmp_path, install_path
+        ),
+    };
     let ex = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&extract_cmd)
         .output()
         .await
         .map_err(|e| format!("extract spawn failed: {}", e))?;
-    let _ = tokio::fs::remove_file(&tmp_path).await;
+    cleanup(tmp_path.clone(), keep_on_success).await;
     if !ex.status.success() {
         return Err(format!(
             "extraction failed: {}",
@@ -776,6 +856,52 @@ dl_size=%{{size_header}} time=%{{time_total}}' '{url}' 2>&1",
         ));
     }
 
+    Ok(())
+}
+
+/// Validate that `archive_path` is a well-formed archive of the given
+/// `mirror.kind`: checks magic bytes and runs the archive tool's integrity
+/// listing (`tar -tzf` / `unzip -tq`). Used to decide whether a cached
+/// archive can be reused without re-downloading.
+async fn validate_archive(archive_path: &str, mirror: &UrtMirror) -> Result<(), String> {
+    let mut header = [0u8; 4];
+    {
+        use tokio::io::AsyncReadExt;
+        let mut f = tokio::fs::File::open(archive_path)
+            .await
+            .map_err(|e| format!("open failed: {}", e))?;
+        f.read_exact(&mut header)
+            .await
+            .map_err(|e| format!("read magic failed: {}", e))?;
+    }
+    match mirror.kind {
+        ArchiveKind::TarGz => {
+            if &header[..2] != [0x1f, 0x8b] {
+                return Err("not a gzip archive".to_string());
+            }
+        }
+        ArchiveKind::Zip => {
+            if header != [0x50, 0x4b, 0x03, 0x04] {
+                return Err("not a zip archive".to_string());
+            }
+        }
+    }
+    let check_cmd = match mirror.kind {
+        ArchiveKind::TarGz => format!("tar -tzf '{}' >/dev/null", archive_path),
+        ArchiveKind::Zip => format!("unzip -tq '{}' >/dev/null", archive_path),
+    };
+    let check = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&check_cmd)
+        .output()
+        .await
+        .map_err(|e| format!("integrity spawn failed: {}", e))?;
+    if !check.status.success() {
+        return Err(format!(
+            "integrity check failed: {}",
+            String::from_utf8_lossy(&check.stderr).trim()
+        ));
+    }
     Ok(())
 }
 

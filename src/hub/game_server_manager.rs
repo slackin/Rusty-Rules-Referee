@@ -4,8 +4,11 @@
 //! with systemd as `urt@<slug>.service` via the template unit laid down
 //! by `install-r3.sh --add-urt`. The heavy lifting (mirror fetch,
 //! archive validation, extraction) is delegated to the shared
-//! `handlers::download_and_extract_urt` helper so hub and standalone
-//! paths share one tested implementation.
+//! `handlers::download_and_extract_urt_cached` helper so hub and
+//! standalone paths share one tested implementation. The hub passes
+//! a persistent cache dir (`<urt_install_root>/.cache/`) so subsequent
+//! installs on the same host reuse the already-downloaded archive
+//! instead of hitting the mirror again.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -15,13 +18,21 @@ use tokio::process::Command;
 use tracing::{info, warn};
 
 use crate::config::HubSection;
-use crate::sync::handlers::download_and_extract_urt;
+use crate::sync::handlers::download_and_extract_urt_cached;
 use crate::sync::protocol::GameServerWizardParams;
 use crate::sync::urt_cfg;
 
 /// Compute the per-instance install path for a slug under `urt_install_root`.
 pub fn install_path(hub_cfg: &HubSection, slug: &str) -> PathBuf {
     PathBuf::from(&hub_cfg.urt_install_root).join(slug)
+}
+
+/// Directory used to cache the downloaded UrT 4.3 archive so subsequent
+/// installs on the same hub don't re-download hundreds of MB from the
+/// mirror. Located as `<urt_install_root>/.cache/` so it lives alongside
+/// the per-slug installs and is covered by the same disk/backup policy.
+pub fn cache_dir(hub_cfg: &HubSection) -> PathBuf {
+    PathBuf::from(&hub_cfg.urt_install_root).join(".cache")
 }
 
 /// Install a UrT 4.3 dedicated server for the given slug.
@@ -54,9 +65,15 @@ pub async fn install_game_server(
     let q3ut4 = path.join("q3ut4");
     let have_files = q3ut4.is_dir();
     if !have_files || params.force_download {
-        info!(%slug, path = %path.display(), "Downloading UrT 4.3 for hub-managed game server");
+        let cache = cache_dir(hub_cfg);
+        info!(
+            %slug,
+            path = %path.display(),
+            cache = %cache.display(),
+            "Downloading UrT 4.3 for hub-managed game server (cached)"
+        );
         let path_str = path.to_string_lossy().to_string();
-        download_and_extract_urt(&path_str)
+        download_and_extract_urt_cached(&path_str, Some(&cache))
             .await
             .map_err(|e| anyhow::anyhow!("UrT download failed: {}", e))?;
     } else {
