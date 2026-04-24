@@ -4,7 +4,7 @@
 	import {
 		HardDrive, RefreshCw, ArrowLeft, Cpu, MemoryStick, HardDriveDownload,
 		Play, Square, RotateCw, Trash2, Plus, Terminal, Wifi, WifiOff,
-		Download, CheckCircle2, AlertCircle
+		Download, CheckCircle2, AlertCircle, Sliders
 	} from 'lucide-svelte';
 
 	const hubId = $derived(Number($page.params.id));
@@ -66,6 +66,19 @@
 
 	// Per-client action busy flags
 	let busySlug = $state('');
+
+	// Reconfigure-game-server modal state.
+	let showReconfig = $state(false);
+	let reconfigSlug = $state('');
+	let reconfigPort = $state(27960);
+	let reconfigNetIp = $state('');
+	let reconfigExtraArgsText = $state('');
+	let reconfigActionId = $state('');
+	let reconfigProgress = $state(/** @type {{step:string,ok:boolean,message:string}[]} */ ([]));
+	let reconfigResult = $state(/** @type {{ok:boolean,message:string,data?:any}|null} */ (null));
+	let reconfigBusy = $state(false);
+	let reconfigError = $state('');
+	let reconfigPollTimer = /** @type {any} */ (null);
 
 	// Update card state
 	let versionInfo = $state(null);
@@ -309,6 +322,97 @@
 			intervalResult = { ok: false, error: e.message || 'Failed to update interval' };
 		}
 		intervalSaving = false;
+	}
+
+	/** Open the Configure-Game-Server modal for a given client row. */
+	function openReconfig(c) {
+		reconfigSlug = c.slug;
+		reconfigPort = c.port || 27960;
+		reconfigNetIp = (c.address && c.address !== '0.0.0.0') ? c.address : '';
+		reconfigExtraArgsText = '';
+		reconfigProgress = [];
+		reconfigResult = null;
+		reconfigActionId = '';
+		reconfigError = '';
+		reconfigBusy = false;
+		showReconfig = true;
+	}
+
+	function dismissReconfig() {
+		if (reconfigPollTimer) { clearTimeout(reconfigPollTimer); reconfigPollTimer = null; }
+		showReconfig = false;
+		reconfigActionId = '';
+		reconfigProgress = [];
+		reconfigResult = null;
+		reconfigError = '';
+		reconfigBusy = false;
+	}
+
+	/**
+	 * Split a free-form "+set x y +set a b" input into tokens the backend
+	 * expects. Does not support quoted values — the backend rejects spaces
+	 * inside tokens anyway, so keep it simple.
+	 */
+	function parseExtraArgs(text) {
+		return text.trim().split(/\s+/).filter(Boolean);
+	}
+
+	async function submitReconfig() {
+		reconfigError = '';
+		const port = Number(reconfigPort);
+		if (!Number.isInteger(port) || port < 1 || port > 65535) {
+			reconfigError = 'Port must be an integer between 1 and 65535';
+			return;
+		}
+		const netIp = reconfigNetIp.trim();
+		if (netIp && !/^[0-9.]+$|^[0-9a-fA-F:]+$/.test(netIp)) {
+			reconfigError = 'Bind IP must be a dotted IPv4 or IPv6 address (leave blank for bind-all)';
+			return;
+		}
+		const extraArgs = parseExtraArgs(reconfigExtraArgsText);
+		const bad = extraArgs.find(t => /[`$;&|<>"'\\(){}\[\]*?#!\s]/.test(t));
+		if (bad) {
+			reconfigError = `Extra arg "${bad}" contains a disallowed character`;
+			return;
+		}
+		reconfigBusy = true;
+		reconfigProgress = [];
+		reconfigResult = null;
+		reconfigActionId = '';
+		try {
+			const resp = await api.hubReconfigureGameServer(hubId, reconfigSlug, {
+				port,
+				net_ip: netIp,
+				extra_args: extraArgs,
+			});
+			reconfigActionId = resp?.action_id || '';
+			if (!reconfigActionId) throw new Error('Server did not return an action_id');
+			await pollReconfigProgress();
+		} catch (e) {
+			reconfigError = e.message || 'Reconfigure failed';
+			reconfigBusy = false;
+		}
+	}
+
+	async function pollReconfigProgress() {
+		if (!reconfigActionId) return;
+		try {
+			const data = await api.hubActionProgress(hubId, reconfigActionId);
+			// Hub action progress events are `{step, message, percent}`; the
+			// final result under `result.data.steps` uses `{step, ok, message}`.
+			reconfigProgress = data?.events ?? [];
+			if (data?.done) {
+				reconfigResult = data.result || { ok: false, message: 'Unknown result' };
+				reconfigBusy = false;
+				if (reconfigResult?.ok) {
+					await load();
+				}
+				return;
+			}
+		} catch (e) {
+			console.warn('reconfigure progress poll failed', e);
+		}
+		reconfigPollTimer = setTimeout(pollReconfigProgress, 1000);
 	}
 
 	function fmtBytes(n) {
@@ -853,6 +957,13 @@
 													</a>
 												{/if}
 												<button
+													onclick={() => openReconfig(c)}
+													disabled={busySlug.startsWith(c.slug + ':')}
+													class="btn-ghost p-1.5 text-purple-400 hover:bg-purple-500/10"
+													title="Configure game server (port, bind IP, extra ExecStart args)">
+													<Sliders class="h-4 w-4" />
+												</button>
+												<button
 													onclick={() => uninstallClient(c.slug)}
 													disabled={busySlug.startsWith(c.slug + ':')}
 													class="btn-ghost p-1.5 text-red-400 hover:bg-red-500/10"
@@ -894,3 +1005,99 @@
 		{/if}
 	{/if}
 </div>
+
+{#if showReconfig}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true">
+		<div class="w-full max-w-lg rounded-xl border border-surface-800 bg-surface-900 p-5 shadow-xl">
+			<div class="mb-3 flex items-center justify-between">
+				<h3 class="text-lg font-semibold text-surface-100">Configure game server</h3>
+				<button onclick={dismissReconfig} class="btn-ghost text-sm" disabled={reconfigBusy}>Close</button>
+			</div>
+			<p class="mb-3 text-xs text-surface-400">
+				Rewrites the <code class="text-surface-200">urt@{reconfigSlug}.service</code> drop-in with new
+				start-time options and restarts the unit. Runtime settings (maps, rcon, plugins)
+				belong on the Servers page instead.
+			</p>
+
+			{#if !reconfigResult}
+				<div class="space-y-3">
+					<label class="block text-sm">
+						<span class="mb-1 block text-xs uppercase text-surface-400">Port</span>
+						<input type="number" min="1" max="65535" bind:value={reconfigPort} disabled={reconfigBusy}
+							class="input w-full" />
+					</label>
+					<label class="block text-sm">
+						<span class="mb-1 block text-xs uppercase text-surface-400">Bind IP <span class="text-surface-600">(optional)</span></span>
+						<input type="text" bind:value={reconfigNetIp} disabled={reconfigBusy}
+							placeholder="blank = bind all interfaces"
+							class="input w-full" />
+					</label>
+					<label class="block text-sm">
+						<span class="mb-1 block text-xs uppercase text-surface-400">Extra ExecStart args <span class="text-surface-600">(optional)</span></span>
+						<input type="text" bind:value={reconfigExtraArgsText} disabled={reconfigBusy}
+							placeholder="+set com_hunkmegs 512 +exec extra.cfg"
+							class="input w-full font-mono text-xs" />
+						<span class="mt-1 block text-[11px] text-surface-500">
+							Whitespace-separated. No shell metacharacters; quoted values aren't supported.
+						</span>
+					</label>
+					{#if reconfigError}
+						<div class="rounded border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-300">{reconfigError}</div>
+					{/if}
+					<div class="flex justify-end gap-2 pt-2">
+						<button onclick={dismissReconfig} disabled={reconfigBusy} class="btn-ghost">Cancel</button>
+						<button onclick={submitReconfig} disabled={reconfigBusy} class="btn-primary">
+							{reconfigBusy ? 'Applying…' : 'Apply & restart'}
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if reconfigActionId}
+				<div class="mt-4 space-y-1 text-xs">
+					{#each reconfigProgress as ev}
+						<div class="flex items-start gap-2 text-surface-300">
+							<span class="text-surface-500">{ev.step}</span>
+							<span class="text-surface-400">{ev.message ?? ''}</span>
+							{#if typeof ev.percent === 'number'}
+								<span class="ml-auto text-surface-500">{ev.percent}%</span>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			{#if reconfigResult}
+				<div class="mt-3 rounded border p-3 text-sm"
+					class:border-green-500={reconfigResult.ok}
+					class:bg-green-500={reconfigResult.ok}
+					class:border-red-500={!reconfigResult.ok}
+					class:bg-red-500={!reconfigResult.ok}
+					class:border-opacity-40={true}
+					class:bg-opacity-10={true}>
+					<div class="flex items-center gap-2">
+						{#if reconfigResult.ok}
+							<CheckCircle2 class="h-4 w-4 text-green-400" />
+							<span class="text-green-300">Applied. Unit restarted on port {reconfigPort}.</span>
+						{:else}
+							<AlertCircle class="h-4 w-4 text-red-400" />
+							<span class="text-red-300">{reconfigResult.message || 'Reconfigure failed.'}</span>
+						{/if}
+					</div>
+					{#if reconfigResult.data?.steps}
+						<ul class="mt-2 space-y-0.5 text-xs text-surface-300">
+							{#each reconfigResult.data.steps as s}
+								<li class:text-green-400={s.ok} class:text-red-400={!s.ok}>
+									[{s.ok ? 'ok' : 'fail'}] {s.step}{s.message ? ' — ' + s.message : ''}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+					<div class="mt-3 flex justify-end">
+						<button onclick={dismissReconfig} class="btn-primary">Close</button>
+					</div>
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}

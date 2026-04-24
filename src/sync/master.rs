@@ -1384,6 +1384,7 @@ fn action_kind_label(action: &HubAction) -> String {
         HubAction::RestartClient { .. } => "restart_client",
         HubAction::InstallGameServer { .. } => "install_game_server",
         HubAction::RemoveGameServer { .. } => "remove_game_server",
+        HubAction::ReconfigureGameServer { .. } => "reconfigure_game_server",
         HubAction::UpdateClient { .. } => "update_client",
         HubAction::GetClientLogs { .. } => "get_client_logs",
         HubAction::GetHubVersion => "get_hub_version",

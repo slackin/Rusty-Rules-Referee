@@ -341,6 +341,11 @@ export const api = {
 		request(`/hubs/${id}/clients/${encodeURIComponent(slug)}/action`, { method: 'POST', body: JSON.stringify({ action }) }),
 	hubInstallGameServer: (id, body) =>
 		request(`/hubs/${id}/game-server`, { method: 'POST', body: JSON.stringify(body) }),
+	hubReconfigureGameServer: (id, slug, body) =>
+		request(`/hubs/${id}/clients/${encodeURIComponent(slug)}/reconfigure-game-server`, {
+			method: 'POST',
+			body: JSON.stringify(body),
+		}),
 	hubRestart: (id) => request(`/hubs/${id}/restart`, { method: 'POST' }),
 	hubVersion: (id) => request(`/hubs/${id}/version`),
 	forceHubUpdate: (id) => request(`/hubs/${id}/force-update`, { method: 'POST' }),

@@ -665,6 +665,13 @@ pub struct UrtInstallState {
     /// Path to the games.log file for this instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_log: Option<String>,
+    /// Bind IP currently baked into the systemd drop-in's `+set net_ip`.
+    /// `None` means "bind to all interfaces" (no `net_ip` token in ExecStart).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_ip: Option<String>,
+    /// Extra ExecStart tokens appended after `+exec server.cfg`, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_args: Option<Vec<String>>,
 }
 
 /// Result of probing a single port for availability.
@@ -933,6 +940,23 @@ pub enum HubAction {
         params: GameServerWizardParams,
     },
     RemoveGameServer { slug: String },
+    /// Rewrite the systemd drop-in for `urt@<slug>.service` with new
+    /// start-time options and restart the unit. Scope is strictly
+    /// start-time — server.cfg fields are owned by the sub-client bot
+    /// and applied via `rcon reload`.
+    ReconfigureGameServer {
+        slug: String,
+        port: u16,
+        /// Bind address for `+set net_ip`. Empty = bind to all interfaces
+        /// (the `net_ip` cvar is omitted from ExecStart).
+        #[serde(default)]
+        net_ip: String,
+        /// Extra whitespace-separated tokens appended after `+exec server.cfg`.
+        /// Validated server-side: printable ASCII, no shell metacharacters,
+        /// total length ≤ 1024.
+        #[serde(default)]
+        extra_args: Vec<String>,
+    },
     /// Force the per-client R3 binary to re-pull and apply an update.
     UpdateClient { slug: String },
     /// Read the last `tail_lines` of a client's journald log.

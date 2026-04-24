@@ -131,6 +131,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/hubs/:id/clients", post(api::hubs::install_client))
         .route("/hubs/:id/clients/:slug", delete(api::hubs::uninstall_client))
         .route("/hubs/:id/clients/:slug/action", post(api::hubs::client_action))
+        .route(
+            "/hubs/:id/clients/:slug/reconfigure-game-server",
+            post(api::hubs::reconfigure_game_server),
+        )
         .route("/hubs/:id/actions/:action_id", get(api::hubs::get_action_progress))
         .route("/hubs/:id/game-server", post(api::hubs::install_game_server))
         .route("/hubs/:id/restart", post(api::hubs::restart_hub))

@@ -428,6 +428,212 @@ pub async fn install_game_server(
     .into_response()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ReconfigureGameServerBody {
+    pub port: u16,
+    #[serde(default)]
+    pub net_ip: String,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+/// POST /api/v1/hubs/:id/clients/:slug/reconfigure-game-server
+///
+/// Rewrites the systemd drop-in for `urt@<slug>.service` with new
+/// start-time options (port, net_ip, extra ExecStart args) and restarts
+/// the unit. Returns `202 Accepted` with `{ action_id }`. Spawns a
+/// watcher that, on hub success, updates the master's `servers` row
+/// (port, optional address) and pushes a `ConfigUpdate` to the
+/// sub-client bot so its RCON poller uses the new port immediately.
+pub async fn reconfigure_game_server(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path((hub_id, slug)): Path<(i64, String)>,
+    Json(body): Json<ReconfigureGameServerBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_master(&state) {
+        return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
+    }
+    if body.port == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "port must be > 0"})),
+        )
+            .into_response();
+    }
+    if let Err(msg) =
+        crate::hub::game_server_manager::validate_extra_args(&body.extra_args)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("invalid extra_args: {}", msg)})),
+        )
+            .into_response();
+    }
+
+    let pending_actions = match &state.pending_hub_actions {
+        Some(a) => a.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Hub orchestration not available"})),
+            )
+                .into_response();
+        }
+    };
+    let logs = match &state.hub_action_logs {
+        Some(l) => l.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Hub orchestration not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    let action = HubAction::ReconfigureGameServer {
+        slug: slug.clone(),
+        port: body.port,
+        net_ip: body.net_ip.clone(),
+        extra_args: body.extra_args.clone(),
+    };
+    let action_id = crate::sync::master::enqueue_hub_action(
+        &pending_actions,
+        &logs,
+        hub_id,
+        action,
+    )
+    .await;
+
+    // Watcher: once the hub reports ok, propagate the new port/address into
+    // the master's `servers` row for (hub_id, slug) and push ConfigUpdate
+    // via the existing `persist_server_config` helper.
+    let logs_watch = logs.clone();
+    let action_id_watch = action_id.clone();
+    let state_watch = state.clone();
+    let new_port = body.port;
+    let new_net_ip = body.net_ip.clone();
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+        let deadline = std::time::Instant::now() + Duration::from_secs(5 * 60);
+        loop {
+            if std::time::Instant::now() > deadline {
+                tracing::warn!(
+                    action_id = %action_id_watch, hub_id, slug = %slug,
+                    "Reconfigure watcher timed out waiting for hub response"
+                );
+                return;
+            }
+            let done_result = {
+                let guard = logs_watch.read().await;
+                guard.get(&action_id_watch).and_then(|l| l.result.clone())
+            };
+            if let Some(result) = done_result {
+                if !result.ok {
+                    tracing::warn!(
+                        action_id = %action_id_watch, hub_id, slug = %slug,
+                        msg = %result.message,
+                        "Hub reported reconfigure failure — skipping DB propagation"
+                    );
+                    return;
+                }
+                propagate_reconfigure_to_db(
+                    &state_watch,
+                    hub_id,
+                    &slug,
+                    new_port,
+                    &new_net_ip,
+                )
+                .await;
+                return;
+            }
+            sleep(Duration::from_millis(500)).await;
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "action_id": action_id })),
+    )
+        .into_response()
+}
+
+/// Update the master's `servers` row for the `(hub_id, slug)` target with
+/// the new port/address and push a ConfigUpdate to the connected
+/// sub-client. Best-effort: any failure is logged but not surfaced.
+async fn propagate_reconfigure_to_db(
+    state: &AppState,
+    hub_id: i64,
+    slug: &str,
+    new_port: u16,
+    new_net_ip: &str,
+) {
+    use crate::sync::protocol::ServerConfigPayload;
+    let servers = match state.storage.get_servers().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "get_servers failed during reconfigure propagation");
+            return;
+        }
+    };
+    let target = servers.into_iter().find(|s| {
+        s.hub_id == Some(hub_id) && s.slug.as_deref() == Some(slug)
+    });
+    let Some(server) = target else {
+        tracing::warn!(hub_id, slug, "No servers row matched reconfigure");
+        return;
+    };
+
+    let existing: Option<ServerConfigPayload> = server
+        .config_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok());
+
+    let trimmed_ip = new_net_ip.trim();
+    let address = if !trimmed_ip.is_empty() && trimmed_ip != "0.0.0.0" {
+        trimmed_ip.to_string()
+    } else {
+        // Leave existing public-facing address intact when the bind was
+        // reset to all-interfaces — RCON still targets the public IP.
+        existing
+            .as_ref()
+            .map(|e| e.address.clone())
+            .unwrap_or_else(|| server.address.clone())
+    };
+
+    // Merge into existing payload (keep rcon_password, plugins, bot, etc.).
+    let payload = if let Some(mut p) = existing {
+        p.address = address;
+        p.port = new_port;
+        p
+    } else {
+        // No prior config_json — bail with a warning. Without a stored
+        // rcon_password the payload would be incomplete and would break
+        // the sub-client's RCON poller. The operator should save config
+        // at least once via the Server detail page before reconfiguring.
+        tracing::warn!(
+            server_id = server.id, hub_id, slug,
+            "Reconfigure: servers row has no config_json — skipping DB propagation"
+        );
+        return;
+    };
+
+    if let Err((_, msg)) =
+        crate::web::api::servers::persist_server_config(state, server.id, payload).await
+    {
+        tracing::warn!(
+            server_id = server.id, error = %msg,
+            "persist_server_config failed during reconfigure propagation"
+        );
+    } else {
+        tracing::info!(
+            server_id = server.id, hub_id, slug, new_port,
+            "Propagated reconfigure to servers row"
+        );
+    }
+}
+
 /// POST /api/v1/hubs/:id/restart
 pub async fn restart_hub(
     AdminOnly(_): AdminOnly,

@@ -397,6 +397,7 @@ pub async fn execute(
                     port: Some(params.port),
                     server_cfg_path: Some(q3ut4.join("server.cfg").to_string_lossy().to_string()),
                     game_log: Some(q3ut4.join("games.log").to_string_lossy().to_string()),
+                    ..Default::default()
                 };
                 let state_file = dir.join("state").join("urt-install.json");
                 if let Some(parent) = state_file.parent() {
@@ -564,6 +565,40 @@ pub async fn execute(
                 anyhow::bail!("Game server {} removal had errors: {}", slug, detail)
             } else {
                 Ok((format!("Game server {} removed", slug), Some(data)))
+            }
+        }
+        HubAction::ReconfigureGameServer {
+            slug,
+            port,
+            net_ip,
+            extra_args,
+        } => {
+            let exec = game_server_manager::UrtExecParams {
+                port,
+                net_ip,
+                extra_args,
+            };
+            let steps =
+                game_server_manager::reconfigure_game_server(hub_cfg, &slug, &exec).await?;
+            let failed = steps.iter().any(|(_, ok, _)| !ok);
+            let data = json!({
+                "slug": slug,
+                "port": exec.port,
+                "net_ip": exec.net_ip,
+                "extra_args": exec.extra_args,
+                "steps": steps.into_iter().map(|(step, ok, msg)| json!({
+                    "step": step, "ok": ok, "message": msg,
+                })).collect::<Vec<_>>(),
+                "all_ok": !failed,
+            });
+            if failed {
+                let detail = serde_json::to_string(&data).unwrap_or_default();
+                anyhow::bail!("Game server {} reconfigure had errors: {}", slug, detail)
+            } else {
+                Ok((
+                    format!("Game server {} reconfigured", slug),
+                    Some(data),
+                ))
             }
         }
         HubAction::UpdateClient { slug } => {

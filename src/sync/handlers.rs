@@ -2725,6 +2725,7 @@ async fn run_wizard_install(
         port: Some(params.port),
         server_cfg_path: Some(written.server_cfg.to_string_lossy().to_string()),
         game_log: Some(games_log.to_string_lossy().to_string()),
+        ..Default::default()
     };
     if let Err(e) = write_install_state(&ctx.state_file, &new_state) {
         warn!(error = %e, "Failed to persist install-state marker (install still succeeded)");
