@@ -1116,6 +1116,7 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
 
     // Spawn a task to handle commands from master
     let cmd_ctx = ctx.clone();
+    let cmd_update_url = config.update.url.clone();
     tokio::spawn(async move {
         while let Some(msg) = sync_handle.command_rx.recv().await {
             match msg {
@@ -1142,6 +1143,22 @@ async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Resul
                         }
                         sync::protocol::RemoteAction::Unban { .. } => {
                             // TODO: implement unban by client_id
+                        }
+                        sync::protocol::RemoteAction::SelfUninstall { remove_gameserver } => {
+                            warn!("Received SelfUninstall from master — tearing down this client");
+                            match rusty_rules_referee::core::self_uninstall::trigger(
+                                &cmd_update_url,
+                                false,
+                                remove_gameserver,
+                            ) {
+                                Ok(msg) => info!("{}", msg),
+                                Err(e) => error!(error = %e, "Self-uninstall failed to dispatch"),
+                            }
+                            // Give the transient unit a moment to start
+                            // before we exit, then shut down cleanly so
+                            // systemd doesn't race the uninstaller.
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            std::process::exit(0);
                         }
                     }
                 }

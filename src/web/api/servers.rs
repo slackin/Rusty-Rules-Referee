@@ -234,6 +234,51 @@ pub async fn delete_server(
     State(state): State<AppState>,
     Path(server_id): Path<i64>,
 ) -> Result<StatusCode, StatusCode> {
+    // Best-effort: initiate a full host uninstall before we forget this
+    // row. For hub-managed clients, route through the owning hub's
+    // `UninstallClient` action (which handles systemd + fs cleanup).
+    // For standalone clients, send `RemoteAction::SelfUninstall` which
+    // the client fires at the uninstaller then exits.
+    let server = state.storage.get_server(server_id).await.ok();
+
+    if let Some(srv) = server.as_ref() {
+        if let (Some(hub_id), Some(slug)) = (srv.hub_id, srv.slug.clone()) {
+            // Hub-managed: enqueue UninstallClient on the owning hub.
+            if let (Some(pending_actions), Some(pending_responses)) = (
+                state.pending_hub_actions.clone(),
+                state.pending_hub_responses.clone(),
+            ) {
+                let action = crate::sync::protocol::HubAction::UninstallClient {
+                    slug,
+                    remove_data: true,
+                };
+                match crate::sync::master::send_action_to_hub(
+                    &pending_responses,
+                    &pending_actions,
+                    hub_id,
+                    action,
+                    std::time::Duration::from_secs(60),
+                )
+                .await
+                {
+                    Ok(resp) => info!(server_id, hub_id, ?resp, "Hub uninstalled managed client"),
+                    Err(e) => warn!(
+                        server_id, hub_id, error = %e,
+                        "Hub did not ack UninstallClient; deleting row anyway"
+                    ),
+                }
+            }
+        } else {
+            // Standalone client: fire-and-forget SelfUninstall via WS.
+            let _ = send_to_server(
+                &state,
+                server_id,
+                RemoteAction::SelfUninstall { remove_gameserver: true },
+            )
+            .await;
+        }
+    }
+
     state.storage.delete_server(server_id).await.map_err(|e| {
         error!(error = %e, "Failed to delete server");
         StatusCode::INTERNAL_SERVER_ERROR

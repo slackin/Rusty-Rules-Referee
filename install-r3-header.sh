@@ -370,7 +370,10 @@ Cmnd_Alias R3_URT_DROPIN = /usr/bin/tee /etc/systemd/system/urt@.service.d/*.con
                            /bin/rm /etc/systemd/system/urt@.service.d/*.conf, \\
                            /usr/bin/rm /etc/systemd/system/urt@.service.d/*.conf
 
-${REAL_USER} ALL=(root) NOPASSWD: R3_URT_SYSTEMCTL, R3_URT_DROPIN
+Cmnd_Alias R3_URT_SELF_UNINSTALL = /usr/bin/systemd-run --no-block --collect --unit r3-self-uninstall-*.service /bin/bash -c *, \\
+                                   /bin/systemd-run --no-block --collect --unit r3-self-uninstall-*.service /bin/bash -c *
+
+${REAL_USER} ALL=(root) NOPASSWD: R3_URT_SYSTEMCTL, R3_URT_DROPIN, R3_URT_SELF_UNINSTALL
 SUDOEOF
     chmod 0440 "${SUDOERS_FILE}"
 
@@ -1051,7 +1054,10 @@ Cmnd_Alias R3_HUB_DROPIN = /usr/bin/install -d -m 0755 /etc/systemd/system/r3-cl
                            /usr/bin/rm /etc/systemd/system/r3-client@*.service.d/*.conf, \\
                            /bin/rm /etc/systemd/system/r3-client@*.service.d/*.conf
 
-${REAL_USER} ALL=(root) NOPASSWD: R3_HUB_SYSTEMCTL, R3_HUB_DROPIN
+Cmnd_Alias R3_HUB_SELF_UNINSTALL = /usr/bin/systemd-run --no-block --collect --unit r3-self-uninstall-*.service /bin/bash -c *, \\
+                                   /bin/systemd-run --no-block --collect --unit r3-self-uninstall-*.service /bin/bash -c *
+
+${REAL_USER} ALL=(root) NOPASSWD: R3_HUB_SYSTEMCTL, R3_HUB_DROPIN, R3_HUB_SELF_UNINSTALL
 HUBSUDOEOF
     chmod 0440 "${HUB_SUDOERS_FILE}"
 

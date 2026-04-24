@@ -727,6 +727,18 @@ pub enum RemoteAction {
     Say { message: String },
     /// Send a private message.
     Message { cid: String, message: String },
+    /// Fully uninstall the R3 client from the host: stop + disable the
+    /// systemd unit, remove install dir, certs, DB, and optionally the
+    /// UrT game server files. The client process exits as part of the
+    /// handler; master must not expect a response.
+    SelfUninstall {
+        #[serde(default = "default_true_bool")]
+        remove_gameserver: bool,
+    },
+}
+
+fn default_true_bool() -> bool {
+    true
 }
 
 /// Result of a remote command execution.
@@ -910,6 +922,20 @@ pub enum HubAction {
         update_url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         channel: Option<String>,
+    },
+    /// Fully uninstall the hub (and every client it manages) from the
+    /// host. The hub iterates its managed `r3-client@*` units, runs
+    /// per-client cleanup, then spawns the uninstaller as a transient
+    /// systemd unit and exits.
+    SelfUninstall {
+        #[serde(default = "default_true_bool")]
+        remove_gameserver: bool,
+        /// Base URL of the master's update endpoint, e.g.
+        /// `https://r3.pugbot.net/api/updates`. The hub appends
+        /// `/uninstall-r3.sh` to fetch the uninstaller. When `None`
+        /// the hub falls back to its configured default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_url: Option<String>,
     },
 }
 

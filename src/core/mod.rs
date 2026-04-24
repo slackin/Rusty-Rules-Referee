@@ -3,6 +3,7 @@ mod clients;
 pub mod context;
 mod game;
 pub mod log_tailer;
+pub mod self_uninstall;
 mod types;
 
 pub use client::{Client, ClientVar, Team};

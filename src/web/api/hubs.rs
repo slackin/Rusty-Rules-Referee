@@ -431,6 +431,39 @@ pub async fn delete_hub(
     if let Err(e) = require_master(&state) {
         return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
     }
+
+    // Best-effort: ask the hub to uninstall itself (and every sub-client it
+    // manages) before we forget it. A dead or disconnected hub simply
+    // won't respond — we continue and delete the row anyway so the admin
+    // doesn't end up with orphaned master rows.
+    let pending_actions_opt = state.pending_hub_actions.clone();
+    let pending_responses_opt = state.pending_hub_responses.clone();
+    if let (Some(pending_actions), Some(pending_responses)) =
+        (pending_actions_opt, pending_responses_opt)
+    {
+        let update_url = state.config.update.url.clone();
+        let action = HubAction::SelfUninstall {
+            remove_gameserver: true,
+            update_url: Some(update_url),
+        };
+        match send_action_to_hub(
+            &pending_responses,
+            &pending_actions,
+            hub_id,
+            action,
+            Duration::from_secs(30),
+        )
+        .await
+        {
+            Ok(resp) => tracing::info!(hub_id, ?resp, "Hub self-uninstall acknowledged"),
+            Err(e) => warn!(
+                hub_id,
+                error = %e,
+                "Hub self-uninstall not acknowledged; deleting row anyway"
+            ),
+        }
+    }
+
     match state.storage.delete_hub(hub_id).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (

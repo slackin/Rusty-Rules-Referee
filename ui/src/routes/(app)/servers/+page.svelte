@@ -254,7 +254,7 @@
 		<div class="w-full max-w-md rounded-xl border border-surface-700 bg-surface-900 p-6 shadow-2xl">
 			<h3 class="mb-2 text-lg font-semibold text-surface-100">Remove Server</h3>
 			<p class="mb-4 text-sm text-surface-400">
-				Are you sure you want to remove <strong class="text-surface-200">{deleteTarget.name}</strong>? This will unregister it from the master. The server bot will need to re-pair to reconnect.
+				Are you sure you want to remove <strong class="text-surface-200">{deleteTarget.name}</strong>? This unregisters it from the master <strong class="text-red-300">and uninstalls R3 (plus any installed game server files) from the host</strong>. This cannot be undone.
 			</p>
 			<div class="flex justify-end gap-3">
 				<button onclick={() => { deleteTarget = null; }} class="btn-secondary" disabled={deleting}>Cancel</button>

@@ -129,8 +129,7 @@
 		<div class="w-full max-w-md rounded-xl border border-surface-800 bg-surface-900 p-6">
 			<h2 class="text-lg font-semibold text-surface-100">Remove hub?</h2>
 			<p class="mt-2 text-sm text-surface-400">
-				This removes <span class="text-surface-100">{deleteTarget.name}</span> from the master. Clients managed by this
-				hub will be orphaned until the hub is re-paired or cleaned up manually.
+				This removes <span class="text-surface-100">{deleteTarget.name}</span> from the master <strong class="text-red-300">and fully uninstalls R3 from the host</strong> — every client this hub manages will also be uninstalled and its game server files removed. This cannot be undone.
 			</p>
 			<div class="mt-4 flex justify-end gap-2">
 				<button onclick={() => deleteTarget = null} class="btn-secondary" disabled={deleting}>Cancel</button>

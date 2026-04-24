@@ -309,5 +309,57 @@ pub async fn execute(
                 })),
             ))
         }
+        HubAction::SelfUninstall { remove_gameserver, update_url } => {
+            // 1. Tear down every managed r3-client@<slug>.service first.
+            let clients = client_manager::list_client_statuses(hub_cfg).await;
+            let mut removed = Vec::new();
+            let mut failed: Vec<(String, String)> = Vec::new();
+            for c in &clients {
+                match client_manager::uninstall_client(hub_cfg, &c.slug, true).await {
+                    Ok(_) => removed.push(c.slug.clone()),
+                    Err(e) => failed.push((c.slug.clone(), e.to_string())),
+                }
+            }
+            for (slug, err) in &failed {
+                tracing::warn!(%slug, %err, "Failed to uninstall sub-client during hub self-uninstall");
+            }
+
+            // 2. Spawn the host-level uninstaller as a transient unit so it
+            //    survives our own systemd unit being stopped, then exit.
+            let effective_url = update_url
+                .unwrap_or_else(|| "https://r3.pugbot.net/api/updates".to_string());
+            let spawn_result =
+                crate::core::self_uninstall::trigger(&effective_url, true, remove_gameserver);
+
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                std::process::exit(0);
+            });
+
+            let message = match spawn_result {
+                Ok(m) => format!(
+                    "Hub self-uninstall dispatched. Removed {} sub-client(s){}. {}",
+                    removed.len(),
+                    if failed.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (failed: {})", failed.len())
+                    },
+                    m
+                ),
+                Err(e) => format!(
+                    "Hub will exit but self-uninstall dispatch failed: {}",
+                    e
+                ),
+            };
+            Ok((
+                message,
+                Some(json!({
+                    "response_type": "SelfUninstallDispatched",
+                    "removed_clients": removed,
+                    "failed_clients": failed.iter().map(|(s, _)| s).collect::<Vec<_>>(),
+                })),
+            ))
+        }
     }
 }
