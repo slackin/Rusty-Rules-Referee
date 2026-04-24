@@ -643,7 +643,7 @@ port = ${WEB_PORT}
 jwt_secret = "${JWT_SECRET}"
 
 [update]
-enabled = false
+enabled = true
 url = "https://r3.pugbot.net/api/updates"
 channel = "beta"          # production | beta | alpha | dev
 check_interval = 3600
@@ -754,7 +754,7 @@ port = ${WEB_PORT}
 jwt_secret = "${JWT_SECRET}"
 
 [update]
-enabled = false
+enabled = true
 url = "https://r3.pugbot.net/api/updates"
 channel = "beta"          # production | beta | alpha | dev
 check_interval = 3600
@@ -836,7 +836,7 @@ port = 2727
 jwt_secret = "${JWT_SECRET}"
 
 [update]
-enabled = false
+enabled = true
 url = "https://r3.pugbot.net/api/updates"
 channel = "beta"          # production | beta | alpha | dev
 check_interval = 3600

@@ -172,8 +172,10 @@ fn default_web_port() -> u16 {
 /// Auto-update configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UpdateSection {
-    /// Whether auto-update checking is enabled.
-    #[serde(default)]
+    /// Whether auto-update checking is enabled. Defaults to `true` so that
+    /// fleet-managed hubs and client bots stay current on the configured
+    /// channel; operators who want to pin a build can set this to `false`.
+    #[serde(default = "default_update_enabled")]
     pub enabled: bool,
     /// URL of the update server (serves `<channel>/latest.json`).
     #[serde(default = "default_update_url")]
@@ -192,13 +194,17 @@ pub struct UpdateSection {
 impl Default for UpdateSection {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_update_enabled(),
             url: default_update_url(),
             channel: default_update_channel(),
             check_interval: default_update_interval(),
             auto_restart: default_auto_restart(),
         }
     }
+}
+
+fn default_update_enabled() -> bool {
+    true
 }
 
 fn default_update_url() -> String {
@@ -432,6 +438,38 @@ impl RefereeConfig {
             );
         }
         Ok(config)
+    }
+
+    /// Fleet-managed bots (hubs and master-paired clients) are expected to
+    /// auto-update on their channel. Early installer templates shipped with
+    /// `[update].enabled = false`, so legacy installs silently never auto-
+    /// update. On startup we detect that stale default and rewrite the
+    /// config file in place so the running process and any future restart
+    /// both honour the new behaviour. Returns `true` when the file was
+    /// rewritten.
+    pub fn migrate_update_enabled_default(path: &Path) -> anyhow::Result<bool> {
+        let content = std::fs::read_to_string(path)?;
+        let mut doc: toml::Value = toml::from_str(&content)?;
+        let Some(table) = doc.as_table_mut() else {
+            return Ok(false);
+        };
+        let update_tbl = table
+            .entry("update".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+        let Some(update_map) = update_tbl.as_table_mut() else {
+            return Ok(false);
+        };
+        let currently_false = matches!(
+            update_map.get("enabled"),
+            Some(toml::Value::Boolean(false))
+        );
+        if !currently_false {
+            return Ok(false);
+        }
+        update_map.insert("enabled".to_string(), toml::Value::Boolean(true));
+        let output = toml::to_string_pretty(&doc)?;
+        std::fs::write(path, &output)?;
+        Ok(true)
     }
 
     /// Get the effective RCON IP (falls back to public_ip).

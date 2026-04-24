@@ -1033,6 +1033,18 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
 async fn run_client(config: RefereeConfig, config_path: String) -> anyhow::Result<()> {
     info!("Starting in CLIENT mode");
 
+    // Legacy installs shipped with [update].enabled = false. Fleet-managed
+    // client bots need auto-update on by default — migrate the file once.
+    let mut config = config;
+    match RefereeConfig::migrate_update_enabled_default(std::path::Path::new(&config_path)) {
+        Ok(true) => {
+            warn!("Migrated legacy [update].enabled=false → true in {}", config_path);
+            config.update.enabled = true;
+        }
+        Ok(false) => {}
+        Err(e) => warn!(error = %e, "Failed to migrate [update].enabled default"),
+    }
+
     let client_config = config.client.as_ref().expect("client config validated").clone();
 
     // Check if game server is configured yet

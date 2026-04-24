@@ -26,6 +26,18 @@ pub mod host_info;
 pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Result<()> {
     info!("Starting in HUB mode");
 
+    // Legacy installs shipped with [update].enabled=false. Fleet-managed
+    // hubs need auto-update on by default — migrate the file once.
+    let mut config = config;
+    match RefereeConfig::migrate_update_enabled_default(Path::new(&_config_path)) {
+        Ok(true) => {
+            warn!("Migrated legacy [update].enabled=false → true in {}", _config_path);
+            config.update.enabled = true;
+        }
+        Ok(false) => {}
+        Err(e) => warn!(error = %e, "Failed to migrate [update].enabled default"),
+    }
+
     let hub_cfg = config
         .hub
         .as_ref()
