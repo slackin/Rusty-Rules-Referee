@@ -6,7 +6,7 @@ use crate::config::RefereeConfig;
 use crate::core::context::BotContext;
 use crate::events::Event;
 use crate::storage::Storage;
-use crate::sync::master::{ClientVersionInfo, ConnectedClient, ConnectedHub};
+use crate::sync::master::{ClientVersionInfo, ConnectedClient, ConnectedHub, HubActionLog};
 use crate::sync::protocol::{ClientRequest, ClientResponse, HubAction, HubResponse};
 
 /// Shared state for all web handlers.
@@ -35,6 +35,8 @@ pub struct AppState {
     pub pending_hub_responses: Option<Arc<RwLock<HashMap<String, oneshot::Sender<HubResponse>>>>>,
     /// Last-reported hub versions keyed by hub_id (master mode only).
     pub hub_versions: Option<Arc<RwLock<HashMap<i64, ClientVersionInfo>>>>,
+    /// In-memory per-action progress log (master mode only).
+    pub hub_action_logs: Option<Arc<RwLock<HashMap<String, HubActionLog>>>>,
 }
 
 impl AppState {

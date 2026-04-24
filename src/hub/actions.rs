@@ -3,9 +3,39 @@
 use serde_json::json;
 
 use crate::config::HubSection;
-use crate::sync::protocol::{HubAction, MintClientCertRequest, MintClientCertResponse};
+use crate::sync::protocol::{HubAction, HubProgressEvent, MintClientCertRequest, MintClientCertResponse};
 
 use super::{client_manager, game_server_manager};
+
+/// Helper that posts a single progress event to the master. Failure is
+/// logged and swallowed — progress reporting is best-effort and must
+/// never cause the owning action to fail.
+async fn report_progress(
+    http: &reqwest::Client,
+    base_url: &str,
+    action_id: &str,
+    seq: u32,
+    step: &str,
+    message: &str,
+    percent: Option<u8>,
+) {
+    let event = HubProgressEvent {
+        action_id: action_id.to_string(),
+        seq,
+        step: step.to_string(),
+        message: message.to_string(),
+        percent,
+        ts: chrono::Utc::now(),
+    };
+    if let Err(e) = http
+        .post(format!("{}/internal/hub/progress", base_url))
+        .json(&event)
+        .send()
+        .await
+    {
+        tracing::debug!(action_id = %action_id, error = %e, "Failed to post progress event");
+    }
+}
 
 /// Build an `r3.toml` for a hub-managed client. Mirrors the layout the
 /// standalone installer writes in `generate_client_config`, minus any
@@ -92,6 +122,7 @@ pub async fn execute(
     base_url: &str,
     hub_id: i64,
     hub_cfg: &HubSection,
+    action_id: &str,
     action: HubAction,
 ) -> anyhow::Result<(String, Option<serde_json::Value>)> {
     match action {
@@ -101,6 +132,16 @@ pub async fn execute(
             game_server,
             register_systemd: _,
         } => {
+            report_progress(
+                http,
+                base_url,
+                action_id,
+                1,
+                "mint_cert",
+                &format!("Requesting client certificate for '{}'", slug),
+                Some(10),
+            )
+            .await;
             // 1) Mint a client certificate + register the GameServer row
             //    on the master via the hub's mTLS-authenticated endpoint.
             let (address, port) = if let Some(params) = &game_server {
@@ -131,6 +172,17 @@ pub async fn execute(
                 .await
                 .map_err(|e| anyhow::anyhow!("parse mint-client-cert response: {}", e))?;
 
+            report_progress(
+                http,
+                base_url,
+                action_id,
+                2,
+                "install_client",
+                "Writing client config, certificates and systemd unit",
+                Some(40),
+            )
+            .await;
+
             // 2) Render r3.toml and write certs + install systemd drop-in.
             let dir = client_manager::client_dir(hub_cfg, &slug);
             let r3_toml = render_client_toml(&slug, &server_name, &mint.master_sync_url, &dir);
@@ -151,10 +203,31 @@ pub async fn execute(
                 "client_dir": dir.display().to_string(),
             });
             if let Some(params) = game_server {
+                report_progress(
+                    http,
+                    base_url,
+                    action_id,
+                    3,
+                    "install_game_server",
+                    "Installing Urban Terror game server files",
+                    Some(70),
+                )
+                .await;
                 let path =
                     game_server_manager::install_game_server(hub_cfg, &slug, &params).await?;
                 data["game_server_path"] = json!(path.display().to_string());
             }
+
+            report_progress(
+                http,
+                base_url,
+                action_id,
+                4,
+                "done",
+                &format!("Client '{}' installed", slug),
+                Some(100),
+            )
+            .await;
 
             Ok((
                 format!(

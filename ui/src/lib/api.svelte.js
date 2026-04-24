@@ -333,6 +333,8 @@ export const api = {
 	hubMetrics: (id, range = '1h') => request(`/hubs/${id}/metrics?range=${encodeURIComponent(range)}`),
 	hubInstallClient: (id, body) =>
 		request(`/hubs/${id}/clients`, { method: 'POST', body: JSON.stringify(body) }),
+	hubActionProgress: (id, actionId) =>
+		request(`/hubs/${id}/actions/${encodeURIComponent(actionId)}`),
 	hubUninstallClient: (id, slug, remove_data = false) =>
 		request(`/hubs/${id}/clients/${encodeURIComponent(slug)}?remove_data=${remove_data}`, { method: 'DELETE' }),
 	hubClientAction: (id, slug, action) =>

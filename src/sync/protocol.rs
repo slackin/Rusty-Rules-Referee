@@ -965,6 +965,26 @@ pub struct HubResponse {
     pub data: Option<serde_json::Value>,
 }
 
+/// Intermediate progress event pushed by the hub while executing a
+/// long-running action (e.g. `InstallClient`). The master stores these
+/// in an in-memory per-action log so the UI can stream them to the admin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubProgressEvent {
+    pub action_id: String,
+    /// Monotonically increasing counter starting at 0, used by the UI to
+    /// dedupe and order events.
+    pub seq: u32,
+    /// Short machine-readable step identifier (e.g. "mint_cert",
+    /// "install_client", "gs_install").
+    pub step: String,
+    /// Human-readable message for this step.
+    pub message: String,
+    /// Optional progress percent (0–100) for steps that can report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u8>,
+    pub ts: chrono::DateTime<chrono::Utc>,
+}
+
 /// Hub asks the master to mint a fresh client certificate for a sub-client
 /// it is provisioning. Authenticated by the hub's own mTLS cert.
 #[derive(Debug, Clone, Serialize, Deserialize)]

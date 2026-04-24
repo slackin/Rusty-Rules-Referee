@@ -167,6 +167,10 @@ async fn enqueue_action(state: &AppState, hub_id: i64, action: HubAction) -> imp
 }
 
 /// POST /api/v1/hubs/:id/clients — install a new R3 client on the hub.
+///
+/// Returns `202 Accepted` with `{ "action_id": "..." }` immediately. The
+/// UI should then poll `GET /api/v1/hubs/:id/actions/:action_id` to
+/// display live progress events and collect the final result.
 pub async fn install_client(
     AdminOnly(_): AdminOnly,
     State(state): State<AppState>,
@@ -176,18 +180,84 @@ pub async fn install_client(
     if let Err(e) = require_master(&state) {
         return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
     }
-    enqueue_action(
-        &state,
+    let pending_actions = match &state.pending_hub_actions {
+        Some(a) => a.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Hub orchestration not available"})),
+            )
+                .into_response();
+        }
+    };
+    let logs = match &state.hub_action_logs {
+        Some(l) => l.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Hub orchestration not available"})),
+            )
+                .into_response();
+        }
+    };
+    let action = HubAction::InstallClient {
+        slug: body.slug,
+        server_name: body.server_name,
+        game_server: body.game_server,
+        register_systemd: body.register_systemd,
+    };
+    let action_id = crate::sync::master::enqueue_hub_action(
+        &pending_actions,
+        &logs,
         hub_id,
-        HubAction::InstallClient {
-            slug: body.slug,
-            server_name: body.server_name,
-            game_server: body.game_server,
-            register_systemd: body.register_systemd,
-        },
+        action,
     )
-    .await
-    .into_response()
+    .await;
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "action_id": action_id })),
+    )
+        .into_response()
+}
+
+/// GET /api/v1/hubs/:id/actions/:action_id — return the current progress
+/// log and (if available) final result for an enqueued hub action.
+pub async fn get_action_progress(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path((hub_id, action_id)): Path<(i64, String)>,
+) -> impl IntoResponse {
+    if let Err(e) = require_master(&state) {
+        return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
+    }
+    let logs = match &state.hub_action_logs {
+        Some(l) => l.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Hub orchestration not available"})),
+            )
+                .into_response();
+        }
+    };
+    let logs = logs.read().await;
+    match logs.get(&action_id) {
+        Some(log) if log.hub_id == hub_id => Json(serde_json::json!({
+            "action_id": action_id,
+            "hub_id": log.hub_id,
+            "action_kind": log.action_kind,
+            "created_at": log.created_at,
+            "events": log.events,
+            "result": log.result,
+            "done": log.result.is_some(),
+        }))
+        .into_response(),
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Unknown or expired action"})),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

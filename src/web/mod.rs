@@ -131,6 +131,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/hubs/:id/clients", post(api::hubs::install_client))
         .route("/hubs/:id/clients/:slug", delete(api::hubs::uninstall_client))
         .route("/hubs/:id/clients/:slug/action", post(api::hubs::client_action))
+        .route("/hubs/:id/actions/:action_id", get(api::hubs::get_action_progress))
         .route("/hubs/:id/game-server", post(api::hubs::install_game_server))
         .route("/hubs/:id/restart", post(api::hubs::restart_hub))
         .route("/hubs/:id/version", get(api::hubs::get_hub_version))
@@ -289,6 +290,7 @@ pub async fn start_server(
     pending_hub_actions: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, Vec<(String, crate::sync::protocol::HubAction)>>>>>,
     pending_hub_responses: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<crate::sync::protocol::HubResponse>>>>>,
     hub_versions: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<i64, crate::sync::master::ClientVersionInfo>>>>,
+    hub_action_logs: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::sync::master::HubActionLog>>>>,
 ) -> anyhow::Result<()> {
     let jwt_secret = config
         .web
@@ -327,6 +329,7 @@ pub async fn start_server(
         pending_hub_actions,
         pending_hub_responses,
         hub_versions,
+        hub_action_logs,
     };
 
     let app = build_router(state);

@@ -36,6 +36,13 @@
 	let gsMaxClients = $state(16);
 	let gsForceDownload = $state(false);
 
+	// Live install-progress state
+	let installActionId = $state('');
+	let installProgress = $state(/** @type {{step:string,message:string,percent:number|null}[]} */ ([]));
+	let installPercent = $state(0);
+	let installResult = $state(/** @type {{ok:boolean,message:string}|null} */ (null));
+	let installPollTimer = /** @type {any} */ (null);
+
 	/** Generate a short random hex password (6 chars). */
 	function randomPass() {
 		const buf = new Uint8Array(3);
@@ -157,24 +164,64 @@
 		}
 
 		installBusy = true;
+		installProgress = [];
+		installPercent = 0;
+		installResult = null;
+		installActionId = '';
 		try {
-			await api.hubInstallClient(hubId, body);
-			installSlug = '';
-			installServerName = '';
-			installGameServer = true;
-			showAdvanced = false;
-			gsInstallPath = '';
-			gsPublicIp = '';
-			gsPort = 27960;
-			gsMaxClients = 16;
-			gsGameMode = 'CTF';
-			gsForceDownload = false;
-			showInstall = false;
-			await load();
+			const resp = await api.hubInstallClient(hubId, body);
+			installActionId = resp?.action_id || '';
+			if (!installActionId) throw new Error('Server did not return an action_id');
+			await pollInstallProgress();
 		} catch (e) {
 			installError = e.message || 'Install failed';
+			installBusy = false;
 		}
-		installBusy = false;
+	}
+
+	async function pollInstallProgress() {
+		if (!installActionId) return;
+		try {
+			const data = await api.hubActionProgress(hubId, installActionId);
+			installProgress = data?.events ?? [];
+			const last = installProgress[installProgress.length - 1];
+			if (last && typeof last.percent === 'number') installPercent = last.percent;
+			if (data?.done) {
+				installResult = data.result || { ok: false, message: 'Unknown result' };
+				installBusy = false;
+				if (installResult?.ok) {
+					// Refresh clients list after a successful install. Keep the
+					// progress panel visible so the admin can see the outcome.
+					installPercent = 100;
+					await load();
+				}
+				return;
+			}
+		} catch (e) {
+			// Transient network errors are non-fatal; just try again.
+			console.warn('progress poll failed', e);
+		}
+		installPollTimer = setTimeout(pollInstallProgress, 1000);
+	}
+
+	function dismissInstallProgress() {
+		if (installPollTimer) { clearTimeout(installPollTimer); installPollTimer = null; }
+		installActionId = '';
+		installProgress = [];
+		installPercent = 0;
+		installResult = null;
+		installError = '';
+		installSlug = '';
+		installServerName = '';
+		installGameServer = true;
+		showAdvanced = false;
+		gsInstallPath = '';
+		gsPublicIp = '';
+		gsPort = 27960;
+		gsMaxClients = 16;
+		gsGameMode = 'CTF';
+		gsForceDownload = false;
+		showInstall = false;
 	}
 
 	async function restartHub() {
@@ -529,6 +576,45 @@
 
 				{#if showInstall}
 					<div class="rounded-xl border border-surface-800 bg-surface-900 p-4">
+						{#if installActionId}
+							<h3 class="text-sm font-semibold text-surface-200">
+								{installResult ? (installResult.ok ? 'Install complete' : 'Install failed') : 'Installing client…'}
+							</h3>
+							<div class="mt-3">
+								<div class="h-2 w-full overflow-hidden rounded bg-surface-800">
+									<div
+										class="h-full transition-all duration-300 {installResult && !installResult.ok ? 'bg-red-500' : 'bg-accent'}"
+										style="width: {installPercent}%"
+									></div>
+								</div>
+								<p class="mt-1 text-xs text-surface-500">{installPercent}%</p>
+							</div>
+							<ul class="mt-3 space-y-1.5 text-sm">
+								{#each installProgress as ev}
+									<li class="flex items-start gap-2 text-surface-300">
+										<CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+										<span>
+											<span class="font-mono text-xs text-surface-500">{ev.step}</span>
+											<span class="ml-2">{ev.message}</span>
+										</span>
+									</li>
+								{/each}
+								{#if !installResult && installBusy}
+									<li class="flex items-start gap-2 text-surface-400">
+										<RefreshCw class="mt-0.5 h-4 w-4 shrink-0 animate-spin text-accent" />
+										<span>Waiting for hub…</span>
+									</li>
+								{/if}
+							</ul>
+							{#if installResult}
+								<div class="mt-3 rounded border px-3 py-2 text-sm {installResult.ok ? 'border-emerald-700 bg-emerald-900/20 text-emerald-200' : 'border-red-700 bg-red-900/20 text-red-200'}">
+									{installResult.message}
+								</div>
+								<div class="mt-3 flex justify-end">
+									<button onclick={dismissInstallProgress} class="btn-primary text-sm">Close</button>
+								</div>
+							{/if}
+						{:else}
 						<h3 class="text-sm font-semibold text-surface-200">Install new client</h3>
 						<div class="mt-3 grid gap-3 sm:grid-cols-2">
 							<label class="block">
@@ -648,6 +734,7 @@
 								{installBusy ? 'Installing…' : (installGameServer ? 'Install client + game server' : 'Install client only')}
 							</button>
 						</div>
+						{/if}
 					</div>
 				{/if}
 

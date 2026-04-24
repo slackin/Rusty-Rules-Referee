@@ -242,7 +242,7 @@ async fn dispatch_action(
     let action_id = item.action_id.clone();
     debug!(?item.action, action_id = %action_id, "Dispatching hub action");
 
-    let response = match actions::execute(http, base_url, hub_id, hub_cfg, item.action).await {
+    let response = match actions::execute(http, base_url, hub_id, hub_cfg, &action_id, item.action).await {
         Ok((message, data)) => HubResponse {
             action_id: action_id.clone(),
             ok: true,

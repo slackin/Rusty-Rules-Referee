@@ -274,6 +274,7 @@ async fn run_standalone(config: RefereeConfig, config_path: String) -> anyhow::R
                 None, // No pending_hub_actions in standalone mode
                 None, // No pending_hub_responses in standalone mode
                 None, // No hub_versions in standalone mode
+                None, // No hub_action_logs in standalone mode
             ).await {
                 error!(error = %e, "Web admin server failed");
             }
@@ -793,6 +794,7 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
     let pending_hub_actions = Arc::new(RwLock::new(std::collections::HashMap::<i64, Vec<(String, sync::protocol::HubAction)>>::new()));
     let pending_hub_responses = Arc::new(RwLock::new(std::collections::HashMap::<String, tokio::sync::oneshot::Sender<sync::protocol::HubResponse>>::new()));
     let hub_versions = Arc::new(RwLock::new(std::collections::HashMap::<i64, sync::master::ClientVersionInfo>::new()));
+    let hub_action_logs = Arc::new(RwLock::new(std::collections::HashMap::<String, sync::master::HubActionLog>::new()));
 
     // Start the web admin server if enabled
     if config.web.enabled {
@@ -808,6 +810,7 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
         let web_pending_hub_actions = pending_hub_actions.clone();
         let web_pending_hub_responses = pending_hub_responses.clone();
         let web_hub_versions = hub_versions.clone();
+        let web_hub_action_logs = hub_action_logs.clone();
         tokio::spawn(async move {
             if let Err(e) = rusty_rules_referee::web::start_server(
                 None, // No local BotContext in master mode
@@ -823,6 +826,7 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
                 Some(web_pending_hub_actions),
                 Some(web_pending_hub_responses),
                 Some(web_hub_versions),
+                Some(web_hub_action_logs),
             ).await {
                 error!(error = %e, "Web admin server failed");
             }
@@ -840,6 +844,7 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
     let sync_pending_hub_actions = pending_hub_actions.clone();
     let sync_pending_hub_responses = pending_hub_responses.clone();
     let sync_hub_versions = hub_versions.clone();
+    let sync_hub_action_logs = hub_action_logs.clone();
     let sync_config_path = config_path.clone();
     let sync_public_ip = config.server.public_ip.clone();
     tokio::spawn(async move {
@@ -855,6 +860,7 @@ async fn run_master(config: RefereeConfig, config_path: String) -> anyhow::Resul
             sync_pending_hub_actions,
             sync_pending_hub_responses,
             sync_hub_versions,
+            sync_hub_action_logs,
             sync_config_path,
             sync_public_ip,
         ).await {

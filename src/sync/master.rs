@@ -57,6 +57,11 @@ pub struct MasterState {
     pub pending_hub_responses: Arc<RwLock<HashMap<String, oneshot::Sender<HubResponse>>>>,
     /// Last-known hub version info, refreshed on every hub heartbeat.
     pub hub_versions: Arc<RwLock<HashMap<i64, ClientVersionInfo>>>,
+    /// In-memory log of recent hub actions (progress events + final
+    /// response). Keyed by `action_id`. Entries older than ~10 min are
+    /// GC'd by a background task. Used to power the UI install-progress
+    /// view via `GET /api/v1/hubs/:id/actions/:action_id`.
+    pub hub_action_logs: Arc<RwLock<HashMap<String, HubActionLog>>>,
     /// Path to the master's `r3.toml` (needed for cert minting on behalf of hubs).
     pub config_path: String,
     /// Master config snapshot (cloned at startup; used for sync URL/CA paths).
@@ -71,6 +76,18 @@ pub struct ClientVersionInfo {
     pub build_hash: Option<String>,
     pub version: Option<String>,
     pub reported_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// In-memory record of an enqueued hub action: the progress events
+/// pushed by the hub during execution and the final response (if the
+/// hub has completed the action). Created when the action is enqueued.
+#[derive(Debug, Clone)]
+pub struct HubActionLog {
+    pub hub_id: i64,
+    pub action_kind: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub events: Vec<HubProgressEvent>,
+    pub result: Option<HubResponse>,
 }
 
 /// Represents a connected client bot.
@@ -106,6 +123,7 @@ pub fn build_internal_router(state: MasterState) -> Router {
         .route("/internal/hub/heartbeat", post(handle_hub_heartbeat))
         .route("/internal/hub/actions/:hub_id", get(handle_poll_hub_actions))
         .route("/internal/hub/responses", post(handle_hub_response))
+        .route("/internal/hub/progress", post(handle_hub_progress))
         .route("/internal/hub/mint-client-cert", post(handle_mint_client_cert))
         .with_state(state)
 }
@@ -685,6 +703,7 @@ pub async fn start_master_api(
     pending_hub_actions: Arc<RwLock<HashMap<i64, Vec<(String, HubAction)>>>>,
     pending_hub_responses: Arc<RwLock<HashMap<String, oneshot::Sender<HubResponse>>>>,
     hub_versions: Arc<RwLock<HashMap<i64, ClientVersionInfo>>>,
+    hub_action_logs: Arc<RwLock<HashMap<String, HubActionLog>>>,
     config_path: String,
     public_ip: String,
 ) -> anyhow::Result<()> {
@@ -705,6 +724,7 @@ pub async fn start_master_api(
         pending_hub_actions,
         pending_hub_responses,
         hub_versions,
+        hub_action_logs: hub_action_logs.clone(),
         config_path,
         master_config: config.clone(),
         public_ip,
@@ -714,6 +734,19 @@ pub async fn start_master_api(
     let addr: SocketAddr = format!("{}:{}", config.bind_address, config.port).parse()?;
 
     info!(addr = %addr, "Master internal API starting (mTLS)");
+
+    // Background GC: drop hub action logs older than 10 min to keep the
+    // in-memory map bounded.
+    let gc_logs = hub_action_logs;
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            let cutoff = chrono::Utc::now() - chrono::Duration::minutes(10);
+            let mut logs = gc_logs.write().await;
+            logs.retain(|_, log| log.created_at > cutoff);
+        }
+    });
 
     let listener = crate::bind_reuse(&addr.to_string())?;
 
@@ -1047,12 +1080,40 @@ async fn handle_hub_response(
     State(state): State<MasterState>,
     Json(body): Json<HubResponse>,
 ) -> StatusCode {
+    // Stash the final result in the in-memory log first so UI pollers
+    // that already gave up on the oneshot can still retrieve it.
+    {
+        let mut logs = state.hub_action_logs.write().await;
+        if let Some(log) = logs.get_mut(&body.action_id) {
+            log.result = Some(body.clone());
+        }
+    }
+
     let mut pending = state.pending_hub_responses.write().await;
     if let Some(tx) = pending.remove(&body.action_id) {
         let _ = tx.send(body);
         StatusCode::OK
     } else {
-        warn!(action_id = %body.action_id, "Hub response for unknown or expired action");
+        // Not an error: the UI may have switched to progress-polling mode
+        // and stopped awaiting a oneshot reply. The log entry above is
+        // the source of truth.
+        debug!(action_id = %body.action_id, "Hub response recorded (no pending oneshot)");
+        StatusCode::OK
+    }
+}
+
+/// POST /internal/hub/progress — hub reports an intermediate progress
+/// event for an in-flight action. Appended to the in-memory action log.
+async fn handle_hub_progress(
+    State(state): State<MasterState>,
+    Json(event): Json<HubProgressEvent>,
+) -> StatusCode {
+    let mut logs = state.hub_action_logs.write().await;
+    if let Some(log) = logs.get_mut(&event.action_id) {
+        log.events.push(event);
+        StatusCode::OK
+    } else {
+        warn!(action_id = %event.action_id, "Progress event for unknown action");
         StatusCode::NOT_FOUND
     }
 }
@@ -1175,4 +1236,67 @@ pub async fn send_action_to_hub(
             Err("Hub action timed out".to_string())
         }
     }
+}
+
+/// Enqueue a `HubAction` without awaiting a response. Returns the
+/// generated `action_id` immediately so the caller (typically the web
+/// API) can return `202 Accepted` and let the UI poll for progress and
+/// the final result via `hub_action_logs`.
+///
+/// Creates an empty `HubActionLog` entry keyed by `action_id` so the
+/// progress endpoint and final response handler have a place to write
+/// to even if the hub reports back before the UI polls.
+pub async fn enqueue_hub_action(
+    pending_hub_actions: &Arc<RwLock<HashMap<i64, Vec<(String, HubAction)>>>>,
+    hub_action_logs: &Arc<RwLock<HashMap<String, HubActionLog>>>,
+    hub_id: i64,
+    action: HubAction,
+) -> String {
+    let action_id = uuid::Uuid::new_v4().to_string();
+    let action_kind = action_kind_label(&action);
+
+    {
+        let mut logs = hub_action_logs.write().await;
+        logs.insert(
+            action_id.clone(),
+            HubActionLog {
+                hub_id,
+                action_kind,
+                created_at: chrono::Utc::now(),
+                events: Vec::new(),
+                result: None,
+            },
+        );
+    }
+
+    {
+        let mut pending = pending_hub_actions.write().await;
+        pending
+            .entry(hub_id)
+            .or_insert_with(Vec::new)
+            .push((action_id.clone(), action));
+    }
+
+    action_id
+}
+
+/// Short machine-readable label for a `HubAction` variant, used for
+/// populating `HubActionLog.action_kind`.
+fn action_kind_label(action: &HubAction) -> String {
+    match action {
+        HubAction::InstallClient { .. } => "install_client",
+        HubAction::UninstallClient { .. } => "uninstall_client",
+        HubAction::StartClient { .. } => "start_client",
+        HubAction::StopClient { .. } => "stop_client",
+        HubAction::RestartClient { .. } => "restart_client",
+        HubAction::InstallGameServer { .. } => "install_game_server",
+        HubAction::RemoveGameServer { .. } => "remove_game_server",
+        HubAction::UpdateClient { .. } => "update_client",
+        HubAction::GetClientLogs { .. } => "get_client_logs",
+        HubAction::GetHubVersion => "get_hub_version",
+        HubAction::Restart => "restart_hub",
+        HubAction::ForceUpdate { .. } => "force_update",
+        HubAction::SelfUninstall { .. } => "self_uninstall",
+    }
+    .to_string()
 }
