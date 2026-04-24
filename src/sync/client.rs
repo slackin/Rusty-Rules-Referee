@@ -191,6 +191,36 @@ impl ClientSyncManager {
                     *self.server_id.write().await = Some(response.server_id);
                     self.local_config_version = response.config_version;
                     info!(server_id = response.server_id, config_version = response.config_version, "Registered with master");
+
+                    // If the local r3.toml's [server] section is still the
+                    // placeholder values written by the hub installer
+                    // (public_ip=0.0.0.0, port=0, rcon_password=""), pull
+                    // the master's config immediately even though our
+                    // local_config_version already matches — without this
+                    // the sub-client parks forever waiting for a version
+                    // bump that will never come on a fresh install.
+                    if response.config_version >= 1 {
+                        let local_is_configured = match crate::config::RefereeConfig::from_file(
+                            std::path::Path::new(&self.config_path),
+                        ) {
+                            Ok(cfg) => cfg.server.is_configured(),
+                            Err(_) => false,
+                        };
+                        if !local_is_configured {
+                            info!(
+                                server_id = response.server_id,
+                                config_version = response.config_version,
+                                "Local [server] config is unconfigured but master has config — pulling"
+                            );
+                            match self
+                                .pull_and_apply_config(&http_client, &base_url, response.server_id)
+                                .await
+                            {
+                                Ok(()) => info!("Pulled initial config from master"),
+                                Err(e) => warn!(error = %e, "Failed to pull initial config"),
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to register with master, will retry");
