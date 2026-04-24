@@ -240,8 +240,79 @@ pub async fn execute(
             ))
         }
         HubAction::UninstallClient { slug, remove_data } => {
-            client_manager::uninstall_client(hub_cfg, &slug, remove_data).await?;
-            Ok((format!("Client {} uninstalled", slug), None))
+            report_progress(
+                http,
+                base_url,
+                action_id,
+                1,
+                "uninstall_client",
+                &format!("Disabling and removing client '{}'", slug),
+                Some(20),
+            )
+            .await;
+            let client_steps =
+                client_manager::uninstall_client(hub_cfg, &slug, remove_data).await?;
+
+            // Always cascade to game-server teardown: a hub-managed client
+            // has a paired `urt@<slug>` unit and an install dir under
+            // `urt_install_root/<slug>`. Leaving those behind is what the
+            // admin is typically asking us to avoid.
+            report_progress(
+                http,
+                base_url,
+                action_id,
+                2,
+                "remove_game_server",
+                &format!("Removing UrT game server files for '{}'", slug),
+                Some(70),
+            )
+            .await;
+            let gs_steps = game_server_manager::remove_game_server(hub_cfg, &slug).await?;
+
+            let client_failed = client_steps.iter().any(|(_, ok, _)| !ok);
+            let gs_failed = gs_steps.iter().any(|(_, ok, _)| !ok);
+            let ok_overall = !client_failed && !gs_failed;
+            let message = if ok_overall {
+                format!("Client '{}' fully uninstalled (unit + drop-in + data + game server)", slug)
+            } else {
+                format!(
+                    "Client '{}' uninstall completed with errors — see steps",
+                    slug
+                )
+            };
+
+            report_progress(
+                http,
+                base_url,
+                action_id,
+                3,
+                "done",
+                &message,
+                Some(100),
+            )
+            .await;
+
+            let to_json = |steps: Vec<(String, bool, String)>| -> Vec<serde_json::Value> {
+                steps
+                    .into_iter()
+                    .map(|(step, ok, msg)| json!({ "step": step, "ok": ok, "message": msg }))
+                    .collect()
+            };
+            let data = json!({
+                "slug": slug,
+                "client_steps": to_json(client_steps),
+                "game_server_steps": to_json(gs_steps),
+                "all_ok": ok_overall,
+            });
+
+            if ok_overall {
+                Ok((message, Some(data)))
+            } else {
+                // Bubble up a detailed error so the UI shows the red failure
+                // banner and admins see the step log in the progress panel.
+                let detail = serde_json::to_string(&data).unwrap_or_default();
+                anyhow::bail!("{}: {}", message, detail)
+            }
         }
         HubAction::StartClient { slug } => {
             let unit = client_manager::unit_name(hub_cfg, &slug);
@@ -266,8 +337,21 @@ pub async fn execute(
             ))
         }
         HubAction::RemoveGameServer { slug } => {
-            game_server_manager::remove_game_server(hub_cfg, &slug).await?;
-            Ok((format!("Game server {} removed", slug), None))
+            let steps = game_server_manager::remove_game_server(hub_cfg, &slug).await?;
+            let failed = steps.iter().any(|(_, ok, _)| !ok);
+            let data = json!({
+                "slug": slug,
+                "steps": steps.into_iter().map(|(step, ok, msg)| json!({
+                    "step": step, "ok": ok, "message": msg,
+                })).collect::<Vec<_>>(),
+                "all_ok": !failed,
+            });
+            if failed {
+                let detail = serde_json::to_string(&data).unwrap_or_default();
+                anyhow::bail!("Game server {} removal had errors: {}", slug, detail)
+            } else {
+                Ok((format!("Game server {} removed", slug), Some(data)))
+            }
         }
         HubAction::UpdateClient { slug } => {
             // Placeholder: a future iteration will pull the binary into the
@@ -391,6 +475,16 @@ pub async fn execute(
                 match client_manager::uninstall_client(hub_cfg, &c.slug, true).await {
                     Ok(_) => removed.push(c.slug.clone()),
                     Err(e) => failed.push((c.slug.clone(), e.to_string())),
+                }
+                // Best-effort game-server teardown per client during a full
+                // host uninstall. Errors are non-fatal here since the host
+                // is going away anyway.
+                if remove_gameserver {
+                    if let Err(e) = game_server_manager::remove_game_server(hub_cfg, &c.slug).await
+                    {
+                        tracing::warn!(slug = %c.slug, error = %e,
+                            "Game server cleanup failed during self-uninstall");
+                    }
                 }
             }
             for (slug, err) in &failed {

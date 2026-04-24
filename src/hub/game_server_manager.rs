@@ -84,18 +84,100 @@ pub async fn install_game_server(
 
 /// Remove the install dir for the given slug. Also tears down the systemd
 /// drop-in and unit for `urt@<slug>.service` if present.
-pub async fn remove_game_server(hub_cfg: &HubSection, slug: &str) -> anyhow::Result<()> {
+///
+/// Returns a per-step log so callers can surface exactly which sub-step
+/// failed (sudoers rules for `urt@` differ from `r3-client@` — notably
+/// no `disable --now` — so we stop and disable separately).
+pub async fn remove_game_server(
+    hub_cfg: &HubSection,
+    slug: &str,
+) -> anyhow::Result<Vec<(String, bool, String)>> {
+    let mut steps: Vec<(String, bool, String)> = Vec::new();
     let unit = format!("urt@{}.service", slug);
-    let _ = run_sudo(&["systemctl", "disable", "--now", &unit]).await;
+    info!(%slug, %unit, "remove_game_server starting");
+
+    // Stop first (best-effort; unit may already be inactive).
+    match run_sudo(&["systemctl", "stop", &unit]).await {
+        Ok(_) => steps.push(("stop_urt".into(), true, format!("Stopped {}", unit))),
+        Err(e) => {
+            warn!(error = %e, %unit, "systemctl stop urt@ failed");
+            steps.push((
+                "stop_urt".into(),
+                false,
+                format!("systemctl stop {} failed: {}", unit, e),
+            ));
+        }
+    }
+
+    // Disable without --now (R3_URT_SYSTEMCTL sudoers rule excludes --now).
+    match run_sudo(&["systemctl", "disable", &unit]).await {
+        Ok(_) => steps.push(("disable_urt".into(), true, format!("Disabled {}", unit))),
+        Err(e) => {
+            warn!(error = %e, %unit, "systemctl disable urt@ failed");
+            steps.push((
+                "disable_urt".into(),
+                false,
+                format!("systemctl disable {} failed: {}", unit, e),
+            ));
+        }
+    }
+
+    // Remove the per-instance drop-in file (not the dir — urt@ sudoers only
+    // permits removing *.conf files under the shared drop-in directory).
     let dropin = format!("/etc/systemd/system/urt@.service.d/{}.conf", slug);
-    let _ = run_sudo(&["rm", "-f", &dropin]).await;
-    let _ = run_sudo(&["systemctl", "daemon-reload"]).await;
+    match run_sudo(&["rm", &dropin]).await {
+        Ok(_) => steps.push(("remove_urt_dropin".into(), true, format!("Removed {}", dropin))),
+        Err(e) => {
+            warn!(error = %e, %dropin, "Failed to remove urt@ drop-in via sudo");
+            steps.push((
+                "remove_urt_dropin".into(),
+                false,
+                format!("sudo rm {} failed: {}", dropin, e),
+            ));
+        }
+    }
+
+    match run_sudo(&["systemctl", "daemon-reload"]).await {
+        Ok(_) => steps.push(("daemon_reload".into(), true, "daemon-reload ok".into())),
+        Err(e) => steps.push((
+            "daemon_reload".into(),
+            false,
+            format!("daemon-reload failed: {}", e),
+        )),
+    }
 
     let path = install_path(hub_cfg, slug);
     if path.exists() {
-        std::fs::remove_dir_all(&path)?;
+        match std::fs::remove_dir_all(&path) {
+            Ok(_) => steps.push((
+                "remove_install_dir".into(),
+                true,
+                format!("Removed {}", path.display()),
+            )),
+            Err(e) => {
+                warn!(error = %e, path = %path.display(), "Failed to remove UrT install dir");
+                steps.push((
+                    "remove_install_dir".into(),
+                    false,
+                    format!("remove_dir_all {} failed: {}", path.display(), e),
+                ));
+            }
+        }
+    } else {
+        steps.push((
+            "remove_install_dir".into(),
+            true,
+            format!("{} already absent", path.display()),
+        ));
     }
-    Ok(())
+
+    let any_failed = steps.iter().any(|(_, ok, _)| !ok);
+    if any_failed {
+        warn!(%slug, ?steps, "remove_game_server finished with failures");
+    } else {
+        info!(%slug, "remove_game_server completed cleanly");
+    }
+    Ok(steps)
 }
 
 /// Locate the UrT dedicated server binary under `install_path`.

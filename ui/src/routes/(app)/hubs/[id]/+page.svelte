@@ -119,11 +119,23 @@
 	}
 
 	async function uninstallClient(slug) {
-		if (!confirm(`Uninstall client "${slug}"? This removes its data from the hub.`)) return;
+		if (!confirm(`Uninstall client "${slug}"? This removes its data from the hub and deletes the game server files.`)) return;
 		busySlug = slug + ':uninstall';
 		try {
-			await api.hubUninstallClient(hubId, slug, true);
-			await load();
+			const resp = await api.hubUninstallClient(hubId, slug, true);
+			// Non-blocking 202: reuse the install-progress panel to show steps.
+			if (resp && resp.action_id) {
+				showInstall = true;
+				installActionId = resp.action_id;
+				installProgress = [];
+				installPercent = 0;
+				installResult = null;
+				installError = '';
+				installBusy = true;
+				await pollInstallProgress();
+			} else {
+				await load();
+			}
 		} catch (e) {
 			error = e.message || `Failed to uninstall ${slug}`;
 		}

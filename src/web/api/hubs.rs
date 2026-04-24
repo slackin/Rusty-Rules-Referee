@@ -266,7 +266,12 @@ pub struct UninstallClientQuery {
     pub remove_data: bool,
 }
 
-/// DELETE /api/v1/hubs/:id/clients/:slug
+/// DELETE /api/v1/hubs/:id/clients/:slug — uninstall a hub-managed client.
+///
+/// Returns `202 Accepted` with `{ "action_id": "..." }` immediately and
+/// spawns a background task that, once the hub reports completion,
+/// deletes the matching `game_servers` row on the master. The UI polls
+/// `GET /api/v1/hubs/:id/actions/:action_id` for step-by-step progress.
 pub async fn uninstall_client(
     AdminOnly(_): AdminOnly,
     State(state): State<AppState>,
@@ -276,16 +281,92 @@ pub async fn uninstall_client(
     if let Err(e) = require_master(&state) {
         return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
     }
-    enqueue_action(
-        &state,
+    let pending_actions = match &state.pending_hub_actions {
+        Some(a) => a.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Hub orchestration not available"})),
+            )
+                .into_response();
+        }
+    };
+    let logs = match &state.hub_action_logs {
+        Some(l) => l.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Hub orchestration not available"})),
+            )
+                .into_response();
+        }
+    };
+    let action = HubAction::UninstallClient {
+        slug: slug.clone(),
+        remove_data: q.remove_data,
+    };
+    let action_id = crate::sync::master::enqueue_hub_action(
+        &pending_actions,
+        &logs,
         hub_id,
-        HubAction::UninstallClient {
-            slug,
-            remove_data: q.remove_data,
-        },
+        action,
     )
-    .await
-    .into_response()
+    .await;
+
+    // Spawn a watcher that waits for the log entry to have a result and
+    // then cleans up the master-side `game_servers` row.
+    let logs_watch = logs.clone();
+    let action_id_watch = action_id.clone();
+    let storage = state.storage.clone();
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+        let deadline = std::time::Instant::now() + Duration::from_secs(15 * 60);
+        loop {
+            if std::time::Instant::now() > deadline {
+                tracing::warn!(action_id = %action_id_watch, hub_id, slug = %slug,
+                    "Uninstall watcher timed out waiting for hub response");
+                return;
+            }
+            let done_result = {
+                let guard = logs_watch.read().await;
+                guard.get(&action_id_watch).and_then(|l| l.result.clone())
+            };
+            if let Some(result) = done_result {
+                if result.ok {
+                    match storage.get_servers().await {
+                        Ok(servers) => {
+                            for s in servers {
+                                if s.hub_id == Some(hub_id)
+                                    && s.slug.as_deref() == Some(&slug)
+                                {
+                                    if let Err(e) = storage.delete_server(s.id).await {
+                                        tracing::warn!(server_id = s.id, error = %e,
+                                            "Failed to delete game_servers row after uninstall");
+                                    } else {
+                                        tracing::info!(server_id = s.id, hub_id, slug = %slug,
+                                            "Deleted game_servers row after uninstall");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => tracing::warn!(error = %e,
+                            "get_servers failed during uninstall cleanup"),
+                    }
+                } else {
+                    tracing::warn!(action_id = %action_id_watch, hub_id, slug = %slug,
+                        msg = %result.message, "Hub reported uninstall failure — skipping DB cleanup");
+                }
+                return;
+            }
+            sleep(Duration::from_millis(500)).await;
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "action_id": action_id })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]

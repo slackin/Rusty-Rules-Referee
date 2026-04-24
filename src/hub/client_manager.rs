@@ -9,7 +9,7 @@ use std::process::Stdio;
 
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::config::HubSection;
 use crate::sync::protocol::HubClientStatus;
@@ -208,28 +208,101 @@ pub async fn install_client(
 }
 
 /// Disable + stop the client unit and optionally remove its install dir.
+///
+/// Returns a per-step log as `(step, ok, message)` tuples so callers can
+/// relay detailed progress back to the master UI instead of swallowing
+/// errors. Returning `Err` is reserved for truly fatal problems (e.g.
+/// filesystem errors we can't recover from); `sudo`/systemctl failures
+/// are captured in the step log so the admin can see exactly which
+/// command failed.
 pub async fn uninstall_client(
     hub_cfg: &HubSection,
     slug: &str,
     remove_data: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<(String, bool, String)>> {
+    let mut steps: Vec<(String, bool, String)> = Vec::new();
     let unit = unit_name(hub_cfg, slug);
-    if let Err(e) = run_sudo(&["systemctl", "disable", "--now", &unit]).await {
-        warn!(error = %e, %unit, "systemctl disable --now failed");
+    info!(%slug, %unit, remove_data, "uninstall_client starting");
+
+    match run_sudo(&["systemctl", "disable", "--now", &unit]).await {
+        Ok(_) => steps.push((
+            "disable_unit".into(),
+            true,
+            format!("Disabled + stopped {}", unit),
+        )),
+        Err(e) => {
+            warn!(error = %e, %unit, "systemctl disable --now failed");
+            steps.push((
+                "disable_unit".into(),
+                false,
+                format!("systemctl disable --now {} failed: {}", unit, e),
+            ));
+        }
     }
 
     let dropin_dir = PathBuf::from(format!("/etc/systemd/system/{}.d", unit));
-    if let Err(e) = run_sudo(&["rm", "-rf", &dropin_dir.to_string_lossy()]).await {
-        warn!(error = %e, "Failed to remove drop-in dir via sudo");
+    match run_sudo(&["rm", "-rf", &dropin_dir.to_string_lossy()]).await {
+        Ok(_) => steps.push((
+            "remove_dropin".into(),
+            true,
+            format!("Removed {}", dropin_dir.display()),
+        )),
+        Err(e) => {
+            warn!(error = %e, dir = %dropin_dir.display(), "Failed to remove drop-in dir via sudo");
+            steps.push((
+                "remove_dropin".into(),
+                false,
+                format!("sudo rm -rf {} failed: {}", dropin_dir.display(), e),
+            ));
+        }
     }
-    let _ = systemctl_daemon_reload().await;
+
+    match systemctl_daemon_reload().await {
+        Ok(_) => steps.push(("daemon_reload".into(), true, "daemon-reload ok".into())),
+        Err(e) => steps.push((
+            "daemon_reload".into(),
+            false,
+            format!("daemon-reload failed: {}", e),
+        )),
+    }
 
     if remove_data {
         let dir = client_dir(hub_cfg, slug);
-        if let Err(e) = std::fs::remove_dir_all(&dir) {
-            warn!(error = %e, "Failed to remove client dir");
+        match std::fs::remove_dir_all(&dir) {
+            Ok(_) => steps.push((
+                "remove_client_dir".into(),
+                true,
+                format!("Removed {}", dir.display()),
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                steps.push((
+                    "remove_client_dir".into(),
+                    true,
+                    format!("{} already absent", dir.display()),
+                ));
+            }
+            Err(e) => {
+                warn!(error = %e, dir = %dir.display(), "Failed to remove client dir");
+                steps.push((
+                    "remove_client_dir".into(),
+                    false,
+                    format!("remove_dir_all {} failed: {}", dir.display(), e),
+                ));
+            }
         }
+    } else {
+        steps.push((
+            "remove_client_dir".into(),
+            true,
+            "skipped (remove_data=false)".into(),
+        ));
     }
-    debug!(%slug, "Client uninstalled");
-    Ok(())
+
+    let any_failed = steps.iter().any(|(_, ok, _)| !ok);
+    if any_failed {
+        warn!(%slug, %unit, ?steps, "uninstall_client finished with failures");
+    } else {
+        info!(%slug, %unit, "uninstall_client completed cleanly");
+    }
+    Ok(steps)
 }
