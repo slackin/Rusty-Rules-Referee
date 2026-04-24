@@ -94,47 +94,93 @@ pub async fn remove_game_server(
 ) -> anyhow::Result<Vec<(String, bool, String)>> {
     let mut steps: Vec<(String, bool, String)> = Vec::new();
     let unit = format!("urt@{}.service", slug);
+    let dropin = format!("/etc/systemd/system/urt@.service.d/{}.conf", slug);
     info!(%slug, %unit, "remove_game_server starting");
 
-    // Stop first (best-effort; unit may already be inactive).
-    match run_sudo(&["systemctl", "stop", &unit]).await {
-        Ok(_) => steps.push(("stop_urt".into(), true, format!("Stopped {}", unit))),
-        Err(e) => {
-            warn!(error = %e, %unit, "systemctl stop urt@ failed");
-            steps.push((
-                "stop_urt".into(),
-                false,
-                format!("systemctl stop {} failed: {}", unit, e),
-            ));
+    // The urt@<slug> unit only exists as a usable service when a drop-in
+    // <slug>.conf is present (install-time artifact). If the drop-in is
+    // missing, the client never finished its game-server install — skip
+    // stop/disable so we don't surface spurious "not loaded" errors.
+    let unit_known = Path::new(&dropin).exists();
+
+    if unit_known {
+        match run_sudo(&["systemctl", "stop", &unit]).await {
+            Ok(_) => steps.push(("stop_urt".into(), true, format!("Stopped {}", unit))),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("not loaded") || msg.contains("could not be found") {
+                    steps.push((
+                        "stop_urt".into(),
+                        true,
+                        format!("{} not loaded — nothing to stop", unit),
+                    ));
+                } else {
+                    warn!(error = %e, %unit, "systemctl stop urt@ failed");
+                    steps.push((
+                        "stop_urt".into(),
+                        false,
+                        format!("systemctl stop {} failed: {}", unit, e),
+                    ));
+                }
+            }
         }
+
+        match run_sudo(&["systemctl", "disable", &unit]).await {
+            Ok(_) => steps.push(("disable_urt".into(), true, format!("Disabled {}", unit))),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("does not exist")
+                    || msg.contains("not loaded")
+                    || msg.contains("No such file")
+                {
+                    steps.push((
+                        "disable_urt".into(),
+                        true,
+                        format!("{} already disabled", unit),
+                    ));
+                } else {
+                    warn!(error = %e, %unit, "systemctl disable urt@ failed");
+                    steps.push((
+                        "disable_urt".into(),
+                        false,
+                        format!("systemctl disable {} failed: {}", unit, e),
+                    ));
+                }
+            }
+        }
+    } else {
+        steps.push((
+            "stop_urt".into(),
+            true,
+            format!("{} not registered — skipped", unit),
+        ));
+        steps.push((
+            "disable_urt".into(),
+            true,
+            format!("{} not registered — skipped", unit),
+        ));
     }
 
-    // Disable without --now (R3_URT_SYSTEMCTL sudoers rule excludes --now).
-    match run_sudo(&["systemctl", "disable", &unit]).await {
-        Ok(_) => steps.push(("disable_urt".into(), true, format!("Disabled {}", unit))),
-        Err(e) => {
-            warn!(error = %e, %unit, "systemctl disable urt@ failed");
-            steps.push((
-                "disable_urt".into(),
-                false,
-                format!("systemctl disable {} failed: {}", unit, e),
-            ));
+    // Remove the per-instance drop-in file if it exists. (urt@ sudoers only
+    // permits removing *.conf files under the shared drop-in directory.)
+    if Path::new(&dropin).exists() {
+        match run_sudo(&["rm", &dropin]).await {
+            Ok(_) => steps.push(("remove_urt_dropin".into(), true, format!("Removed {}", dropin))),
+            Err(e) => {
+                warn!(error = %e, %dropin, "Failed to remove urt@ drop-in via sudo");
+                steps.push((
+                    "remove_urt_dropin".into(),
+                    false,
+                    format!("sudo rm {} failed: {}", dropin, e),
+                ));
+            }
         }
-    }
-
-    // Remove the per-instance drop-in file (not the dir — urt@ sudoers only
-    // permits removing *.conf files under the shared drop-in directory).
-    let dropin = format!("/etc/systemd/system/urt@.service.d/{}.conf", slug);
-    match run_sudo(&["rm", &dropin]).await {
-        Ok(_) => steps.push(("remove_urt_dropin".into(), true, format!("Removed {}", dropin))),
-        Err(e) => {
-            warn!(error = %e, %dropin, "Failed to remove urt@ drop-in via sudo");
-            steps.push((
-                "remove_urt_dropin".into(),
-                false,
-                format!("sudo rm {} failed: {}", dropin, e),
-            ));
-        }
+    } else {
+        steps.push((
+            "remove_urt_dropin".into(),
+            true,
+            format!("{} already absent", dropin),
+        ));
     }
 
     match run_sudo(&["systemctl", "daemon-reload"]).await {
