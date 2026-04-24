@@ -1125,7 +1125,7 @@ async fn handle_mint_client_cert(
     Json(req): Json<MintClientCertRequest>,
 ) -> Result<Json<MintClientCertResponse>, (StatusCode, String)> {
     // Sanity check: hub must be known.
-    let _hub = state
+    let hub = state
         .storage
         .get_hub(req.hub_id)
         .await
@@ -1158,10 +1158,24 @@ async fn handle_mint_client_cert(
         }
     };
 
+    // If the hub didn't supply a public address for this game server
+    // (admin left it blank in the wizard → "auto-detect"), fall back to
+    // the hub's own address so the UI doesn't immediately flag the new
+    // server as unconfigured.
+    let effective_address = if req.address.is_empty() || req.address == "0.0.0.0" {
+        if hub.address.is_empty() {
+            warn!(hub_id = req.hub_id, slug = %req.slug,
+                "mint-client-cert: no address supplied and hub has no known address");
+        }
+        hub.address.clone()
+    } else {
+        req.address
+    };
+
     let server = GameServer {
         id: 0,
         name: req.server_name,
-        address: req.address,
+        address: effective_address,
         port: req.port,
         status: "offline".to_string(),
         current_map: None,
