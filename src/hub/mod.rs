@@ -74,19 +74,41 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
     // Kick off a periodic auto-update checker if enabled. The channel is
     // read from the shared `update_channel` state so live changes from the
     // master take effect on the next tick without a restart.
+    // Always run the auto-update loop in hub mode. The hub is the control
+    // plane for many sub-clients that share its binary via the
+    // /usr/local/bin/rusty-rules-referee symlink, so keeping the hub up to
+    // date also keeps the managed clients up to date (after a restart). We
+    // still respect `config.update.enabled=false` for operators who want to
+    // pin a specific build — but the installed default is now `true`.
     if config.update.enabled {
         let update_cfg = config.update.clone();
         let channel_watch = update_channel.clone();
         let interval_watch = update_interval.clone();
+        let clients_root = hub_cfg.clients_root.clone();
         tokio::spawn(async move {
-            crate::update::run_update_loop_with_overrides(
+            // After the new hub binary has been laid down (and just before
+            // we exec() into it), bounce every managed sub-client so they
+            // drop the old in-memory binary and start running the new one.
+            // The sub-clients' ExecStart points at
+            // /usr/local/bin/rusty-rules-referee which is a symlink to the
+            // hub's binary — updated by apply_update() a moment ago.
+            let pre_restart = move || {
+                restart_managed_sub_clients(&clients_root);
+            };
+            crate::update::run_update_loop_full(
                 update_cfg,
                 env!("BUILD_HASH"),
                 Some(channel_watch),
                 Some(interval_watch),
+                Some(pre_restart),
             )
             .await;
         });
+    } else {
+        tracing::warn!(
+            "Hub auto-update is disabled in r3.toml ([update].enabled = false). \
+             Set it to true so the hub and its managed sub-clients stay on the selected channel."
+        );
     }
 
     // Heartbeat / register loop with reconnection on failure.
@@ -297,4 +319,64 @@ fn same_host_info(a: &HostInfoPayload, b: &HostInfoPayload) -> bool {
         && a.public_ip == b.public_ip
         && a.external_ip == b.external_ip
         && a.urt_installs_json == b.urt_installs_json
+}
+
+/// Restart every `r3-client@<slug>.service` unit managed by this hub.
+///
+/// Called right before the hub itself exec()s into the freshly-downloaded
+/// binary. The sub-clients share the hub's binary via the
+/// `/usr/local/bin/rusty-rules-referee` symlink — the file on disk has
+/// already been replaced by `apply_update()`, but the running sub-client
+/// processes still hold the old one mapped in memory. `systemctl restart`
+/// stops them and starts fresh ones that exec the new symlink target.
+///
+/// Best-effort: logs and continues on errors. We don't block hub restart
+/// on sub-client bounces because the hub coming up cleanly is more
+/// important than any individual sub-client.
+fn restart_managed_sub_clients(clients_root: &str) {
+    let dir = match std::fs::read_dir(clients_root) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, path = %clients_root,
+                "Could not list clients_root to restart sub-clients after hub update");
+            return;
+        }
+    };
+    let mut slugs: Vec<String> = Vec::new();
+    for entry in dir.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        if let Some(name) = entry.file_name().to_str() {
+            slugs.push(name.to_string());
+        }
+    }
+    if slugs.is_empty() {
+        info!("Hub update: no managed sub-clients found — nothing to restart");
+        return;
+    }
+    info!(count = slugs.len(), "Hub update: restarting managed sub-clients");
+    for slug in slugs {
+        let unit = format!("r3-client@{}.service", slug);
+        // sudo -n because we run unprivileged — the r3-<user>-hub sudoers
+        // drop-in granted NOPASSWD systemctl for r3-client@*.service.
+        let out = std::process::Command::new("sudo")
+            .args(["-n", "systemctl", "restart", &unit])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                info!(%unit, "Sub-client restarted after hub update");
+            }
+            Ok(o) => {
+                warn!(
+                    %unit,
+                    stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                    "Sub-client restart failed (continuing)"
+                );
+            }
+            Err(e) => {
+                warn!(%unit, error = %e, "Could not spawn sudo systemctl restart");
+            }
+        }
+    }
 }

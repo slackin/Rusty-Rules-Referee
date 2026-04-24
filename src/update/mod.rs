@@ -420,6 +420,29 @@ pub async fn run_update_loop_with_overrides(
     channel_override: Option<std::sync::Arc<tokio::sync::RwLock<String>>>,
     interval_override: Option<std::sync::Arc<tokio::sync::RwLock<u64>>>,
 ) {
+    run_update_loop_full::<fn()>(
+        config,
+        current_build_hash,
+        channel_override,
+        interval_override,
+        None,
+    )
+    .await;
+}
+
+/// Same as [`run_update_loop_with_overrides`] but also invokes `pre_restart`
+/// after a successful update is applied and before `restart()` is called.
+/// Useful for hub mode where sibling services need to be restarted so they
+/// pick up the new binary from the shared symlink.
+pub async fn run_update_loop_full<F>(
+    config: UpdateSection,
+    current_build_hash: &str,
+    channel_override: Option<std::sync::Arc<tokio::sync::RwLock<String>>>,
+    interval_override: Option<std::sync::Arc<tokio::sync::RwLock<u64>>>,
+    pre_restart: Option<F>,
+) where
+    F: Fn() + Send + Sync + 'static,
+{
     let initial_interval = match interval_override.as_ref() {
         Some(lock) => *lock.read().await,
         None => config.check_interval,
@@ -461,6 +484,10 @@ pub async fn run_update_loop_with_overrides(
                         // Apply the update
                         match apply_update(&temp_path) {
                             Ok(_exe_path) => {
+                                if let Some(hook) = pre_restart.as_ref() {
+                                    info!("Running pre-restart hook before exec");
+                                    hook();
+                                }
                                 if config.auto_restart {
                                     info!("Update applied, restarting...");
                                     restart();

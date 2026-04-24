@@ -957,7 +957,7 @@ port = 2727
 jwt_secret = "${JWT_SECRET}"
 
 [update]
-enabled = false
+enabled = true
 url = "https://r3.pugbot.net/api/updates"
 channel = "beta"
 check_interval = 3600
