@@ -2557,11 +2557,70 @@ async fn run_wizard_install(
             warn!("Public IP auto-detection failed; master will fall back to client peer IP");
         }
     }
-    let params = effective_params;
+    let mut params = effective_params;
 
-    // -- Multi-instance safety: scan sibling urt@ drop-ins for conflicts --
+    // -- Multi-instance safety: scan sibling urt@ drop-ins --
     let slug = params.slug.clone().unwrap_or_else(|| ctx.slug.clone());
     let siblings = scan_sibling_urt_instances(Path::new(URT_DROPIN_DIR));
+
+    // -- Port selection: combine R3-sibling records, passive `ss` snapshot,
+    //    and an active UDP bind probe. If the requested port is already in
+    //    use (by a managed sibling OR an unmanaged process), auto-select the
+    //    next free port instead of stealing it from the existing binder.
+    let ss_map = ss_bound_ports(PortKind::Udp).await;
+    let sibling_ports: std::collections::HashSet<u16> = siblings
+        .iter()
+        .filter(|s| s.slug != slug)
+        .filter_map(|s| s.port)
+        .collect();
+    let is_port_free = |p: u16| -> bool {
+        if p == 0 {
+            return false;
+        }
+        if sibling_ports.contains(&p) {
+            return false;
+        }
+        if let Some(m) = ss_map.as_ref() {
+            if m.contains_key(&p) {
+                return false;
+            }
+        }
+        try_bind(p, PortKind::Udp).0
+    };
+
+    let requested_port = params.port;
+    if !is_port_free(requested_port) {
+        // Search a narrow window above the requested port first, then widen
+        // to the conventional UrT range. Stop at the first port free by all
+        // three checks.
+        let window = (requested_port.saturating_add(1)..=requested_port.saturating_add(50))
+            .chain(27960u16..=28050);
+        match window.into_iter().find(|&p| is_port_free(p)) {
+            Some(p) => {
+                warn!(
+                    requested = requested_port,
+                    selected = p,
+                    "Requested UDP port is in use; auto-selecting next free port"
+                );
+                params.port = p;
+            }
+            None => {
+                let mut s = state.write().await;
+                s.stage = "error".to_string();
+                s.error = Some(format!(
+                    "UDP port {} is in use and no free port was found in {}..={} or 27960..=28050",
+                    requested_port,
+                    requested_port.saturating_add(1),
+                    requested_port.saturating_add(50),
+                ));
+                return;
+            }
+        }
+    }
+
+    // -- Final sibling conflict check against the effective port. Catches
+    //    install-path collisions and same-slug-different-path regardless of
+    //    whether the port was auto-adjusted above.
     if let Err(msg) = check_sibling_conflicts(
         &siblings,
         &slug,
@@ -2573,22 +2632,6 @@ async fn run_wizard_install(
         s.stage = "error".to_string();
         s.error = Some(msg);
         return;
-    }
-
-    // -- Active port guard: make sure the chosen UDP port is free right now.
-    //    Catches races where a sibling isn't yet registered via DropIn but
-    //    already bound the port (e.g. started by hand).
-    {
-        let (ok, detail) = try_bind(params.port, PortKind::Udp);
-        if !ok {
-            let mut s = state.write().await;
-            s.stage = "error".to_string();
-            s.error = Some(format!(
-                "UDP port {} is not available on this host: {}",
-                params.port, detail
-            ));
-            return;
-        }
     }
 
     // -- Validate params early by rendering the cfg in-memory --
