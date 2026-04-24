@@ -780,14 +780,40 @@ generate_client_config() {
 JSONEOF
     )
 
-    PAIR_RESPONSE=$(curl -sf -X POST \
+    # Capture status, body, and curl error message separately so we can
+    # surface a useful diagnostic instead of silently timing out.
+    PAIR_TMP=$(mktemp)
+    PAIR_ERR=$(mktemp)
+    PAIR_STATUS=$(curl -sS -o "$PAIR_TMP" -w '%{http_code}' \
+        --connect-timeout 10 --max-time 30 \
+        -X POST \
         -H "Content-Type: application/json" \
         -d "$PAIR_PAYLOAD" \
-        "$PAIR_URL" 2>/dev/null) || {
+        "$PAIR_URL" 2>"$PAIR_ERR") || PAIR_STATUS="000"
+    PAIR_RESPONSE=$(cat "$PAIR_TMP")
+    PAIR_CURL_ERR=$(cat "$PAIR_ERR")
+    rm -f "$PAIR_TMP" "$PAIR_ERR"
+
+    if [ "$PAIR_STATUS" != "200" ]; then
         err "Failed to pair with master at $PAIR_URL"
-        err "Check the master address and quick-connect key, then try again."
+        if [ "$PAIR_STATUS" = "000" ]; then
+            err "Could not reach master (no HTTP response)."
+            [ -n "$PAIR_CURL_ERR" ] && err "curl: $PAIR_CURL_ERR"
+            err "Verify the master host/port are reachable from this machine:"
+            err "  curl -v --connect-timeout 5 ${PAIR_URL}"
+            err "Common causes: firewall blocking ${MASTER_WEB_PORT}/tcp, wrong"
+            err "host/port, or master web service not listening on a public IP."
+        else
+            err "HTTP $PAIR_STATUS from master."
+            [ -n "$PAIR_RESPONSE" ] && err "Response: $PAIR_RESPONSE"
+            case "$PAIR_STATUS" in
+                401|403) err "Token is invalid or pairing is not enabled. On the master, open Pairing → Enable Pairing and use the freshly-issued key." ;;
+                404)     err "Endpoint not found — is the master running R3 in master mode and at this URL?" ;;
+                5*)      err "Master returned a server error. Check the master's logs: journalctl -u r3-master -n 100" ;;
+            esac
+        fi
         exit 1
-    }
+    fi
 
     # Extract fields from JSON response
     # Uses python if available, otherwise basic sed parsing
@@ -899,14 +925,40 @@ generate_hub_config() {
 JSONEOF
     )
 
-    PAIR_RESPONSE=$(curl -sf -X POST \
+    # Capture status, body, and curl error separately so a failure
+    # surfaces a useful diagnostic instead of silently timing out.
+    PAIR_TMP=$(mktemp)
+    PAIR_ERR=$(mktemp)
+    PAIR_STATUS=$(curl -sS -o "$PAIR_TMP" -w '%{http_code}' \
+        --connect-timeout 10 --max-time 30 \
+        -X POST \
         -H "Content-Type: application/json" \
         -d "$PAIR_PAYLOAD" \
-        "$PAIR_URL" 2>/dev/null) || {
+        "$PAIR_URL" 2>"$PAIR_ERR") || PAIR_STATUS="000"
+    PAIR_RESPONSE=$(cat "$PAIR_TMP")
+    PAIR_CURL_ERR=$(cat "$PAIR_ERR")
+    rm -f "$PAIR_TMP" "$PAIR_ERR"
+
+    if [ "$PAIR_STATUS" != "200" ]; then
         err "Failed to pair hub with master at $PAIR_URL"
-        err "Check the master address and quick-connect key, then try again."
+        if [ "$PAIR_STATUS" = "000" ]; then
+            err "Could not reach master (no HTTP response)."
+            [ -n "$PAIR_CURL_ERR" ] && err "curl: $PAIR_CURL_ERR"
+            err "Verify the master host/port are reachable from this machine:"
+            err "  curl -v --connect-timeout 5 ${PAIR_URL}"
+            err "Common causes: firewall blocking ${MASTER_WEB_PORT}/tcp, wrong"
+            err "host/port, or master web service not listening on a public IP."
+        else
+            err "HTTP $PAIR_STATUS from master."
+            [ -n "$PAIR_RESPONSE" ] && err "Response: $PAIR_RESPONSE"
+            case "$PAIR_STATUS" in
+                401|403) err "Token is invalid or pairing is not enabled. On the master, open Pairing → Enable Pairing and use the freshly-issued key." ;;
+                404)     err "Endpoint not found — is the master running R3 in master mode and at this URL?" ;;
+                5*)      err "Master returned a server error. Check the master's logs: journalctl -u r3-master -n 100" ;;
+            esac
+        fi
         exit 1
-    }
+    fi
 
     if command -v python3 &>/dev/null; then
         PAIR_HUB_ID=$(echo "$PAIR_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hub_id') or d.get('server_id'))")
