@@ -367,4 +367,4 @@
 	onproceed={doSave}
 	onimported={(fn) => { loadAvailable(); promptMapConfig(fn); }} />
 
-<MapConfigCreateDialog bind:open={showMcCreate} filename={mcCreateFile} />
+<MapConfigCreateDialog bind:open={showMcCreate} filename={mcCreateFile} {serverId} />

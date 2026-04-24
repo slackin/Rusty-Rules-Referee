@@ -435,6 +435,21 @@ pub async fn missing_maps(
         })
         .collect();
 
+    // Union with the persisted view of installed maps. The RCON
+    // `fdir *.bsp` query only sees files the engine has loaded into
+    // its VFS; a `.pk3` we just dropped via the import flow is
+    // recorded in `server_maps` (with `pending_restart=true`) but
+    // invisible to UrT until `fs_restart`. Treating those as
+    // installed prevents the "Missing maps detected" dialog from
+    // re-firing right after a successful import.
+    const STANDALONE_SERVER_ID: i64 = 0;
+    let mut installed = installed;
+    if let Ok(rows) = state.storage.list_server_maps(STANDALONE_SERVER_ID).await {
+        for row in rows {
+            installed.insert(row.map_name.to_lowercase());
+        }
+    }
+
     let mut missing = Vec::new();
     for m in &body.maps {
         let key = m.trim().to_lowercase();

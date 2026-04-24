@@ -1235,13 +1235,25 @@ pub async fn missing_maps(
                 .into_response();
         }
     };
-    let installed_set: std::collections::HashSet<&str> =
-        installed.iter().map(|s| s.as_str()).collect();
+    // Union with the master's persisted view of installed maps. The
+    // RCON `fdir *.bsp` query only sees files the engine has loaded
+    // into its VFS; a `.pk3` we just dropped via the import flow is
+    // recorded in `server_maps` (with `pending_restart=true`) but
+    // invisible to UrT until `fs_restart`. Treating those as
+    // installed prevents the "Missing maps detected" dialog from
+    // re-firing right after a successful import.
+    let mut installed_set: std::collections::HashSet<String> =
+        installed.into_iter().collect();
+    if let Ok(rows) = state.storage.list_server_maps(server_id).await {
+        for row in rows {
+            installed_set.insert(row.map_name.to_lowercase());
+        }
+    }
 
     let mut missing = Vec::new();
     for m in &req.maps {
         let key = m.trim().to_lowercase();
-        if key.is_empty() || installed_set.contains(key.as_str()) {
+        if key.is_empty() || installed_set.contains(&key) {
             continue;
         }
         // Look up `<map>.pk3` in the repo cache (best-effort).

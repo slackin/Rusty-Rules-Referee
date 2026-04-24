@@ -10,13 +10,24 @@
 	 * Props:
 	 *   - open (bindable)
 	 *   - filename: string — the `.pk3` file that was just imported
+	 *   - serverId: number|null — when set, save the map-config on that
+	 *     specific server (per-server row). When null/undefined, save
+	 *     the global/master-scoped map-config instead. The per-server
+	 *     "Map Config" tab reads per-server rows seeded from defaults,
+	 *     so a global save would silently have no visible effect there.
 	 *   - oncreated: (config) => void — after the POST succeeds
 	 *   - onskip:    () => void
 	 */
 	import { api } from '$lib/api.svelte.js';
 	import { X, FileCog, Loader2 } from 'lucide-svelte';
 
-	let { open = $bindable(false), filename = '', oncreated = null, onskip = null } = $props();
+	let {
+		open = $bindable(false),
+		filename = '',
+		serverId = null,
+		oncreated = null,
+		onskip = null,
+	} = $props();
 
 	const GAMETYPES = [
 		{ v: '0', l: 'Free For All (FFA)' },
@@ -86,9 +97,16 @@
 			skiprandom: 0,
 			bot: 0,
 			custom_commands: '',
+			supported_gametypes: '',
+			default_gametype: null,
+			g_suddendeath: null,
+			g_teamdamage: null,
+			source: 'user',
 		};
 		try {
-			const r = await api.createMapConfig(cfg);
+			const r = serverId
+				? await api.serverSaveMapConfig(serverId, cfg)
+				: await api.createMapConfig(cfg);
 			if (oncreated) oncreated(r);
 			open = false;
 		} catch (e) { error = e.message; }
