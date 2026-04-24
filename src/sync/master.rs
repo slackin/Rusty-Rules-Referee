@@ -890,6 +890,7 @@ async fn handle_hub_register(
             cert_fingerprint: Some(req.cert_fingerprint),
             hub_version: Some(req.version.clone()),
             build_hash: Some(req.build_hash.clone()),
+            update_channel: "beta".to_string(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
@@ -1023,6 +1024,7 @@ async fn handle_hub_heartbeat(
     Ok(Json(HubHeartbeatResponse {
         ok: true,
         pending_actions,
+        update_channel: Some(updated.update_channel.clone()),
     }))
 }
 

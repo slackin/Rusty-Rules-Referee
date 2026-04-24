@@ -444,6 +444,7 @@ pub async fn pair_client(
                 cert_fingerprint: Some(fingerprint.clone()),
                 hub_version: None,
                 build_hash: None,
+                update_channel: "beta".to_string(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             };

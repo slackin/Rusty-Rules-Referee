@@ -3,7 +3,8 @@
 	import { api } from '$lib/api.svelte.js';
 	import {
 		HardDrive, RefreshCw, ArrowLeft, Cpu, MemoryStick, HardDriveDownload,
-		Play, Square, RotateCw, Trash2, Plus, Terminal, Wifi, WifiOff
+		Play, Square, RotateCw, Trash2, Plus, Terminal, Wifi, WifiOff,
+		Download, CheckCircle2, AlertCircle
 	} from 'lucide-svelte';
 
 	const hubId = $derived(Number($page.params.id));
@@ -27,6 +28,18 @@
 
 	// Per-client action busy flags
 	let busySlug = $state('');
+
+	// Update card state
+	let versionInfo = $state(null);
+	let versionLoading = $state(false);
+	let versionError = $state('');
+	let forceUpdating = $state(false);
+	let forceUpdateResult = $state(null);
+	let channelSaving = $state(false);
+	let channelResult = $state(null);
+	let channelValue = $state('beta');
+
+	const CHANNELS = ['production', 'beta', 'alpha', 'dev'];
 
 	async function load() {
 		try {
@@ -108,6 +121,46 @@
 		}
 	}
 
+	async function loadVersion() {
+		versionLoading = true;
+		versionError = '';
+		try {
+			versionInfo = await api.hubVersion(hubId);
+			if (versionInfo?.channel) channelValue = versionInfo.channel;
+		} catch (e) {
+			versionError = e.message || 'Failed to load version';
+		}
+		versionLoading = false;
+	}
+
+	async function forceUpdate() {
+		if (!confirm('Force this hub to download and apply the latest build for its channel? The hub will restart.')) return;
+		forceUpdating = true;
+		forceUpdateResult = null;
+		try {
+			const r = await api.forceHubUpdate(hubId);
+			forceUpdateResult = r;
+		} catch (e) {
+			forceUpdateResult = { ok: false, error: e.message || 'Force update failed' };
+		}
+		forceUpdating = false;
+		// Refresh version info after a short delay so the UI reflects the new build.
+		setTimeout(loadVersion, 3000);
+	}
+
+	async function changeUpdateChannel() {
+		channelSaving = true;
+		channelResult = null;
+		try {
+			const r = await api.setHubUpdateChannel(hubId, channelValue);
+			channelResult = r;
+			await loadVersion();
+		} catch (e) {
+			channelResult = { ok: false, error: e.message || 'Failed to update channel' };
+		}
+		channelSaving = false;
+	}
+
 	function fmtBytes(n) {
 		if (!n) return '—';
 		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -138,7 +191,7 @@
 		return 'bg-surface-800 text-surface-400 border-surface-700';
 	}
 
-	$effect(() => { load(); loadMetrics(); });
+	$effect(() => { load(); loadMetrics(); loadVersion(); });
 	$effect(() => { if (metricsRange) loadMetrics(); });
 
 	// Auto-refresh every 10s
@@ -276,6 +329,113 @@
 						</div>
 					{/each}
 				</div>
+			{/if}
+		</div>
+
+		<!-- Update card -->
+		<div class="rounded-xl border border-surface-800 bg-surface-900 p-4">
+			<div class="flex items-center justify-between">
+				<h2 class="flex items-center gap-2 text-sm font-semibold text-surface-200">
+					<Download class="h-4 w-4 text-accent" />
+					Hub updates
+				</h2>
+				<button
+					onclick={loadVersion}
+					class="text-xs text-surface-500 hover:text-surface-200 flex items-center gap-1"
+					disabled={versionLoading}>
+					<RefreshCw class="h-3 w-3 {versionLoading ? 'animate-spin' : ''}" /> refresh
+				</button>
+			</div>
+
+			{#if versionError}
+				<div class="mt-3 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-xs text-red-400">{versionError}</div>
+			{/if}
+
+			{#if versionInfo}
+				{@const cached = versionInfo.cached}
+				{@const latest = versionInfo.latest}
+				{@const cachedBuild = cached?.build_hash ?? versionInfo.db_build_hash ?? null}
+				{@const latestBuild = latest?.ok && latest?.build_hash ? latest.build_hash : null}
+				{@const upToDate = latest?.up_to_date || (cachedBuild && latestBuild && cachedBuild === latestBuild)}
+
+				<div class="mt-3 grid gap-3 sm:grid-cols-2">
+					<div class="rounded-lg border border-surface-800 bg-surface-950 p-3">
+						<div class="text-xs uppercase tracking-wide text-surface-500">Current build</div>
+						<div class="mt-1 font-mono text-sm text-surface-100">{cachedBuild ?? 'unknown'}</div>
+						{#if cached?.version}
+							<div class="text-xs text-surface-500">v{cached.version}</div>
+						{/if}
+						{#if cached?.reported_at}
+							<div class="mt-1 text-xs text-surface-500">reported {fmtAge(cached.reported_at)}</div>
+						{/if}
+					</div>
+					<div class="rounded-lg border border-surface-800 bg-surface-950 p-3">
+						<div class="text-xs uppercase tracking-wide text-surface-500">Latest available ({versionInfo.channel})</div>
+						{#if latest?.ok === false}
+							<div class="mt-1 text-sm text-red-400">{latest.error}</div>
+						{:else if latest?.up_to_date}
+							<div class="mt-1 text-sm text-surface-300">already latest</div>
+						{:else if latest?.build_hash}
+							<div class="mt-1 font-mono text-sm text-surface-100">{latest.build_hash}</div>
+							<div class="text-xs text-surface-500">v{latest.version}</div>
+							{#if latest.download_size}
+								<div class="mt-1 text-xs text-surface-500">{fmtBytes(latest.download_size)}</div>
+							{/if}
+						{:else}
+							<div class="mt-1 text-sm text-surface-500">—</div>
+						{/if}
+					</div>
+				</div>
+
+				<div class="mt-3 flex flex-wrap items-center gap-3">
+					{#if upToDate}
+						<span class="inline-flex items-center gap-1 rounded-full bg-green-500/10 border border-green-500/20 px-3 py-1 text-xs text-green-400">
+							<CheckCircle2 class="h-3 w-3" /> Up to date
+						</span>
+					{:else if latestBuild}
+						<span class="inline-flex items-center gap-1 rounded-full bg-yellow-500/10 border border-yellow-500/20 px-3 py-1 text-xs text-yellow-400">
+							<AlertCircle class="h-3 w-3" /> Update available
+						</span>
+					{/if}
+
+					<button
+						onclick={forceUpdate}
+						disabled={forceUpdating || !isOnline(hub)}
+						class="btn-primary flex items-center gap-2 text-sm disabled:opacity-50">
+						<Download class="h-4 w-4 {forceUpdating ? 'animate-pulse' : ''}" />
+						{forceUpdating ? 'Triggering...' : 'Force update'}
+					</button>
+
+					<div class="flex items-center gap-2">
+						<label class="text-xs text-surface-500">Release channel</label>
+						<select
+							bind:value={channelValue}
+							class="rounded-md border border-surface-700 bg-surface-950 px-2 py-1 text-sm text-surface-100">
+							{#each CHANNELS as c}
+								<option value={c}>{c}</option>
+							{/each}
+						</select>
+						<button
+							onclick={changeUpdateChannel}
+							disabled={channelSaving || channelValue === versionInfo.channel}
+							class="btn-secondary text-sm disabled:opacity-50">
+							{channelSaving ? 'Saving...' : 'Save'}
+						</button>
+					</div>
+				</div>
+
+				{#if forceUpdateResult}
+					<div class="mt-3 rounded-lg border px-3 py-2 text-xs {forceUpdateResult.ok === false ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-green-500/20 bg-green-500/10 text-green-400'}">
+						{forceUpdateResult.error ?? forceUpdateResult.message ?? JSON.stringify(forceUpdateResult)}
+					</div>
+				{/if}
+				{#if channelResult}
+					<div class="mt-2 rounded-lg border px-3 py-2 text-xs {channelResult.ok === false ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-green-500/20 bg-green-500/10 text-green-400'}">
+						{channelResult.error ?? channelResult.message ?? JSON.stringify(channelResult)}
+					</div>
+				{/if}
+			{:else if !versionLoading}
+				<p class="mt-3 text-sm text-surface-500">No version info yet.</p>
 			{/if}
 		</div>
 

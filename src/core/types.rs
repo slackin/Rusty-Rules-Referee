@@ -168,6 +168,8 @@ pub struct Hub {
     pub cert_fingerprint: Option<String>,
     pub hub_version: Option<String>,
     pub build_hash: Option<String>,
+    /// Release channel this hub pulls R3 updates from (production|beta|alpha|dev).
+    pub update_channel: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

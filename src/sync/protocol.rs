@@ -856,6 +856,11 @@ pub struct HubHeartbeatResponse {
     /// Pending actions queued by the master for this hub.
     #[serde(default)]
     pub pending_actions: Vec<PendingHubActionItem>,
+    /// Authoritative release channel the master wants this hub to follow.
+    /// When set, hubs should adopt it for their own auto-update loop and
+    /// persist it locally so it survives restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_channel: Option<String>,
 }
 
 /// Actions the master can ask a hub to perform.

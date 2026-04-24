@@ -232,9 +232,82 @@ pub async fn execute(
             });
             Ok(("Hub will restart momentarily".to_string(), None))
         }
-        HubAction::ForceUpdate { update_url: _, channel: _ } => {
-            // Placeholder: future iteration will reuse `crate::update::*`.
-            Ok(("Hub force-update queued (stub)".to_string(), None))
+        HubAction::ForceUpdate { update_url, channel } => {
+            // Resolve effective URL + channel. Fall back to whatever the hub
+            // itself is configured with so admins can trigger a manual update
+            // without having to remember to send both params.
+            let effective_url = update_url
+                .clone()
+                .unwrap_or_else(|| "https://r3.pugbot.net/api/updates".to_string());
+            let effective_channel = channel.clone().unwrap_or_else(|| "beta".to_string());
+
+            let current_build = option_env!("R3_BUILD_HASH").unwrap_or("unknown").to_string();
+
+            let update = match crate::update::check_for_update(
+                &effective_url,
+                &effective_channel,
+                &current_build,
+            )
+            .await
+            {
+                Ok(Some(u)) => u,
+                Ok(None) => {
+                    return Ok((
+                        format!("Hub already up to date ({})", current_build),
+                        Some(json!({
+                            "response_type": "AlreadyUpToDate",
+                            "current_build": current_build,
+                        })),
+                    ));
+                }
+                Err(e) => {
+                    return Ok((
+                        format!("Hub update check failed: {}", e),
+                        Some(json!({
+                            "response_type": "Error",
+                            "message": e.to_string(),
+                        })),
+                    ));
+                }
+            };
+
+            let target_build = update.manifest.build_hash.clone();
+            let target_version = update.manifest.version.clone();
+            let download_size = update.platform.size;
+            let binary_url = update.platform.url.clone();
+            let binary_sha = update.platform.sha256.clone();
+
+            // Apply + restart asynchronously so we can return a response
+            // to the master before the hub process is re-exec'd.
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                match crate::update::download_and_verify(&binary_url, &binary_sha).await {
+                    Ok(temp_path) => match crate::update::apply_update(&temp_path) {
+                        Ok(_) => {
+                            tracing::info!("Hub force-update applied, restarting...");
+                            crate::update::restart();
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Hub force-update: apply_update failed");
+                            let _ = std::fs::remove_file(&temp_path);
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!(error = %e, "Hub force-update: download failed");
+                    }
+                }
+            });
+
+            Ok((
+                format!("Hub update triggered: {} -> {}", current_build, target_build),
+                Some(json!({
+                    "response_type": "UpdateTriggered",
+                    "current_build": current_build,
+                    "target_build": target_build,
+                    "target_version": target_version,
+                    "download_size": download_size,
+                })),
+            ))
         }
     }
 }

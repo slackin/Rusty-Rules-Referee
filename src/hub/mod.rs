@@ -62,6 +62,28 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
         .unwrap_or("unknown")
         .to_string();
 
+    // Release channel the master wants us to follow; seeded from local config
+    // and updated on every heartbeat.
+    let update_channel: Arc<RwLock<String>> =
+        Arc::new(RwLock::new(config.update.channel.clone()));
+
+    // Kick off a periodic auto-update checker if enabled. The channel is
+    // read from the shared `update_channel` state so live changes from the
+    // master take effect on the next tick without a restart.
+    if config.update.enabled {
+        let update_cfg = config.update.clone();
+        let channel_watch = update_channel.clone();
+        tokio::spawn(async move {
+            crate::update::run_update_loop_with_overrides(
+                update_cfg,
+                option_env!("R3_BUILD_HASH").unwrap_or("unknown"),
+                Some(channel_watch),
+                None,
+            )
+            .await;
+        });
+    }
+
     // Heartbeat / register loop with reconnection on failure.
     loop {
         // Register if we don't have a hub_id yet (or want to refresh on reconnect).
@@ -139,6 +161,18 @@ pub async fn run_hub(config: RefereeConfig, _config_path: String) -> anyhow::Res
                     Ok(body) => {
                         if host_info_to_send.is_some() {
                             last_pushed_host_info = Some(host_snapshot);
+                        }
+                        // Adopt any channel change pushed by the master.
+                        if let Some(remote_channel) = body.update_channel.as_ref() {
+                            let current = update_channel.read().await.clone();
+                            if &current != remote_channel {
+                                info!(
+                                    from = %current,
+                                    to = %remote_channel,
+                                    "Adopting release channel from master"
+                                );
+                                *update_channel.write().await = remote_channel.clone();
+                            }
                         }
                         // Dispatch any queued actions.
                         for item in body.pending_actions {

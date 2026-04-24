@@ -56,6 +56,7 @@ impl SqliteStorage {
             include_str!("../../migrations/012_map_configs_v2.sql"),
             include_str!("../../migrations/013_server_update_interval.sql"),
             include_str!("../../migrations/014_hubs.sql"),
+            include_str!("../../migrations/015_hub_update_channel.sql"),
         ];
         for schema in migrations {
             // Strip SQL comment lines before splitting into statements
@@ -131,6 +132,9 @@ fn row_to_hub(r: &SqliteRow) -> Hub {
         cert_fingerprint: r.get("cert_fingerprint"),
         hub_version: r.get("hub_version"),
         build_hash: r.get("build_hash"),
+        update_channel: r
+            .try_get::<String, _>("update_channel")
+            .unwrap_or_else(|_| "beta".to_string()),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     }
@@ -1869,7 +1873,7 @@ impl Storage for SqliteStorage {
         if hub.id > 0 {
             sqlx::query(
                 "UPDATE hubs SET name = ?, address = ?, status = ?, last_seen = ?, \
-                 cert_fingerprint = ?, hub_version = ?, build_hash = ?, \
+                 cert_fingerprint = ?, hub_version = ?, build_hash = ?, update_channel = ?, \
                  updated_at = CURRENT_TIMESTAMP WHERE id = ?"
             )
             .bind(&hub.name)
@@ -1879,6 +1883,7 @@ impl Storage for SqliteStorage {
             .bind(&hub.cert_fingerprint)
             .bind(&hub.hub_version)
             .bind(&hub.build_hash)
+            .bind(&hub.update_channel)
             .bind(hub.id)
             .execute(&self.pool)
             .await
@@ -1886,8 +1891,8 @@ impl Storage for SqliteStorage {
             Ok(hub.id)
         } else {
             let result = sqlx::query(
-                "INSERT INTO hubs (name, address, status, last_seen, cert_fingerprint, hub_version, build_hash) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO hubs (name, address, status, last_seen, cert_fingerprint, hub_version, build_hash, update_channel) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&hub.name)
             .bind(&hub.address)
@@ -1896,11 +1901,24 @@ impl Storage for SqliteStorage {
             .bind(&hub.cert_fingerprint)
             .bind(&hub.hub_version)
             .bind(&hub.build_hash)
+            .bind(&hub.update_channel)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
             Ok(result.last_insert_rowid())
         }
+    }
+
+    async fn set_hub_update_channel(&self, hub_id: i64, channel: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE hubs SET update_channel = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        )
+        .bind(channel)
+        .bind(hub_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
     }
 
     async fn delete_hub(&self, hub_id: i64) -> Result<(), StorageError> {

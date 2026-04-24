@@ -510,6 +510,7 @@ impl MysqlStorage {
                 cert_fingerprint VARCHAR(128) UNIQUE,
                 hub_version VARCHAR(64),
                 build_hash VARCHAR(64),
+                update_channel VARCHAR(32) NOT NULL DEFAULT 'beta',
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 INDEX idx_hubs_status (status)
@@ -568,6 +569,13 @@ impl MysqlStorage {
             .execute(&mut *conn)
             .await;
 
+        // 015_hub_update_channel — per-hub release channel.
+        let _ = sqlx::query(
+            "ALTER TABLE hubs ADD COLUMN update_channel VARCHAR(32) NOT NULL DEFAULT 'beta'"
+        )
+        .execute(&mut *conn)
+        .await;
+
         // Re-enable foreign key checks
         sqlx::query("SET FOREIGN_KEY_CHECKS=1")
             .execute(&mut *conn)
@@ -616,6 +624,9 @@ fn my_row_to_hub(r: &MySqlRow) -> Hub {
         cert_fingerprint: r.get("cert_fingerprint"),
         hub_version: r.get("hub_version"),
         build_hash: r.get("build_hash"),
+        update_channel: r
+            .try_get::<String, _>("update_channel")
+            .unwrap_or_else(|_| "beta".to_string()),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     }
@@ -2273,7 +2284,7 @@ impl Storage for MysqlStorage {
         if hub.id > 0 {
             sqlx::query(
                 "UPDATE hubs SET name = ?, address = ?, status = ?, last_seen = ?, \
-                 cert_fingerprint = ?, hub_version = ?, build_hash = ?, \
+                 cert_fingerprint = ?, hub_version = ?, build_hash = ?, update_channel = ?, \
                  updated_at = NOW() WHERE id = ?"
             )
             .bind(&hub.name)
@@ -2283,6 +2294,7 @@ impl Storage for MysqlStorage {
             .bind(&hub.cert_fingerprint)
             .bind(&hub.hub_version)
             .bind(&hub.build_hash)
+            .bind(&hub.update_channel)
             .bind(hub.id)
             .execute(&self.pool)
             .await
@@ -2290,8 +2302,8 @@ impl Storage for MysqlStorage {
             Ok(hub.id)
         } else {
             let result = sqlx::query(
-                "INSERT INTO hubs (name, address, status, last_seen, cert_fingerprint, hub_version, build_hash) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO hubs (name, address, status, last_seen, cert_fingerprint, hub_version, build_hash, update_channel) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&hub.name)
             .bind(&hub.address)
@@ -2300,11 +2312,24 @@ impl Storage for MysqlStorage {
             .bind(&hub.cert_fingerprint)
             .bind(&hub.hub_version)
             .bind(&hub.build_hash)
+            .bind(&hub.update_channel)
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
             Ok(result.last_insert_id() as i64)
         }
+    }
+
+    async fn set_hub_update_channel(&self, hub_id: i64, channel: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE hubs SET update_channel = ?, updated_at = NOW() WHERE id = ?"
+        )
+        .bind(channel)
+        .bind(hub_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
     }
 
     async fn delete_hub(&self, hub_id: i64) -> Result<(), StorageError> {

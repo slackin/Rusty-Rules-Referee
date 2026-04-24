@@ -291,6 +291,137 @@ pub async fn restart_hub(
         .into_response()
 }
 
+/// GET /api/v1/hubs/:id/version — current hub build + master-side latest manifest.
+pub async fn get_hub_version(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path(hub_id): Path<i64>,
+) -> impl IntoResponse {
+    if let Err(e) = require_master(&state) {
+        return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
+    }
+
+    // Cached heartbeat-reported version.
+    let cached = if let Some(map) = state.hub_versions.as_ref() {
+        map.read().await.get(&hub_id).map(|v| {
+            serde_json::json!({
+                "build_hash": v.build_hash,
+                "version": v.version,
+                "reported_at": v.reported_at.to_rfc3339(),
+            })
+        })
+    } else {
+        None
+    };
+
+    // Channel comes from the hub row in the DB.
+    let (channel, db_build) = match state.storage.get_hub(hub_id).await {
+        Ok(h) => (h.update_channel, h.build_hash),
+        Err(_) => (state.config.update.channel.clone(), None),
+    };
+
+    let update_url = state.config.update.url.clone();
+    let latest = match crate::update::check_for_update(&update_url, &channel, "").await {
+        Ok(Some(u)) => serde_json::json!({
+            "ok": true,
+            "version": u.manifest.version,
+            "build_hash": u.manifest.build_hash,
+            "git_commit": u.manifest.git_commit,
+            "released_at": u.manifest.released_at,
+            "download_size": u.platform.size,
+        }),
+        Ok(None) => serde_json::json!({ "ok": true, "up_to_date": true }),
+        Err(e) => serde_json::json!({
+            "ok": false,
+            "error": format!("Manifest check failed: {}", e),
+        }),
+    };
+
+    Json(serde_json::json!({
+        "hub_id": hub_id,
+        "cached": cached,
+        "db_build_hash": db_build,
+        "channel": channel,
+        "latest": latest,
+        "master_update_url": update_url,
+    }))
+    .into_response()
+}
+
+/// POST /api/v1/hubs/:id/force-update — ask the hub to download + apply + restart.
+pub async fn force_hub_update(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path(hub_id): Path<i64>,
+) -> impl IntoResponse {
+    if let Err(e) = require_master(&state) {
+        return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
+    }
+    let update_url = state.config.update.url.clone();
+    let channel = state
+        .storage
+        .get_hub(hub_id)
+        .await
+        .ok()
+        .map(|h| h.update_channel)
+        .unwrap_or_else(|| state.config.update.channel.clone());
+
+    enqueue_action(
+        &state,
+        hub_id,
+        HubAction::ForceUpdate {
+            update_url: Some(update_url),
+            channel: Some(channel),
+        },
+    )
+    .await
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetHubUpdateChannelBody {
+    pub channel: String,
+}
+
+/// PUT /api/v1/hubs/:id/update-channel
+pub async fn set_hub_update_channel(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path(hub_id): Path<i64>,
+    Json(body): Json<SetHubUpdateChannelBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_master(&state) {
+        return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
+    }
+    let channel = body.channel.trim().to_string();
+    if !crate::config::VALID_UPDATE_CHANNELS.contains(&channel.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Invalid channel '{}' — expected one of: {}",
+                    channel,
+                    crate::config::VALID_UPDATE_CHANNELS.join(", ")
+                )
+            })),
+        )
+            .into_response();
+    }
+    if let Err(e) = state.storage.set_hub_update_channel(hub_id, &channel).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "message": format!("Channel set to {}", channel),
+        "channel": channel,
+    }))
+    .into_response()
+}
+
 /// DELETE /api/v1/hubs/:id — forget a hub on the master (does not touch host).
 pub async fn delete_hub(
     AdminOnly(_): AdminOnly,

@@ -340,4 +340,8 @@ export const api = {
 	hubInstallGameServer: (id, body) =>
 		request(`/hubs/${id}/game-server`, { method: 'POST', body: JSON.stringify(body) }),
 	hubRestart: (id) => request(`/hubs/${id}/restart`, { method: 'POST' }),
+	hubVersion: (id) => request(`/hubs/${id}/version`),
+	forceHubUpdate: (id) => request(`/hubs/${id}/force-update`, { method: 'POST' }),
+	setHubUpdateChannel: (id, channel) =>
+		request(`/hubs/${id}/update-channel`, { method: 'PUT', body: JSON.stringify({ channel }) }),
 };
