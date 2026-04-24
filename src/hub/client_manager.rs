@@ -180,12 +180,18 @@ pub async fn install_client(
         // logs, and per-instance state files under its install dir.
         let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
         let abs_dir = dir.canonicalize().unwrap_or(dir.clone());
+        // NoNewPrivileges=no is required so the sub-client can call
+        // `sudo -n systemctl start|stop|restart urt@<slug>.service`. The
+        // stock r3-client@.service template sets it to true; this drop-in
+        // overrides that without needing a template edit on already-deployed
+        // hubs.
         format!(
             "[Service]\n\
              User={user}\n\
              WorkingDirectory={wd}\n\
              ReadWritePaths={wd}\n\
-             Environment=R3_CONF={conf}\n",
+             Environment=R3_CONF={conf}\n\
+             NoNewPrivileges=no\n",
             user = user,
             wd = abs_dir.display(),
             conf = dir.join("r3.toml").display(),

@@ -995,7 +995,14 @@ Restart=always
 RestartSec=3
 Environment=RUST_LOG=info
 
-NoNewPrivileges=true
+# Sub-clients call `sudo -n systemctl start|stop|restart urt@<slug>.service`
+# to manage the Urban Terror dedicated server that lives alongside them.
+# NoNewPrivileges=true blocks setuid, so sudo fails with
+#   "sudo: The 'no new privileges' flag is set, which prevents sudo from
+#    running as root"
+# even though the sudoers drop-in is correct. Relax that one bit so sudo
+# works; the narrow `urt@*` sudoers alias keeps the attack surface small.
+NoNewPrivileges=no
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
