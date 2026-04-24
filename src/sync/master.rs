@@ -1177,13 +1177,19 @@ async fn handle_mint_client_cert(
     // If the hub supplied RCON + log/cfg paths from the fresh install,
     // seed config_json so the server is considered fully configured
     // immediately — no second wizard required on the master UI.
+    // We seed even when the address is unknown (blank or 0.0.0.0): the
+    // operator can edit just the IP afterwards instead of re-entering
+    // port / rcon / paths from scratch.
     let (config_json, config_version) = if req.port != 0
-        && !effective_address.is_empty()
-        && effective_address != "0.0.0.0"
         && req.rcon_password.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
     {
+        let addr_for_cfg = if effective_address.is_empty() {
+            "0.0.0.0".to_string()
+        } else {
+            effective_address.clone()
+        };
         let payload = crate::sync::protocol::ServerConfigPayload {
-            address: effective_address.clone(),
+            address: addr_for_cfg,
             port: req.port,
             rcon_password: req.rcon_password.clone().unwrap_or_default(),
             game_log: req.game_log.clone(),
@@ -1195,13 +1201,29 @@ async fn handle_mint_client_cert(
             plugins: None,
         };
         match serde_json::to_string(&payload) {
-            Ok(s) => (Some(s), 1),
+            Ok(s) => {
+                info!(
+                    hub_id = req.hub_id,
+                    port = req.port,
+                    address_present = !effective_address.is_empty() && effective_address != "0.0.0.0",
+                    game_log_present = req.game_log.is_some(),
+                    server_cfg_path_present = req.server_cfg_path.is_some(),
+                    "mint-client-cert: seeding initial config_json for new hub-installed server"
+                );
+                (Some(s), 1)
+            }
             Err(e) => {
                 warn!(error = %e, "Failed to serialize initial config_json");
                 (None, 1)
             }
         }
     } else {
+        warn!(
+            hub_id = req.hub_id,
+            port = req.port,
+            rcon_present = req.rcon_password.as_deref().map(|s| !s.is_empty()).unwrap_or(false),
+            "mint-client-cert: NOT seeding config_json (missing port or rcon_password)"
+        );
         (None, 1)
     };
 
