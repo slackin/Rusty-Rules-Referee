@@ -586,18 +586,12 @@ async fn check_port_available(
     let out = match Command::new("ss").args(["-Hltunp"]).output().await {
         Ok(o) => o,
         Err(_) => {
-            // Fall back to a pure bind probe.
-            return match std::net::UdpSocket::bind(format!("0.0.0.0:{}", port)) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(format!("UDP port {} is in use: {}", port, e)),
-            };
+            // Fall back to a pure bind probe (incl. specific-IP).
+            return bind_probe(port).await;
         }
     };
     if !out.status.success() {
-        return match std::net::UdpSocket::bind(format!("0.0.0.0:{}", port)) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("UDP port {} is in use: {}", port, e)),
-        };
+        return bind_probe(port).await;
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let target = format!(":{}", port);
@@ -645,10 +639,46 @@ async fn check_port_available(
         ));
     }
     // No ss record for the port — still try a live bind to catch races.
-    match std::net::UdpSocket::bind(format!("0.0.0.0:{}", port)) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("UDP port {} bind failed: {}", port, e)),
+    bind_probe(port).await
+}
+
+/// Live UDP bind probe on `0.0.0.0:<port>` and on every non-loopback
+/// local IPv4. Catches services that set `SO_REUSEADDR/SO_REUSEPORT`
+/// and bound a specific IP, which would otherwise let the wildcard
+/// bind succeed while the port is actually unavailable.
+async fn bind_probe(port: u16) -> Result<(), String> {
+    if let Err(e) = std::net::UdpSocket::bind(format!("0.0.0.0:{}", port)) {
+        return Err(format!("UDP port {} bind failed: {}", port, e));
     }
+    for ip in local_bind_ips().await {
+        if let Err(e) = std::net::UdpSocket::bind(format!("{}:{}", ip, port)) {
+            return Err(format!(
+                "UDP port {} is in use on {}: {}",
+                port, ip, e
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Best-effort enumeration of non-loopback local IPv4 addresses via
+/// `hostname -I` (universally available on systemd Linux). Used by
+/// `check_port_available` to detect services bound to a specific IP
+/// with `SO_REUSEADDR` set, which would otherwise let the wildcard
+/// bind probe succeed while the port is actually unavailable.
+async fn local_bind_ips() -> Vec<String> {
+    let out = match Command::new("hostname").arg("-I").output().await {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter(|s| {
+            // IPv4 only (skip IPv6 which appears with `:`), drop loopback.
+            !s.contains(':') && !s.starts_with("127.")
+        })
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Pick a free UDP port for a new sub-client install.
