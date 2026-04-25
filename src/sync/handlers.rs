@@ -2874,6 +2874,7 @@ async fn register_systemd_instance(
          User={user}\n\
          WorkingDirectory={install}\n\
          ReadWritePaths={install}\n\
+         Environment=HOME={install}\n\
          Environment=URT_PORT={port}\n\
          ExecStart={binary} +set fs_homepath {install} +set fs_basepath {install} \
          +set dedicated 2 +set net_port {port} +exec server.cfg\n",
