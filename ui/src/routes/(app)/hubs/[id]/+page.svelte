@@ -182,20 +182,25 @@
 	async function submitInstall() {
 		installError = '';
 		if (!installSlug.trim()) { installError = 'Slug is required'; return; }
-		const slug = installSlug.trim();
 		// Slug becomes a filesystem path AND a systemd template instance
 		// name (urt@<slug>.service, r3-client@<slug>.service). Anything
 		// outside [A-Za-z0-9._-] silently breaks systemd's directive
-		// parser. Reject early with a slugified suggestion.
-		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(slug)) {
-			const suggested = slug
+		// parser, so we transparently slugify here before submitting and
+		// surface the rewrite to the admin in the UI. The hub also
+		// normalizes server-side as a defense-in-depth.
+		const rawSlug = installSlug.trim();
+		const slug = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(rawSlug) && rawSlug.length <= 64
+			? rawSlug
+			: (rawSlug
 				.toLowerCase()
 				.replace(/[^a-z0-9._-]+/g, '-')
-				.replace(/^[-.]+|[-.]+$/g, '') || 'client';
-			installError = `Slug may only contain letters, digits, '.', '_' or '-' (no spaces). Try: "${suggested}"`;
-			return;
+				.replace(/-+/g, '-')
+				.replace(/^[-.]+|[-.]+$/g, '')
+				.slice(0, 64) || 'client');
+		if (slug !== rawSlug) {
+			installSlug = slug;
 		}
-		const serverName = installServerName.trim() || slug;
+		const serverName = installServerName.trim() || rawSlug;
 
 		/** @type {any} */
 		const body = {

@@ -17,41 +17,46 @@ fn random_pass() -> String {
     format!("{:02x}{:02x}{:02x}", buf[0], buf[1], buf[2])
 }
 
-/// Validate a sub-client slug. The slug becomes a filesystem path
+/// Normalize a sub-client slug. The slug becomes a filesystem path
 /// component AND a systemd template instance name (e.g.
 /// `urt@<slug>.service`, `r3-client@<slug>.service`), so it must be
-/// safe for both. Reject anything outside `[A-Za-z0-9._-]` — notably
-/// whitespace, which silently breaks systemd's whitespace-separated
-/// directives (`ReadWritePaths=`, `ExecStart=`).
-fn validate_slug(slug: &str) -> anyhow::Result<()> {
-    if slug.is_empty() {
+/// safe for both. Anything outside `[A-Za-z0-9._-]` — notably
+/// whitespace — silently breaks systemd's whitespace-separated
+/// directives (`ReadWritePaths=`, `ExecStart=`), so we transparently
+/// rewrite the slug to a safe form rather than rejecting the install.
+/// Returns `(normalized, was_renamed)`.
+fn normalize_slug(slug: &str) -> anyhow::Result<(String, bool)> {
+    if slug.trim().is_empty() {
         anyhow::bail!("Slug cannot be empty");
     }
-    if slug.len() > 64 {
-        anyhow::bail!("Slug '{}' is too long (max 64 chars)", slug);
-    }
-    if let Some(bad) = slug
+    let safe = slug
         .chars()
-        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
-    {
-        anyhow::bail!(
-            "Slug '{}' contains invalid character {:?}. Use only letters, digits, '.', '_' or '-' (no spaces). Try '{}' instead.",
-            slug,
-            bad,
-            slugify(slug),
-        );
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && !slug.starts_with('.')
+        && !slug.starts_with('-')
+        && slug.len() <= 64;
+    if safe {
+        return Ok((slug.to_string(), false));
     }
-    if slug.starts_with('.') || slug.starts_with('-') {
+    let mut normalized = slugify(slug);
+    if normalized.len() > 64 {
+        normalized.truncate(64);
+        normalized = normalized
+            .trim_end_matches(|c: char| c == '-' || c == '.')
+            .to_string();
+    }
+    if normalized.is_empty() {
         anyhow::bail!(
-            "Slug '{}' cannot start with '.' or '-'",
+            "Slug '{}' could not be normalized to a valid identifier",
             slug
         );
     }
-    Ok(())
+    Ok((normalized, true))
 }
 
-/// Simple lowercase-and-replace slugify used to suggest a valid slug
-/// when the admin submits one with spaces or punctuation.
+/// Simple lowercase-and-replace slugify used to rewrite a submitted
+/// slug into something safe for filesystem paths and systemd template
+/// instance names.
 fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -63,7 +68,9 @@ fn slugify(s: &str) -> String {
             }
         }
     }
-    let trimmed = out.trim_matches('-').to_string();
+    let trimmed = out
+        .trim_matches(|c: char| c == '-' || c == '.')
+        .to_string();
     if trimmed.is_empty() { "client".to_string() } else { trimmed }
 }
 
@@ -273,8 +280,23 @@ pub async fn execute(
             // Anything outside `[A-Za-z0-9._-]` breaks systemd's
             // whitespace-separated directive parser (ReadWritePaths=,
             // ExecStart=, ConditionPathExists=) and produces a unit that
-            // won't start. Reject early with a clear message.
-            validate_slug(&slug)?;
+            // won't start. Silently rewrite to a safe form rather than
+            // erroring — admins shouldn't have to retry just because
+            // they typed a friendly name with spaces.
+            let (slug, slug_renamed) = normalize_slug(&slug)?;
+            if slug_renamed {
+                tracing::info!(%slug, "Hub auto-normalized client slug to a systemd-safe form");
+                report_progress(
+                    http,
+                    base_url,
+                    action_id,
+                    0,
+                    "slug_normalize",
+                    &format!("Slug auto-renamed to '{}' (filesystem/systemd-safe)", slug),
+                    Some(2),
+                )
+                .await;
+            }
             // Normalize and fill in game-server params so the rest of the
             // install flow has a single source of truth (passwords, IP,
             // log paths) without sprinkling defaults at every call site.
@@ -464,6 +486,7 @@ pub async fn execute(
             // 3) Optionally drop game-server files alongside the client.
             let mut data = json!({
                 "slug": slug,
+                "slug_renamed": slug_renamed,
                 "server_id": mint.server_id,
                 "client_dir": dir.display().to_string(),
             });
@@ -651,11 +674,14 @@ pub async fn execute(
             Ok((format!("Restarted {}", unit), None))
         }
         HubAction::InstallGameServer { slug, params } => {
-            validate_slug(&slug)?;
+            let (slug, slug_renamed) = normalize_slug(&slug)?;
+            if slug_renamed {
+                tracing::info!(%slug, "Hub auto-normalized game-server slug to a systemd-safe form");
+            }
             let path = game_server_manager::install_game_server(hub_cfg, &slug, &params).await?;
             Ok((
                 format!("Game server installed at {}", path.display()),
-                Some(json!({ "slug": slug, "install_path": path })),
+                Some(json!({ "slug": slug, "install_path": path, "slug_renamed": slug_renamed })),
             ))
         }
         HubAction::RemoveGameServer { slug } => {
