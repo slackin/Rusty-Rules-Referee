@@ -138,6 +138,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/hubs/:id/actions/:action_id", get(api::hubs::get_action_progress))
         .route("/hubs/:id/game-server", post(api::hubs::install_game_server))
         .route("/hubs/:id/restart", post(api::hubs::restart_hub))
+        .route("/hubs/:id/suggest-port", get(api::hubs::suggest_port))
         .route("/hubs/:id/version", get(api::hubs::get_hub_version))
         .route("/hubs/:id/force-update", post(api::hubs::force_hub_update))
         .route("/hubs/:id/update-channel", put(api::hubs::set_hub_update_channel))

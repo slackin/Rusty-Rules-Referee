@@ -648,6 +648,34 @@ pub async fn restart_hub(
         .into_response()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SuggestPortQuery {
+    #[serde(default)]
+    pub requested: Option<u16>,
+}
+
+/// GET /api/v1/hubs/:id/suggest-port?requested=27960 — ask the hub for
+/// a free UDP port near `requested`. Used by the UI to pre-fill the
+/// install-client form so two back-to-back installs don't collide.
+pub async fn suggest_port(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path(hub_id): Path<i64>,
+    Query(q): Query<SuggestPortQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_master(&state) {
+        return (e.0, Json(serde_json::json!({"error": e.1}))).into_response();
+    }
+    let requested = q.requested.unwrap_or(27960);
+    enqueue_action(
+        &state,
+        hub_id,
+        HubAction::SuggestPort { requested },
+    )
+    .await
+    .into_response()
+}
+
 /// GET /api/v1/hubs/:id/version — current hub build + master-side latest manifest.
 pub async fn get_hub_version(
     AdminOnly(_): AdminOnly,

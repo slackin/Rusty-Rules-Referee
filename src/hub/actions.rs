@@ -252,6 +252,56 @@ pub async fn execute(
                     // block below will fall back to the hub's registered
                     // address or 127.0.0.1 so config_json still seeds.
                 }
+                // Ensure the requested UDP port is actually free on this
+                // host. The UI defaults to 27960, so two back-to-back
+                // sub-client installs would otherwise both land on the
+                // same port (or collide with unmanaged UrT/Quake servers
+                // already bound there). Silently auto-bump to the next
+                // free port, matching the standalone
+                // `run_wizard_install` behaviour.
+                let requested_port = params.port;
+                match game_server_manager::pick_free_port(requested_port).await {
+                    Some(p) if p == requested_port => {
+                        report_progress(
+                            http,
+                            base_url,
+                            action_id,
+                            0,
+                            "port_select",
+                            &format!("UDP port {} is available", p),
+                            Some(5),
+                        )
+                        .await;
+                    }
+                    Some(p) => {
+                        tracing::warn!(
+                            %slug,
+                            requested = requested_port,
+                            selected = p,
+                            "Requested UDP port is in use; auto-selecting next free port"
+                        );
+                        params.port = p;
+                        report_progress(
+                            http,
+                            base_url,
+                            action_id,
+                            0,
+                            "port_select",
+                            &format!(
+                                "UDP port {} is in use; auto-selected free port {}",
+                                requested_port, p
+                            ),
+                            Some(5),
+                        )
+                        .await;
+                    }
+                    None => {
+                        anyhow::bail!(
+                            "No free UDP port available near {} or in 27960..=28050 on this hub host",
+                            requested_port
+                        );
+                    }
+                }
                 Some(params)
             } else {
                 None
@@ -629,6 +679,23 @@ pub async fn execute(
                 "build_hash": option_env!("R3_BUILD_HASH").unwrap_or("unknown"),
             })),
         )),
+        HubAction::SuggestPort { requested } => {
+            let port = game_server_manager::pick_free_port(requested).await;
+            Ok((
+                match port {
+                    Some(p) if p == requested => format!("UDP port {} is available", p),
+                    Some(p) => format!(
+                        "UDP port {} is in use; suggesting {}",
+                        requested, p
+                    ),
+                    None => format!(
+                        "No free UDP port near {} or in 27960..=28050",
+                        requested
+                    ),
+                },
+                Some(json!({ "requested": requested, "suggested": port })),
+            ))
+        }
         HubAction::Restart => {
             // Re-exec ourselves: simplest way is exit and let systemd restart us.
             tokio::spawn(async {

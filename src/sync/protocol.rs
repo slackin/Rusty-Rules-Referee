@@ -976,6 +976,14 @@ pub enum HubAction {
     },
     /// Report the hub's own version/build.
     GetHubVersion,
+    /// Suggest a free UDP port on the hub host near `requested`
+    /// (defaults to 27960). Used by the master UI to pre-fill the
+    /// install-client form so two back-to-back installs don't default
+    /// to the same port.
+    SuggestPort {
+        #[serde(default = "default_suggest_port")]
+        requested: u16,
+    },
     /// Restart the hub process itself (re-exec).
     Restart,
     /// Force the hub to check for and apply an R3 update.
@@ -1007,6 +1015,10 @@ fn default_register_systemd() -> bool {
 
 fn default_tail_lines() -> u32 {
     200
+}
+
+fn default_suggest_port() -> u16 {
+    27960
 }
 
 /// A queued hub action with its tracking ID.

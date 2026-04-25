@@ -1394,6 +1394,7 @@ fn action_kind_label(action: &HubAction) -> String {
         HubAction::UpdateClient { .. } => "update_client",
         HubAction::GetClientLogs { .. } => "get_client_logs",
         HubAction::GetHubVersion => "get_hub_version",
+        HubAction::SuggestPort { .. } => "suggest_port",
         HubAction::Restart => "restart_hub",
         HubAction::ForceUpdate { .. } => "force_update",
         HubAction::SelfUninstall { .. } => "self_uninstall",

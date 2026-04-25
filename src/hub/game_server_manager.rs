@@ -392,6 +392,30 @@ async fn register_urt_instance(
              'sudo bash install-r3.sh --add-urt' on the hub host, then retry."
         );
     }
+    // Refuse to write a drop-in for a port that's already held by a
+    // foreign process (or a different urt@ sibling). This is a
+    // belt-and-suspenders check — `pick_free_port` in the InstallClient
+    // action should have already resolved conflicts, but guards callers
+    // that bypass that path.
+    let own_pids = current_pids_for_unit(&format!("urt@{}.service", slug))
+        .await
+        .unwrap_or_default();
+    if let Err(msg) = check_port_available(exec.port, &own_pids).await {
+        let suggestions = suggest_free_ports(exec.port, 3).await;
+        let hint = if suggestions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Try one of: {}",
+                suggestions
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        anyhow::bail!("{}{}", msg, hint);
+    }
     let binary = find_urt_binary(install_path).ok_or_else(|| {
         anyhow::anyhow!(
             "No UrT dedicated binary found under {} (looked for Quake3-UrT-Ded*).",
@@ -621,6 +645,34 @@ async fn check_port_available(
         Ok(_) => Ok(()),
         Err(e) => Err(format!("UDP port {} bind failed: {}", port, e)),
     }
+}
+
+/// Pick a free UDP port for a new sub-client install.
+///
+/// Returns `requested` if it is currently free on the host; otherwise
+/// scans `requested+1..=requested+50` followed by the conventional UrT
+/// range `27960..=28050` and returns the first port that passes
+/// `check_port_available`. Returns `None` if nothing is free in either
+/// window.
+///
+/// Used by the hub's `InstallClient` action to prevent two sub-clients
+/// silently picking the same default port.
+pub async fn pick_free_port(requested: u16) -> Option<u16> {
+    let empty = std::collections::HashSet::new();
+    if requested > 0 && check_port_available(requested, &empty).await.is_ok() {
+        return Some(requested);
+    }
+    let window = (requested.saturating_add(1)..=requested.saturating_add(50))
+        .chain(27960u16..=28050);
+    for p in window {
+        if p == requested {
+            continue;
+        }
+        if check_port_available(p, &empty).await.is_ok() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// Suggest up to `count` free UDP ports near the requested one.

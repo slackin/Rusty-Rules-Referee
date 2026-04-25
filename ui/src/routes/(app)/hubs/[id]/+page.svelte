@@ -161,6 +161,24 @@
 		busySlug = '';
 	}
 
+	async function toggleInstall() {
+		showInstall = !showInstall;
+		if (showInstall) {
+			// Pre-fill the port from a live hub-host probe so two
+			// back-to-back installs don't both default to 27960.
+			try {
+				const res = await api.hubSuggestPort(hubId, 27960);
+				const sug = res?.data?.suggested;
+				if (typeof sug === 'number' && sug > 0) {
+					gsPort = sug;
+				}
+			} catch (e) {
+				// Non-fatal — keep the existing default.
+				console.warn('hubSuggestPort failed', e);
+			}
+		}
+	}
+
 	async function submitInstall() {
 		installError = '';
 		if (!installSlug.trim()) { installError = 'Slug is required'; return; }
@@ -765,7 +783,7 @@
 			<div class="space-y-3">
 				<div class="flex items-center justify-between">
 					<h2 class="text-sm font-semibold text-surface-200">Managed clients ({clients.length})</h2>
-					<button onclick={() => showInstall = !showInstall} class="btn-secondary flex items-center gap-2 text-sm">
+					<button onclick={() => toggleInstall()} class="btn-secondary flex items-center gap-2 text-sm">
 						<Plus class="h-4 w-4" />
 						Install client
 					</button>

@@ -349,6 +349,8 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 	hubRestart: (id) => request(`/hubs/${id}/restart`, { method: 'POST' }),
+	hubSuggestPort: (id, requested = 27960) =>
+		request(`/hubs/${id}/suggest-port?requested=${requested}`),
 	hubVersion: (id) => request(`/hubs/${id}/version`),
 	forceHubUpdate: (id) => request(`/hubs/${id}/force-update`, { method: 'POST' }),
 	setHubUpdateChannel: (id, channel) =>
