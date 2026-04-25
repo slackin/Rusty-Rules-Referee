@@ -17,6 +17,56 @@ fn random_pass() -> String {
     format!("{:02x}{:02x}{:02x}", buf[0], buf[1], buf[2])
 }
 
+/// Validate a sub-client slug. The slug becomes a filesystem path
+/// component AND a systemd template instance name (e.g.
+/// `urt@<slug>.service`, `r3-client@<slug>.service`), so it must be
+/// safe for both. Reject anything outside `[A-Za-z0-9._-]` — notably
+/// whitespace, which silently breaks systemd's whitespace-separated
+/// directives (`ReadWritePaths=`, `ExecStart=`).
+fn validate_slug(slug: &str) -> anyhow::Result<()> {
+    if slug.is_empty() {
+        anyhow::bail!("Slug cannot be empty");
+    }
+    if slug.len() > 64 {
+        anyhow::bail!("Slug '{}' is too long (max 64 chars)", slug);
+    }
+    if let Some(bad) = slug
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+    {
+        anyhow::bail!(
+            "Slug '{}' contains invalid character {:?}. Use only letters, digits, '.', '_' or '-' (no spaces). Try '{}' instead.",
+            slug,
+            bad,
+            slugify(slug),
+        );
+    }
+    if slug.starts_with('.') || slug.starts_with('-') {
+        anyhow::bail!(
+            "Slug '{}' cannot start with '.' or '-'",
+            slug
+        );
+    }
+    Ok(())
+}
+
+/// Simple lowercase-and-replace slugify used to suggest a valid slug
+/// when the admin submits one with spaces or punctuation.
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if matches!(c, ' ' | '\t' | '_' | '-' | '.') {
+            if !out.ends_with('-') && !out.is_empty() {
+                out.push('-');
+            }
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() { "client".to_string() } else { trimmed }
+}
+
 /// Try to discover the hub host's public IPv4 address by querying a small
 /// set of well-known echo services. Returns `None` only if every probe
 /// fails. Called when the admin leaves the "public IP" wizard field blank.
@@ -218,6 +268,13 @@ pub async fn execute(
             game_server,
             register_systemd: _,
         } => {
+            // Slugs become filesystem paths AND systemd template instance
+            // names (`urt@<slug>.service`, `r3-client@<slug>.service`).
+            // Anything outside `[A-Za-z0-9._-]` breaks systemd's
+            // whitespace-separated directive parser (ReadWritePaths=,
+            // ExecStart=, ConditionPathExists=) and produces a unit that
+            // won't start. Reject early with a clear message.
+            validate_slug(&slug)?;
             // Normalize and fill in game-server params so the rest of the
             // install flow has a single source of truth (passwords, IP,
             // log paths) without sprinkling defaults at every call site.
@@ -594,6 +651,7 @@ pub async fn execute(
             Ok((format!("Restarted {}", unit), None))
         }
         HubAction::InstallGameServer { slug, params } => {
+            validate_slug(&slug)?;
             let path = game_server_manager::install_game_server(hub_cfg, &slug, &params).await?;
             Ok((
                 format!("Game server installed at {}", path.display()),

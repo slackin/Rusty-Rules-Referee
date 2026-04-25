@@ -183,6 +183,18 @@
 		installError = '';
 		if (!installSlug.trim()) { installError = 'Slug is required'; return; }
 		const slug = installSlug.trim();
+		// Slug becomes a filesystem path AND a systemd template instance
+		// name (urt@<slug>.service, r3-client@<slug>.service). Anything
+		// outside [A-Za-z0-9._-] silently breaks systemd's directive
+		// parser. Reject early with a slugified suggestion.
+		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(slug)) {
+			const suggested = slug
+				.toLowerCase()
+				.replace(/[^a-z0-9._-]+/g, '-')
+				.replace(/^[-.]+|[-.]+$/g, '') || 'client';
+			installError = `Slug may only contain letters, digits, '.', '_' or '-' (no spaces). Try: "${suggested}"`;
+			return;
+		}
 		const serverName = installServerName.trim() || slug;
 
 		/** @type {any} */
