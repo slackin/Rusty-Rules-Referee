@@ -372,6 +372,21 @@
 		reconfigError = '';
 		reconfigBusy = false;
 		showReconfig = true;
+		// If the current port is held by something foreign on the host,
+		// suggest a free port. The hub probes TCP+UDP so collisions with
+		// non-UrT services on the same numeric port are flagged.
+		(async () => {
+			try {
+				const res = await api.hubSuggestPort(hubId, reconfigPort);
+				const sug = res?.data?.suggested;
+				if (typeof sug === 'number' && sug > 0 && sug !== reconfigPort) {
+					reconfigError = `Port ${reconfigPort} is in use on the hub host — suggesting ${sug}.`;
+					reconfigPort = sug;
+				}
+			} catch (e) {
+				console.warn('hubSuggestPort (reconfigure) failed', e);
+			}
+		})();
 	}
 
 	function dismissReconfig() {

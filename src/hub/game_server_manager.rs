@@ -579,7 +579,11 @@ async fn check_port_available(
     port: u16,
     own_pids: &std::collections::HashSet<u32>,
 ) -> Result<(), String> {
-    let out = match Command::new("ss").args(["-Hlunp"]).output().await {
+    // Probe both TCP and UDP listeners so a colliding non-UrT service
+    // bound to the same port (e.g. a web admin panel on TCP/27960) is
+    // detected. UrT itself only uses UDP, but binding the same numeric
+    // port across protocols is still a footgun for admins.
+    let out = match Command::new("ss").args(["-Hltunp"]).output().await {
         Ok(o) => o,
         Err(_) => {
             // Fall back to a pure bind probe.
@@ -636,7 +640,7 @@ async fn check_port_available(
     }
     if let Some(detail) = foreign_holder {
         return Err(format!(
-            "UDP port {} is already in use by another process: {}",
+            "Port {} is already in use by another process: {}",
             port, detail
         ));
     }
