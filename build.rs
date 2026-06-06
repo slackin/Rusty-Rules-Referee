@@ -83,6 +83,15 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/heads/");
     println!("cargo:rerun-if-env-changed=FORCE_REBUILD");
+
+    // Re-embed the web UI whenever the built assets change. rust-embed reads
+    // `ui/build` at macro-expansion time of the `#[derive(Embed)]` in
+    // src/web/mod.rs; without this, a fresh `ui/build` produced after the
+    // last compile of that module is ignored (cargo sees no .rs change) and
+    // the binary ships a stale/empty UI -> the "R3 Admin API" fallback page.
+    // Watching the directory forces build.rs to rerun (new BUILD_TIMESTAMP),
+    // which recompiles the crate and re-reads the current assets.
+    println!("cargo:rerun-if-changed=ui/build");
 }
 
 fn is_leap(y: i64) -> bool {

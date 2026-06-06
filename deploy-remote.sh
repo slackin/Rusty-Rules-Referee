@@ -144,6 +144,12 @@ ok "ui/build contains $(find ui/build -type f | wc -l) files"
 CURRENT_STEP=$((CURRENT_STEP + 1))
 step $CURRENT_STEP "Building Rust binary"
 
+# Belt-and-suspenders: force the module holding the rust-embed `#[derive(Embed)]`
+# to recompile so the freshly-built ui/build is re-embedded even if cargo's
+# incremental cache would otherwise reuse a stale object (build.rs also adds
+# `rerun-if-changed=ui/build`, but touching the source guarantees it).
+touch src/web/mod.rs
+
 cargo build --release 2>&1 | tail -20 || die "cargo build --release failed"
 
 BINARY="target/release/${BINARY_NAME}"
