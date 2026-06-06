@@ -90,6 +90,9 @@ discover_instances() {
         [[ -f "$unit_file" ]] || continue
         local svc
         svc=$(basename "$unit_file" .service)
+        # Skip systemd template units (e.g. r3-client@.service) — these are not
+        # installed instances, just templates the hub instantiates per client.
+        [[ "$svc" == *@ ]] && continue
         instances+=("$svc")
     done
     echo "${instances[@]}"
@@ -112,6 +115,8 @@ get_service_info() {
     # Detect mode from ExecStart line
     if echo "$SVC_EXEC" | grep -q -- '--mode master'; then
         SVC_MODE="master"
+    elif echo "$SVC_EXEC" | grep -q -- '--mode hub'; then
+        SVC_MODE="hub"
     elif echo "$SVC_EXEC" | grep -q -- '--mode client'; then
         SVC_MODE="client"
     else
@@ -273,6 +278,41 @@ for svc in "${TO_REMOVE[@]}"; do
         log "Directory removed"
     else
         warn "Install directory not found: ${SVC_WORKDIR}"
+    fi
+
+    # 4b. Hub-specific scaffolding cleanup
+    if [[ "$SVC_MODE" == "hub" ]]; then
+        # Per-instance client drop-ins written by this hub when provisioning clients
+        if compgen -G "/etc/systemd/system/r3-client@*.service.d" >/dev/null; then
+            info "Removing per-client systemd drop-ins..."
+            rm -rf /etc/systemd/system/r3-client@*.service.d
+            log "Per-client drop-ins removed"
+        fi
+
+        # The hub's sudoers drop-in (named r3-<user>-hub by the installer)
+        if [[ -n "$SVC_USER" && -f "/etc/sudoers.d/r3-${SVC_USER}-hub" ]]; then
+            info "Removing hub sudoers drop-in..."
+            rm -f "/etc/sudoers.d/r3-${SVC_USER}-hub"
+            log "Hub sudoers drop-in removed"
+        fi
+
+        # The r3-client@.service template is shared across hubs — only remove it
+        # if no other hub instance remains on this host.
+        other_hub=false
+        for unit_file in /etc/systemd/system/r3.service /etc/systemd/system/r3-*.service; do
+            [[ -f "$unit_file" ]] || continue
+            bn=$(basename "$unit_file" .service)
+            [[ "$bn" == "$svc" || "$bn" == *@ ]] && continue
+            if grep -q -- '--mode hub' "$unit_file"; then
+                other_hub=true
+                break
+            fi
+        done
+        if [[ "$other_hub" == false && -f /etc/systemd/system/r3-client@.service ]]; then
+            info "Removing r3-client@.service template unit..."
+            rm -f /etc/systemd/system/r3-client@.service
+            log "Client template unit removed"
+        fi
     fi
 
     # 5. Remove game server files (optional)
