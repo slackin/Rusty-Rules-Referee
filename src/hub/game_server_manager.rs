@@ -42,7 +42,8 @@ pub fn cache_dir(hub_cfg: &HubSection) -> PathBuf {
 ///      (skipped if `q3ut4/` already exists and `force_download` is false).
 ///   2. Render `server.cfg` from the wizard params and write it (+ a
 ///      default mapcycle and empty games.log) into `q3ut4/`.
-///   3. If `register_systemd` is set, drop a `/etc/systemd/system/urt@.service.d/<slug>.conf`
+///   3. If `register_systemd` is set, drop a
+///      `/etc/systemd/system/urt@<slug>.service.d/override.conf`
 ///      overriding User/WorkingDirectory/ExecStart, reload systemd, enable
 ///      and start the `urt@<slug>.service` unit.
 pub async fn install_game_server(
@@ -112,7 +113,8 @@ pub async fn remove_game_server(
 ) -> anyhow::Result<Vec<(String, bool, String)>> {
     let mut steps: Vec<(String, bool, String)> = Vec::new();
     let unit = format!("urt@{}.service", slug);
-    let dropin = format!("/etc/systemd/system/urt@.service.d/{}.conf", slug);
+    let dropin_dir = format!("/etc/systemd/system/urt@{}.service.d", slug);
+    let dropin = format!("{}/override.conf", dropin_dir);
     info!(%slug, %unit, "remove_game_server starting");
 
     // The urt@<slug> unit only exists as a usable service when a drop-in
@@ -179,17 +181,21 @@ pub async fn remove_game_server(
         ));
     }
 
-    // Remove the per-instance drop-in file if it exists. (urt@ sudoers only
-    // permits removing *.conf files under the shared drop-in directory.)
-    if Path::new(&dropin).exists() {
-        match run_sudo(&["rm", &dropin]).await {
-            Ok(_) => steps.push(("remove_urt_dropin".into(), true, format!("Removed {}", dropin))),
+    // Remove the per-instance drop-in directory if it exists. The urt@
+    // sudoers permits `rm -rf` of `urt@*.service.d` directories.
+    if Path::new(&dropin_dir).exists() {
+        match run_sudo(&["rm", "-rf", &dropin_dir]).await {
+            Ok(_) => steps.push((
+                "remove_urt_dropin".into(),
+                true,
+                format!("Removed {}", dropin_dir),
+            )),
             Err(e) => {
-                warn!(error = %e, %dropin, "Failed to remove urt@ drop-in via sudo");
+                warn!(error = %e, %dropin_dir, "Failed to remove urt@ drop-in dir via sudo");
                 steps.push((
                     "remove_urt_dropin".into(),
                     false,
-                    format!("sudo rm {} failed: {}", dropin, e),
+                    format!("sudo rm -rf {} failed: {}", dropin_dir, e),
                 ));
             }
         }
@@ -197,7 +203,7 @@ pub async fn remove_game_server(
         steps.push((
             "remove_urt_dropin".into(),
             true,
-            format!("{} already absent", dropin),
+            format!("{} already absent", dropin_dir),
         ));
     }
 
@@ -354,7 +360,7 @@ fn build_exec_start(binary: &Path, install_path: &Path, exec: &UrtExecParams) ->
     out
 }
 
-/// Render the full `/etc/systemd/system/urt@.service.d/<slug>.conf` body.
+/// Render the full `/etc/systemd/system/urt@<slug>.service.d/override.conf` body.
 fn render_dropin(
     slug: &str,
     user: &str,
@@ -386,7 +392,7 @@ fn render_dropin(
     )
 }
 
-/// Write `/etc/systemd/system/urt@.service.d/<slug>.conf`, reload systemd,
+/// Write `/etc/systemd/system/urt@<slug>.service.d/override.conf`, reload systemd,
 /// then enable + start `urt@<slug>.service`.
 async fn register_urt_instance(
     slug: &str,
@@ -433,11 +439,15 @@ async fn register_urt_instance(
 
     let dropin = render_dropin(slug, &user, install_path, &binary, exec);
 
-    let dropin_dir = "/etc/systemd/system/urt@.service.d";
+    // Each instance gets its own drop-in directory `urt@<slug>.service.d/`
+    // so systemd applies exactly one override per service. A single shared
+    // `urt@.service.d/` would apply every `.conf` to every instance,
+    // yielding multiple `ExecStart=` lines and a `bad-setting` unit.
+    let dropin_dir = format!("/etc/systemd/system/urt@{}.service.d", slug);
     // Best-effort mkdir; fine if it already exists.
-    let _ = run_sudo(&["install", "-d", "-m", "0755", dropin_dir]).await;
+    let _ = run_sudo(&["install", "-d", "-m", "0755", &dropin_dir]).await;
 
-    let dropin_path = format!("{}/{}.conf", dropin_dir, slug);
+    let dropin_path = format!("{}/override.conf", dropin_dir);
     sudo_tee_write(&dropin_path, &dropin).await?;
 
     run_sudo(&["systemctl", "daemon-reload"]).await?;
@@ -462,7 +472,7 @@ pub async fn reconfigure_game_server(
     exec: &UrtExecParams,
 ) -> anyhow::Result<Vec<(String, bool, String)>> {
     let mut steps: Vec<(String, bool, String)> = Vec::new();
-    let dropin_path = format!("/etc/systemd/system/urt@.service.d/{}.conf", slug);
+    let dropin_path = format!("/etc/systemd/system/urt@{}.service.d/override.conf", slug);
     let unit = format!("urt@{}.service", slug);
 
     if !Path::new(&dropin_path).exists() {

@@ -2276,7 +2276,7 @@ fn slugify(input: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// A sibling `urt@<slug>.service` instance found on the host, parsed from
-/// its drop-in file under `/etc/systemd/system/urt@.service.d/`.
+/// its per-instance drop-in `/etc/systemd/system/urt@<slug>.service.d/override.conf`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SiblingInstance {
     pub slug: String,
@@ -2284,15 +2284,42 @@ pub struct SiblingInstance {
     pub port: Option<u16>,
 }
 
-/// Default path to the systemd drop-in directory for the `urt@` template.
-pub(crate) const URT_DROPIN_DIR: &str = "/etc/systemd/system/urt@.service.d";
+/// Root systemd unit directory. Per-instance `urt@<slug>.service.d/`
+/// drop-in directories live directly under here.
+pub(crate) const SYSTEMD_SYSTEM_DIR: &str = "/etc/systemd/system";
 
-/// Parse a single DropIn `.conf` file to extract install path + port.
-/// Returns `None` only if the file can't be read; a file with no
-/// recognisable keys returns a `SiblingInstance` with `None` fields so the
-/// caller still knows the slug exists.
-pub(crate) fn parse_dropin(path: &Path) -> Option<SiblingInstance> {
-    let slug = path.file_stem()?.to_str()?.to_string();
+/// Per-instance drop-in *directory* for `urt@<slug>.service`. Each instance
+/// gets its own directory so that systemd applies exactly one override per
+/// service. (A single shared `urt@.service.d/` directory would apply *every*
+/// `.conf` to *every* instance — yielding multiple `ExecStart=` lines and a
+/// `bad-setting` unit that refuses to start.)
+pub(crate) fn urt_dropin_dir(slug: &str) -> String {
+    format!("{}/urt@{}.service.d", SYSTEMD_SYSTEM_DIR, slug)
+}
+
+/// Per-instance drop-in override file: `urt@<slug>.service.d/override.conf`.
+pub(crate) fn urt_dropin_path(slug: &str) -> String {
+    format!("{}/override.conf", urt_dropin_dir(slug))
+}
+
+/// Derive the instance slug from a drop-in directory name shaped like
+/// `urt@<slug>.service.d`. Returns `None` for non-matching names.
+fn slug_from_dropin_dir(name: &str) -> Option<String> {
+    let slug = name.strip_prefix("urt@")?.strip_suffix(".service.d")?;
+    if slug.is_empty() {
+        None
+    } else {
+        Some(slug.to_string())
+    }
+}
+
+/// Parse a single instance `override.conf` to extract install path + port.
+/// The slug is supplied by the caller (derived from the parent directory
+/// name) since the file itself is always named `override.conf`. Returns
+/// `None` only if the file can't be read; a file with no recognisable keys
+/// returns a `SiblingInstance` with `None` fields so the caller still knows
+/// the slug exists.
+pub(crate) fn parse_dropin(slug: &str, path: &Path) -> Option<SiblingInstance> {
     let content = std::fs::read_to_string(path).ok()?;
     let mut install_path: Option<String> = None;
     let mut port: Option<u16> = None;
@@ -2312,25 +2339,37 @@ pub(crate) fn parse_dropin(path: &Path) -> Option<SiblingInstance> {
         }
     }
     Some(SiblingInstance {
-        slug,
+        slug: slug.to_string(),
         install_path,
         port,
     })
 }
 
-/// Scan a DropIn directory for all `urt@<slug>.service` siblings.
-/// Returns an empty vec if the directory is missing or unreadable.
-pub(crate) fn scan_sibling_urt_instances(dropins_dir: &Path) -> Vec<SiblingInstance> {
+/// Scan the systemd system directory for all `urt@<slug>.service` siblings,
+/// reading each instance's `urt@<slug>.service.d/override.conf`. Returns an
+/// empty vec if the directory is missing or unreadable.
+pub(crate) fn scan_sibling_urt_instances(systemd_dir: &Path) -> Vec<SiblingInstance> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dropins_dir) else {
+    let Ok(entries) = std::fs::read_dir(systemd_dir) else {
         return out;
     };
     for entry in entries.flatten() {
         let p = entry.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("conf") {
+        if !p.is_dir() {
             continue;
         }
-        if let Some(sib) = parse_dropin(&p) {
+        let Some(slug) = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(slug_from_dropin_dir)
+        else {
+            continue;
+        };
+        let conf = p.join("override.conf");
+        if !conf.is_file() {
+            continue;
+        }
+        if let Some(sib) = parse_dropin(&slug, &conf) {
             out.push(sib);
         }
     }
@@ -2578,7 +2617,7 @@ async fn run_wizard_install(
 
     // -- Multi-instance safety: scan sibling urt@ drop-ins --
     let slug = params.slug.clone().unwrap_or_else(|| ctx.slug.clone());
-    let siblings = scan_sibling_urt_instances(Path::new(URT_DROPIN_DIR));
+    let siblings = scan_sibling_urt_instances(Path::new(SYSTEMD_SYSTEM_DIR));
 
     // -- Port selection: combine R3-sibling records, passive `ss` snapshot,
     //    and an active UDP bind probe. If the requested port is already in
@@ -2885,10 +2924,11 @@ async fn register_systemd_instance(
         binary = binary.display(),
     );
     let slug_for_unit = params.slug.clone().unwrap_or_else(|| ctx.slug.clone());
-    let dropin_path = format!(
-        "/etc/systemd/system/urt@.service.d/{}.conf",
-        slug_for_unit
-    );
+    let dropin_dir = urt_dropin_dir(&slug_for_unit);
+    // Each instance gets its own drop-in directory so systemd applies
+    // exactly one override per service. Create it (idempotent) before write.
+    run_sudo(&["install", "-d", "-m", "0755", &dropin_dir]).await?;
+    let dropin_path = urt_dropin_path(&slug_for_unit);
     sudo_tee_write(&dropin_path, &dropin).await?;
 
     // Reload systemd and enable the instance.
@@ -3092,15 +3132,18 @@ mod wizard_safety_tests {
             install = install,
             port = port,
         );
-        fs::write(dir.join(format!("{}.conf", slug)), content).unwrap();
+        // Per-instance layout: <systemd_dir>/urt@<slug>.service.d/override.conf
+        let inst_dir = dir.join(format!("urt@{}.service.d", slug));
+        fs::create_dir_all(&inst_dir).unwrap();
+        fs::write(inst_dir.join("override.conf"), content).unwrap();
     }
 
     #[test]
     fn parse_dropin_extracts_install_and_port() {
         let tmp = TmpDir::new();
         write_dropin(tmp.path(), "alpha", "/opt/urt-alpha", 27960);
-        let p = tmp.path().join("alpha.conf");
-        let sib = parse_dropin(&p).unwrap();
+        let p = tmp.path().join("urt@alpha.service.d").join("override.conf");
+        let sib = parse_dropin("alpha", &p).unwrap();
         assert_eq!(sib.slug, "alpha");
         assert_eq!(sib.install_path.as_deref(), Some("/opt/urt-alpha"));
         assert_eq!(sib.port, Some(27960));
@@ -3111,7 +3154,9 @@ mod wizard_safety_tests {
         let tmp = TmpDir::new();
         write_dropin(tmp.path(), "alpha", "/opt/urt-alpha", 27960);
         write_dropin(tmp.path(), "bravo", "/opt/urt-bravo", 27961);
+        // Unrelated files/dirs must be ignored.
         fs::write(tmp.path().join("README.txt"), "ignore me").unwrap();
+        fs::create_dir_all(tmp.path().join("r3-client@x.service.d")).unwrap();
         let mut sibs = scan_sibling_urt_instances(tmp.path());
         sibs.sort_by(|a, b| a.slug.cmp(&b.slug));
         assert_eq!(sibs.len(), 2);

@@ -363,7 +363,7 @@ pub struct GameServerWizardParams {
     /// Optional admin (referee) password, distinct from rconPassword.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_password: Option<String>,
-    /// If true, install `/etc/systemd/system/urt@.service.d/<slug>.conf`
+    /// If true, install `/etc/systemd/system/urt@<slug>.service.d/override.conf`
     /// and enable the instance. Requires the one-time scaffolding laid
     /// down by the shell installer.
     #[serde(default)]
