@@ -119,12 +119,24 @@ pub async fn run_hub(config: RefereeConfig, config_path: String) -> anyhow::Resu
         });
     }
 
-    // Repair systemd drop-ins for managed clients in case this hub binary
-    // is newer than the one that originally installed them. Older builds
-    // wrote `ReadWritePaths=<install-dir>` only, which prevented map
-    // imports into `~/urbanterror/<slug>/q3ut4` because `ProtectHome=
-    // read-only` made the rest of the user's home unwritable.
+    // On startup: repair drop-ins (Unix) or restart dead client processes (Windows).
     client_manager::reconcile_client_dropins(hub_cfg).await;
+
+    // Windows: spawn a watchdog that periodically checks whether managed
+    // client processes are still alive and restarts any that have exited.
+    // On Linux, systemd (Restart=always) handles this automatically.
+    #[cfg(windows)]
+    {
+        let hub_cfg_w = hub_cfg.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            tick.tick().await; // skip immediate (startup reconcile already ran)
+            loop {
+                tick.tick().await;
+                client_manager::reconcile_client_dropins(&hub_cfg_w).await;
+            }
+        });
+    }
 
     // Heartbeat / register loop with reconnection on failure.
     loop {

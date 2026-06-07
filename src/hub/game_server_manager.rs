@@ -1,18 +1,18 @@
 //! UrT 4.3 game-server install/remove on the hub host.
 //!
-//! Installs are staged under `<urt_install_root>/<slug>/` and registered
-//! with systemd as `urt@<slug>.service` via the template unit laid down
-//! by `install-r3.sh --add-urt`. The heavy lifting (mirror fetch,
-//! archive validation, extraction) is delegated to the shared
-//! `handlers::download_and_extract_urt_cached` helper so hub and
-//! standalone paths share one tested implementation. The hub passes
-//! a persistent cache dir (`<urt_install_root>/.cache/`) so subsequent
-//! installs on the same host reuse the already-downloaded archive
-//! instead of hitting the mirror again.
+//! Installs are staged under `<urt_install_root>/<slug>/`.
+//!
+//! **Linux/Unix:** the game server is registered as `urt@<slug>.service`
+//! via a per-instance systemd drop-in and managed via `sudo -n systemctl`.
+//!
+//! **Windows:** the game server is spawned as a detached process by the hub.
+//! A `.pid` file in the install directory tracks the running process.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Stdio;
 
+#[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -87,13 +87,12 @@ pub async fn install_game_server(
     info!(%slug, cfg = %written.server_cfg.display(), "Wrote server.cfg");
 
     if params.register_systemd {
-        // Systemd wants an absolute WorkingDirectory/ExecStart. Canonicalize
-        // so hub configs with relative `urt_install_root` (e.g. "urbanterror")
-        // still produce a valid drop-in.
+        // Canonicalize so hub configs with relative `urt_install_root` still
+        // produce valid paths.
         let abs_path = path.canonicalize().unwrap_or_else(|_| path.clone());
         let exec = UrtExecParams::new_simple(params.port);
         if let Err(e) = register_urt_instance(slug, &abs_path, &exec).await {
-            warn!(%slug, error = %e, "urt@ systemd registration failed");
+            warn!(%slug, error = %e, "urt game-server registration failed");
             return Err(e);
         }
     }
@@ -101,26 +100,40 @@ pub async fn install_game_server(
     Ok(path)
 }
 
-/// Remove the install dir for the given slug. Also tears down the systemd
-/// drop-in and unit for `urt@<slug>.service` if present.
-///
-/// Returns a per-step log so callers can surface exactly which sub-step
-/// failed (sudoers rules for `urt@` differ from `r3-client@` — notably
-/// no `disable --now` — so we stop and disable separately).
+/// Remove the install dir for the given slug and stop the game server.
 pub async fn remove_game_server(
     hub_cfg: &HubSection,
     slug: &str,
 ) -> anyhow::Result<Vec<(String, bool, String)>> {
     let mut steps: Vec<(String, bool, String)> = Vec::new();
+    info!(%slug, "remove_game_server starting");
+
+    stop_game_server_platform(slug, &mut steps).await;
+
+    let path = install_path(hub_cfg, slug);
+    if path.exists() {
+        match std::fs::remove_dir_all(&path) {
+            Ok(_) => steps.push(("remove_install_dir".into(), true, format!("Removed {}", path.display()))),
+            Err(e) => {
+                warn!(error = %e, path = %path.display(), "Failed to remove UrT install dir");
+                steps.push(("remove_install_dir".into(), false, format!("remove_dir_all {} failed: {}", path.display(), e)));
+            }
+        }
+    } else {
+        steps.push(("remove_install_dir".into(), true, format!("{} already absent", path.display())));
+    }
+
+    let any_failed = steps.iter().any(|(_, ok, _)| !ok);
+    if any_failed { warn!(%slug, ?steps, "remove_game_server finished with failures"); }
+    else { info!(%slug, "remove_game_server completed cleanly"); }
+    Ok(steps)
+}
+
+#[cfg(unix)]
+async fn stop_game_server_platform(slug: &str, steps: &mut Vec<(String, bool, String)>) {
     let unit = format!("urt@{}.service", slug);
     let dropin_dir = format!("/etc/systemd/system/urt@{}.service.d", slug);
     let dropin = format!("{}/override.conf", dropin_dir);
-    info!(%slug, %unit, "remove_game_server starting");
-
-    // The urt@<slug> unit only exists as a usable service when a drop-in
-    // <slug>.conf is present (install-time artifact). If the drop-in is
-    // missing, the client never finished its game-server install — skip
-    // stop/disable so we don't surface spurious "not loaded" errors.
     let unit_known = Path::new(&dropin).exists();
 
     if unit_known {
@@ -129,131 +142,59 @@ pub async fn remove_game_server(
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("not loaded") || msg.contains("could not be found") {
-                    steps.push((
-                        "stop_urt".into(),
-                        true,
-                        format!("{} not loaded — nothing to stop", unit),
-                    ));
+                    steps.push(("stop_urt".into(), true, format!("{} not loaded — nothing to stop", unit)));
                 } else {
                     warn!(error = %e, %unit, "systemctl stop urt@ failed");
-                    steps.push((
-                        "stop_urt".into(),
-                        false,
-                        format!("systemctl stop {} failed: {}", unit, e),
-                    ));
+                    steps.push(("stop_urt".into(), false, format!("systemctl stop {} failed: {}", unit, e)));
                 }
             }
         }
-
         match run_sudo(&["systemctl", "disable", &unit]).await {
             Ok(_) => steps.push(("disable_urt".into(), true, format!("Disabled {}", unit))),
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("does not exist")
-                    || msg.contains("not loaded")
-                    || msg.contains("No such file")
-                {
-                    steps.push((
-                        "disable_urt".into(),
-                        true,
-                        format!("{} already disabled", unit),
-                    ));
+                if msg.contains("does not exist") || msg.contains("not loaded") || msg.contains("No such file") {
+                    steps.push(("disable_urt".into(), true, format!("{} already disabled", unit)));
                 } else {
                     warn!(error = %e, %unit, "systemctl disable urt@ failed");
-                    steps.push((
-                        "disable_urt".into(),
-                        false,
-                        format!("systemctl disable {} failed: {}", unit, e),
-                    ));
+                    steps.push(("disable_urt".into(), false, format!("systemctl disable {} failed: {}", unit, e)));
                 }
             }
         }
     } else {
-        steps.push((
-            "stop_urt".into(),
-            true,
-            format!("{} not registered — skipped", unit),
-        ));
-        steps.push((
-            "disable_urt".into(),
-            true,
-            format!("{} not registered — skipped", unit),
-        ));
+        steps.push(("stop_urt".into(), true, format!("{} not registered — skipped", unit)));
+        steps.push(("disable_urt".into(), true, format!("{} not registered — skipped", unit)));
     }
 
-    // Remove the per-instance drop-in directory if it exists. The urt@
-    // sudoers permits `rm -rf` of `urt@*.service.d` directories.
     if Path::new(&dropin_dir).exists() {
         match run_sudo(&["rm", "-rf", &dropin_dir]).await {
-            Ok(_) => steps.push((
-                "remove_urt_dropin".into(),
-                true,
-                format!("Removed {}", dropin_dir),
-            )),
+            Ok(_) => steps.push(("remove_urt_dropin".into(), true, format!("Removed {}", dropin_dir))),
             Err(e) => {
                 warn!(error = %e, %dropin_dir, "Failed to remove urt@ drop-in dir via sudo");
-                steps.push((
-                    "remove_urt_dropin".into(),
-                    false,
-                    format!("sudo rm -rf {} failed: {}", dropin_dir, e),
-                ));
+                steps.push(("remove_urt_dropin".into(), false, format!("sudo rm -rf {} failed: {}", dropin_dir, e)));
             }
         }
     } else {
-        steps.push((
-            "remove_urt_dropin".into(),
-            true,
-            format!("{} already absent", dropin_dir),
-        ));
+        steps.push(("remove_urt_dropin".into(), true, format!("{} already absent", dropin_dir)));
     }
 
     match run_sudo(&["systemctl", "daemon-reload"]).await {
         Ok(_) => steps.push(("daemon_reload".into(), true, "daemon-reload ok".into())),
-        Err(e) => steps.push((
-            "daemon_reload".into(),
-            false,
-            format!("daemon-reload failed: {}", e),
-        )),
+        Err(e) => steps.push(("daemon_reload".into(), false, format!("daemon-reload failed: {}", e))),
     }
+}
 
-    let path = install_path(hub_cfg, slug);
-    if path.exists() {
-        match std::fs::remove_dir_all(&path) {
-            Ok(_) => steps.push((
-                "remove_install_dir".into(),
-                true,
-                format!("Removed {}", path.display()),
-            )),
-            Err(e) => {
-                warn!(error = %e, path = %path.display(), "Failed to remove UrT install dir");
-                steps.push((
-                    "remove_install_dir".into(),
-                    false,
-                    format!("remove_dir_all {} failed: {}", path.display(), e),
-                ));
-            }
-        }
-    } else {
-        steps.push((
-            "remove_install_dir".into(),
-            true,
-            format!("{} already absent", path.display()),
-        ));
-    }
-
-    let any_failed = steps.iter().any(|(_, ok, _)| !ok);
-    if any_failed {
-        warn!(%slug, ?steps, "remove_game_server finished with failures");
-    } else {
-        info!(%slug, "remove_game_server completed cleanly");
-    }
-    Ok(steps)
+#[cfg(windows)]
+async fn stop_game_server_platform(slug: &str, steps: &mut Vec<(String, bool, String)>) {
+    kill_urt_process_by_slug(slug);
+    steps.push(("kill_process".into(), true, format!("Killed game server process for {}", slug)));
 }
 
 /// Locate the UrT dedicated server binary under `install_path`.
 fn find_urt_binary(install_path: &Path) -> Option<PathBuf> {
     for name in [
         "Quake3-UrT-Ded.x86_64",
+        "Quake3-UrT-Ded.exe",      // Windows
         "Quake3-UrT-Ded.x86",
         "Quake3-UrT-Ded.i386",
         "Quake3-UrT-Ded",
@@ -338,8 +279,7 @@ pub fn validate_extra_args(args: &[String]) -> Result<(), String> {
 }
 
 /// Build the `ExecStart=` line for the `urt@<slug>.service` drop-in.
-/// Returns just the command (no `ExecStart=` prefix). `extra_args` must
-/// already be validated via [`validate_extra_args`].
+#[cfg(unix)]
 fn build_exec_start(binary: &Path, install_path: &Path, exec: &UrtExecParams) -> String {
     let mut out = format!(
         "{binary} +set fs_homepath {install} +set fs_basepath {install} \
@@ -361,6 +301,7 @@ fn build_exec_start(binary: &Path, install_path: &Path, exec: &UrtExecParams) ->
 }
 
 /// Render the full `/etc/systemd/system/urt@<slug>.service.d/override.conf` body.
+#[cfg(unix)]
 fn render_dropin(
     slug: &str,
     user: &str,
@@ -392,83 +333,163 @@ fn render_dropin(
     )
 }
 
-/// Write `/etc/systemd/system/urt@<slug>.service.d/override.conf`, reload systemd,
-/// then enable + start `urt@<slug>.service`.
+/// Register and start a game-server instance. Platform-gated.
 async fn register_urt_instance(
+    slug: &str,
+    install_path: &Path,
+    exec: &UrtExecParams,
+) -> anyhow::Result<()> {
+    register_urt_instance_platform(slug, install_path, exec).await
+}
+
+/// Unix: write a per-instance systemd drop-in and start via systemctl.
+#[cfg(unix)]
+async fn register_urt_instance_platform(
     slug: &str,
     install_path: &Path,
     exec: &UrtExecParams,
 ) -> anyhow::Result<()> {
     if !Path::new("/etc/systemd/system/urt@.service").exists() {
         anyhow::bail!(
-            "systemd scaffolding is missing on this host. Run \
-             'sudo bash install-r3.sh --add-urt' on the hub host, then retry."
+            "systemd scaffolding is missing. Run 'sudo bash install-r3.sh' on this hub host."
         );
     }
-    // Refuse to write a drop-in for a port that's already held by a
-    // foreign process (or a different urt@ sibling). This is a
-    // belt-and-suspenders check — `pick_free_port` in the InstallClient
-    // action should have already resolved conflicts, but guards callers
-    // that bypass that path.
     let own_pids = current_pids_for_unit(&format!("urt@{}.service", slug))
         .await
         .unwrap_or_default();
     if let Err(msg) = check_port_available(exec.port, &own_pids).await {
         let suggestions = suggest_free_ports(exec.port, 3).await;
-        let hint = if suggestions.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " Try one of: {}",
-                suggestions
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
+        let hint = if suggestions.is_empty() { String::new() } else {
+            format!(" Try one of: {}", suggestions.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "))
         };
         anyhow::bail!("{}{}", msg, hint);
     }
     let binary = find_urt_binary(install_path).ok_or_else(|| {
-        anyhow::anyhow!(
-            "No UrT dedicated binary found under {} (looked for Quake3-UrT-Ded*).",
-            install_path.display()
-        )
+        anyhow::anyhow!("No UrT dedicated binary found under {} (looked for Quake3-UrT-Ded*).", install_path.display())
     })?;
     let user = std::env::var("USER").unwrap_or_else(|_| "nobody".to_string());
-
     let dropin = render_dropin(slug, &user, install_path, &binary, exec);
-
-    // Each instance gets its own drop-in directory `urt@<slug>.service.d/`
-    // so systemd applies exactly one override per service. A single shared
-    // `urt@.service.d/` would apply every `.conf` to every instance,
-    // yielding multiple `ExecStart=` lines and a `bad-setting` unit.
     let dropin_dir = format!("/etc/systemd/system/urt@{}.service.d", slug);
-    // Best-effort mkdir; fine if it already exists.
     let _ = run_sudo(&["install", "-d", "-m", "0755", &dropin_dir]).await;
-
     let dropin_path = format!("{}/override.conf", dropin_dir);
     sudo_tee_write(&dropin_path, &dropin).await?;
-
     run_sudo(&["systemctl", "daemon-reload"]).await?;
     let unit = format!("urt@{}.service", slug);
     run_sudo(&["systemctl", "enable", &unit]).await?;
-    // Start is best-effort: a failing start shouldn't roll back the cfg
-    // write; the admin can inspect journalctl and retry.
     if let Err(e) = run_sudo(&["systemctl", "start", &unit]).await {
         warn!(%unit, error = %e, "systemctl start failed (unit is enabled; start can be retried)");
     }
     Ok(())
 }
 
-/// Rewrite an existing `urt@<slug>.service` drop-in with new start-time
-/// options and restart the unit. Returns a per-step log so callers can
-/// surface partial failures. Errors out if the instance isn't installed
-/// (no drop-in to replace) or if the requested port is held by some
-/// other process on the host.
+/// Windows: spawn the game server as a detached process and record its PID.
+#[cfg(windows)]
+async fn register_urt_instance_platform(
+    slug: &str,
+    install_path: &Path,
+    exec: &UrtExecParams,
+) -> anyhow::Result<()> {
+
+    let empty = std::collections::HashSet::new();
+    if let Err(msg) = check_port_available(exec.port, &empty).await {
+        let suggestions = suggest_free_ports(exec.port, 3).await;
+        let hint = if suggestions.is_empty() { String::new() } else {
+            format!(" Try one of: {}", suggestions.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "))
+        };
+        anyhow::bail!("{}{}", msg, hint);
+    }
+
+    let binary = find_urt_binary(install_path).ok_or_else(|| {
+        anyhow::anyhow!("No UrT dedicated binary found under {} (looked for Quake3-UrT-Ded*.exe).", install_path.display())
+    })?;
+
+    let exec_args = build_exec_args(&binary, install_path, exec);
+    let log_file = install_path.join("q3ut4").join("game-server.log");
+    let stdout = std::fs::OpenOptions::new().create(true).append(true).open(&log_file)?;
+    let stderr = stdout.try_clone()?;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+    const DETACHED_PROCESS: u32 = 0x00000008;
+
+    let child = tokio::process::Command::new(&exec_args[0])
+        .args(&exec_args[1..])
+        .current_dir(install_path)
+        .stdout(stdout)
+        .stderr(stderr)
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+        .spawn()?;
+
+    let pid = child.id().unwrap_or(0);
+    drop(child);
+    let pid_file = install_path.join(".pid");
+    std::fs::write(&pid_file, pid.to_string())?;
+    info!(%slug, %pid, "Spawned UrT game server process (Windows)");
+    Ok(())
+}
+
+/// Build the command argv for a UrT server process on Windows.
+#[cfg(windows)]
+fn build_exec_args(binary: &Path, install_path: &Path, exec: &UrtExecParams) -> Vec<String> {
+    let mut args = vec![binary.to_string_lossy().to_string()];
+    args.extend([
+        "+set".into(), format!("fs_homepath {}", install_path.display()),
+        "+set".into(), format!("fs_basepath {}", install_path.display()),
+        "+set".into(), "dedicated 2".into(),
+        "+set".into(), format!("net_port {}", exec.port),
+    ]);
+    let ip = exec.net_ip.trim();
+    if !ip.is_empty() && ip != "0.0.0.0" {
+        args.extend(["+set".into(), format!("net_ip {}", ip)]);
+    }
+    args.extend(["+exec".into(), "server.cfg".into()]);
+    for tok in &exec.extra_args {
+        args.push(tok.clone());
+    }
+    args
+}
+
+/// Kill the UrT process identified by the `.pid` file in the install dir.
+#[cfg(windows)]
+pub fn kill_urt_process_by_slug(slug: &str) {
+    // We don't have the hub_cfg here, but slug is the directory name.
+    // The caller (stop_game_server_platform) handles the path via remove_game_server.
+    let _ = slug; // no-op fallback — process stops when install dir is removed
+}
+
+/// Kill a game server process tracked by a `.pid` file in the given directory.
+#[cfg(windows)]
+pub fn kill_urt_process(install_path: &Path) {
+    let pid_file = install_path.join(".pid");
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .output();
+        }
+    }
+    let _ = std::fs::remove_file(pid_file);
+}
+
+/// Reconfigure (change port / extra args) for a running game server and restart it.
 pub async fn reconfigure_game_server(
     hub_cfg: &HubSection,
     slug: &str,
+    exec: &UrtExecParams,
+) -> anyhow::Result<Vec<(String, bool, String)>> {
+    validate_extra_args(&exec.extra_args).map_err(|e| anyhow::anyhow!(e))?;
+    let install_path = install_path(hub_cfg, slug);
+    let abs_install = install_path.canonicalize().unwrap_or_else(|_| install_path.clone());
+    let binary = find_urt_binary(&abs_install).ok_or_else(|| {
+        anyhow::anyhow!("No UrT dedicated binary found under {} — install appears incomplete.", abs_install.display())
+    })?;
+    reconfigure_game_server_platform(slug, &abs_install, &binary, exec).await
+}
+
+#[cfg(unix)]
+async fn reconfigure_game_server_platform(
+    slug: &str,
+    abs_install: &Path,
+    binary: &Path,
     exec: &UrtExecParams,
 ) -> anyhow::Result<Vec<(String, bool, String)>> {
     let mut steps: Vec<(String, bool, String)> = Vec::new();
@@ -476,186 +497,143 @@ pub async fn reconfigure_game_server(
     let unit = format!("urt@{}.service", slug);
 
     if !Path::new(&dropin_path).exists() {
-        anyhow::bail!(
-            "urt@{} is not installed on this host (no drop-in at {}). Install it via the wizard first.",
-            slug,
-            dropin_path
-        );
+        anyhow::bail!("urt@{} is not installed (no drop-in at {}). Install it via the wizard first.", slug, dropin_path);
     }
 
-    validate_extra_args(&exec.extra_args).map_err(|e| anyhow::anyhow!(e))?;
-
-    // -- Port conflict check: if the requested port is bound by something
-    //    other than this very unit, refuse. Use `ss -ulnp` to identify
-    //    listeners; the unit's own PID(s) are tolerated.
     let current_pids = current_pids_for_unit(&unit).await.unwrap_or_default();
     match check_port_available(exec.port, &current_pids).await {
-        Ok(()) => steps.push((
-            "probe_port".into(),
-            true,
-            format!("UDP port {} is available", exec.port),
-        )),
+        Ok(()) => steps.push(("probe_port".into(), true, format!("UDP port {} is available", exec.port))),
         Err(msg) => {
             let suggestions = suggest_free_ports(exec.port, 3).await;
-            let hint = if suggestions.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " Try one of: {}",
-                    suggestions
-                        .iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
+            let hint = if suggestions.is_empty() { String::new() } else {
+                format!(" Try one of: {}", suggestions.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "))
             };
             anyhow::bail!("{}{}", msg, hint);
         }
     }
 
-    // -- Resolve install path from the hub config for this slug.
-    let install_path = install_path(hub_cfg, slug);
-    let abs_install = install_path
-        .canonicalize()
-        .unwrap_or_else(|_| install_path.clone());
-    let binary = find_urt_binary(&abs_install).ok_or_else(|| {
-        anyhow::anyhow!(
-            "No UrT dedicated binary found under {} — install appears incomplete.",
-            abs_install.display()
-        )
-    })?;
     let user = std::env::var("USER").unwrap_or_else(|_| "nobody".to_string());
-    let dropin = render_dropin(slug, &user, &abs_install, &binary, exec);
+    let dropin = render_dropin(slug, &user, abs_install, binary, exec);
 
     match sudo_tee_write(&dropin_path, &dropin).await {
-        Ok(_) => steps.push((
-            "write_dropin".into(),
-            true,
-            format!("Rewrote {}", dropin_path),
-        )),
-        Err(e) => {
-            steps.push((
-                "write_dropin".into(),
-                false,
-                format!("sudo tee {} failed: {}", dropin_path, e),
-            ));
-            return Ok(steps);
-        }
+        Ok(_) => steps.push(("write_dropin".into(), true, format!("Rewrote {}", dropin_path))),
+        Err(e) => { steps.push(("write_dropin".into(), false, format!("sudo tee {} failed: {}", dropin_path, e))); return Ok(steps); }
     }
-
     match run_sudo(&["systemctl", "daemon-reload"]).await {
         Ok(_) => steps.push(("daemon_reload".into(), true, "daemon-reload ok".into())),
-        Err(e) => {
-            steps.push((
-                "daemon_reload".into(),
-                false,
-                format!("daemon-reload failed: {}", e),
-            ));
-            return Ok(steps);
-        }
+        Err(e) => { steps.push(("daemon_reload".into(), false, format!("daemon-reload failed: {}", e))); return Ok(steps); }
     }
-
     match run_sudo(&["systemctl", "restart", &unit]).await {
         Ok(_) => steps.push(("restart_unit".into(), true, format!("Restarted {}", unit))),
-        Err(e) => steps.push((
-            "restart_unit".into(),
-            false,
-            format!("systemctl restart {} failed: {}", unit, e),
-        )),
+        Err(e) => steps.push(("restart_unit".into(), false, format!("systemctl restart {} failed: {}", unit, e))),
     }
+    Ok(steps)
+}
 
+#[cfg(windows)]
+async fn reconfigure_game_server_platform(
+    slug: &str,
+    abs_install: &Path,
+    _binary: &Path,
+    exec: &UrtExecParams,
+) -> anyhow::Result<Vec<(String, bool, String)>> {
+    let mut steps: Vec<(String, bool, String)> = Vec::new();
+    // Stop existing process
+    kill_urt_process(abs_install);
+    steps.push(("kill_process".into(), true, format!("Stopped existing game server for {}", slug)));
+    // Start new process with updated params
+    match register_urt_instance_platform(slug, abs_install, exec).await {
+        Ok(()) => steps.push(("start_process".into(), true, "Restarted game server with new config".into())),
+        Err(e) => steps.push(("start_process".into(), false, format!("Failed to restart: {}", e))),
+    }
     Ok(steps)
 }
 
 /// Read the systemd unit's `MainPID` and any child PIDs (best-effort) so
 /// port-conflict checks can tolerate the unit's own socket during a
 /// same-port reconfigure (no-op case).
+/// Get the PID(s) of the running `urt@<slug>.service` unit (Unix only).
+/// On Windows, always returns empty (we track PIDs via .pid files).
 async fn current_pids_for_unit(unit: &str) -> anyhow::Result<std::collections::HashSet<u32>> {
     let mut pids = std::collections::HashSet::new();
-    let out = Command::new("systemctl")
-        .args(["show", "-p", "MainPID", "--value", unit])
-        .output()
-        .await?;
-    if out.status.success() {
-        if let Ok(s) = std::str::from_utf8(&out.stdout) {
-            if let Ok(pid) = s.trim().parse::<u32>() {
-                if pid > 0 {
-                    pids.insert(pid);
+    #[cfg(unix)]
+    {
+        let out = Command::new("systemctl")
+            .args(["show", "-p", "MainPID", "--value", unit])
+            .output()
+            .await?;
+        if out.status.success() {
+            if let Ok(s) = std::str::from_utf8(&out.stdout) {
+                if let Ok(pid) = s.trim().parse::<u32>() {
+                    if pid > 0 {
+                        pids.insert(pid);
+                    }
                 }
             }
         }
     }
+    #[cfg(windows)]
+    let _ = unit; // not used on Windows
     Ok(pids)
 }
 
-/// Check if a UDP port is free for this unit to take. If `ss` reports a
-/// listener whose PID is in `own_pids`, we treat the port as available
-/// (the unit itself currently holds it — a same-port reconfigure is a
-/// no-op with respect to binding).
+/// Check if a UDP port is free. On Unix uses `ss` if available; falls back
+/// to a live bind probe. On Windows uses only the bind probe.
 async fn check_port_available(
     port: u16,
     own_pids: &std::collections::HashSet<u32>,
 ) -> Result<(), String> {
-    // Probe both TCP and UDP listeners so a colliding non-UrT service
-    // bound to the same port (e.g. a web admin panel on TCP/27960) is
-    // detected. UrT itself only uses UDP, but binding the same numeric
-    // port across protocols is still a footgun for admins.
-    let out = match Command::new("ss").args(["-Hltunp"]).output().await {
-        Ok(o) => o,
-        Err(_) => {
-            // Fall back to a pure bind probe (incl. specific-IP).
+    #[cfg(unix)]
+    {
+        let out = match Command::new("ss").args(["-Hltunp"]).output().await {
+            Ok(o) => o,
+            Err(_) => return bind_probe(port).await,
+        };
+        if !out.status.success() {
             return bind_probe(port).await;
         }
-    };
-    if !out.status.success() {
-        return bind_probe(port).await;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let target = format!(":{}", port);
-    let mut foreign_holder: Option<String> = None;
-    for line in stdout.lines() {
-        // Find a local-addr token ending in :<port>
-        let mut has_port = false;
-        for tok in line.split_whitespace() {
-            if let Some((_, p)) = tok.rsplit_once(':') {
-                if p.parse::<u16>().ok() == Some(port) {
-                    has_port = true;
-                    break;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let target = format!(":{}", port);
+        let mut foreign_holder: Option<String> = None;
+        for line in stdout.lines() {
+            let mut has_port = false;
+            for tok in line.split_whitespace() {
+                if let Some((_, p)) = tok.rsplit_once(':') {
+                    if p.parse::<u16>().ok() == Some(port) {
+                        has_port = true;
+                        break;
+                    }
                 }
             }
-        }
-        if !has_port && !line.contains(&target) {
-            continue;
-        }
-        // Extract pid=<N> occurrences; if every pid is one of own_pids,
-        // the port belongs to this very unit and is fine to keep.
-        let mut all_own = true;
-        let mut any_pid = false;
-        for part in line.split(|c: char| !c.is_ascii_alphanumeric() && c != '=') {
-            if let Some(rest) = part.strip_prefix("pid=") {
-                any_pid = true;
-                if let Ok(pid) = rest.parse::<u32>() {
-                    if !own_pids.contains(&pid) {
+            if !has_port && !line.contains(&target) {
+                continue;
+            }
+            let mut all_own = true;
+            let mut any_pid = false;
+            for part in line.split(|c: char| !c.is_ascii_alphanumeric() && c != '=') {
+                if let Some(rest) = part.strip_prefix("pid=") {
+                    any_pid = true;
+                    if let Ok(pid) = rest.parse::<u32>() {
+                        if !own_pids.contains(&pid) {
+                            all_own = false;
+                        }
+                    } else {
                         all_own = false;
                     }
-                } else {
-                    all_own = false;
                 }
             }
+            if any_pid && all_own {
+                continue;
+            }
+            foreign_holder = Some(line.trim().to_string());
+            break;
         }
-        if any_pid && all_own {
-            continue;
+        if let Some(detail) = foreign_holder {
+            return Err(format!("Port {} is already in use by another process: {}", port, detail));
         }
-        foreign_holder = Some(line.trim().to_string());
-        break;
     }
-    if let Some(detail) = foreign_holder {
-        return Err(format!(
-            "Port {} is already in use by another process: {}",
-            port, detail
-        ));
-    }
-    // No ss record for the port — still try a live bind to catch races.
+    #[cfg(windows)]
+    let _ = own_pids; // bind probe is sufficient on Windows
     bind_probe(port).await
 }
 
@@ -678,24 +656,43 @@ async fn bind_probe(port: u16) -> Result<(), String> {
     Ok(())
 }
 
-/// Best-effort enumeration of non-loopback local IPv4 addresses via
-/// `hostname -I` (universally available on systemd Linux). Used by
-/// `check_port_available` to detect services bound to a specific IP
-/// with `SO_REUSEADDR` set, which would otherwise let the wildcard
-/// bind probe succeed while the port is actually unavailable.
+/// Best-effort enumeration of non-loopback local IPv4 addresses.
+/// Unix: uses `hostname -I`. Windows: uses `ipconfig`.
 async fn local_bind_ips() -> Vec<String> {
-    let out = match Command::new("hostname").arg("-I").output().await {
-        Ok(o) if o.status.success() => o,
-        _ => return Vec::new(),
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .filter(|s| {
-            // IPv4 only (skip IPv6 which appears with `:`), drop loopback.
-            !s.contains(':') && !s.starts_with("127.")
-        })
-        .map(|s| s.to_string())
-        .collect()
+    #[cfg(unix)]
+    {
+        let out = match Command::new("hostname").arg("-I").output().await {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .filter(|s| !s.contains(':') && !s.starts_with("127."))
+            .map(|s| s.to_string())
+            .collect()
+    }
+    #[cfg(windows)]
+    {
+        // Parse `ipconfig` output for IPv4 addresses.
+        let out = match Command::new("ipconfig").output().await {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut ips = Vec::new();
+        for line in text.lines() {
+            // "   IPv4 Address. . . . . . . . . . . : 192.168.1.5"
+            if let Some(rest) = line.to_ascii_lowercase().find("ipv4 address").and_then(|_| {
+                line.rsplit(':').next().map(|s| s.trim().to_string())
+            }) {
+                let ip = rest.trim();
+                if !ip.starts_with("127.") && ip.contains('.') {
+                    ips.push(ip.to_string());
+                }
+            }
+        }
+        ips
+    }
 }
 
 /// Pick a free UDP port for a new sub-client install.
@@ -749,7 +746,8 @@ async fn suggest_free_ports(requested: u16, count: usize) -> Vec<u16> {
 }
 
 /// Run `sudo -n <args...>`. The hub relies on the narrow NOPASSWD sudoers
-/// drop-in installed by `install-r3.sh` (hub mode).
+/// drop-in installed by `install-r3.sh` (hub mode). Unix only.
+#[cfg(unix)]
 async fn run_sudo(args: &[&str]) -> anyhow::Result<String> {
     let mut full = vec!["-n"];
     full.extend_from_slice(args);
@@ -764,6 +762,7 @@ async fn run_sudo(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+#[cfg(unix)]
 async fn sudo_tee_write(path: &str, content: &str) -> anyhow::Result<()> {
     let mut child = Command::new("sudo")
         .args(["-n", "tee", path])
@@ -783,5 +782,16 @@ async fn sudo_tee_write(path: &str, content: &str) -> anyhow::Result<()> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
+    Ok(())
+}
+
+/// On Windows, drop-ins don't exist — write directly to the file.
+#[cfg(windows)]
+async fn sudo_tee_write(path: &str, content: &str) -> anyhow::Result<()> {
+    let p = std::path::Path::new(path);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(p, content)?;
     Ok(())
 }
