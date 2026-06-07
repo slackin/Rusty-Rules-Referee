@@ -192,13 +192,23 @@ async fn stop_game_server_platform(slug: &str, steps: &mut Vec<(String, bool, St
 
 /// Locate the UrT dedicated server binary under `install_path`.
 fn find_urt_binary(install_path: &Path) -> Option<PathBuf> {
-    for name in [
+    #[cfg(windows)]
+    let names = [
+        "Quake3-UrT-Ded.exe",
         "Quake3-UrT-Ded.x86_64",
-        "Quake3-UrT-Ded.exe",      // Windows
         "Quake3-UrT-Ded.x86",
         "Quake3-UrT-Ded.i386",
         "Quake3-UrT-Ded",
-    ] {
+    ];
+    #[cfg(not(windows))]
+    let names = [
+        "Quake3-UrT-Ded.x86_64",
+        "Quake3-UrT-Ded.exe",
+        "Quake3-UrT-Ded.x86",
+        "Quake3-UrT-Ded.i386",
+        "Quake3-UrT-Ded",
+    ];
+    for name in names {
         let p = install_path.join(name);
         if p.is_file() {
             return Some(p);
@@ -432,10 +442,10 @@ async fn register_urt_instance_platform(
 fn build_exec_args(binary: &Path, install_path: &Path, exec: &UrtExecParams) -> Vec<String> {
     let mut args = vec![binary.to_string_lossy().to_string()];
     args.extend([
-        "+set".into(), format!("fs_homepath {}", install_path.display()),
-        "+set".into(), format!("fs_basepath {}", install_path.display()),
-        "+set".into(), "dedicated 2".into(),
-        "+set".into(), format!("net_port {}", exec.port),
+        "+set".into(), "fs_homepath".into(), install_path.to_string_lossy().to_string(),
+        "+set".into(), "fs_basepath".into(), install_path.to_string_lossy().to_string(),
+        "+set".into(), "dedicated".into(), "2".into(),
+        "+set".into(), "net_port".into(), exec.port.to_string(),
     ]);
     let ip = exec.net_ip.trim();
     if !ip.is_empty() && ip != "0.0.0.0" {
