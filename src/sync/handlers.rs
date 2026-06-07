@@ -626,13 +626,23 @@ async fn try_mirror(
     install_path: &str,
     cache_dir: Option<&Path>,
 ) -> Result<(), String> {
+    // Use the native Rust implementation on all platforms. The old path
+    // shelled out to `sh -c curl/wget/tar/unzip` which doesn't exist on Windows.
+    try_mirror_native(mirror, install_path, cache_dir).await
+}
+
+/// Native Rust implementation of mirror download + extraction using `reqwest`
+/// and the `zip` crate. Works on all platforms (Linux, Windows, macOS).
+async fn try_mirror_native(
+    mirror: &UrtMirror,
+    install_path: &str,
+    cache_dir: Option<&Path>,
+) -> Result<(), String> {
     let ext = match mirror.kind {
         ArchiveKind::TarGz => "tar.gz",
         ArchiveKind::Zip => "zip",
     };
 
-    // Derive a stable filename from the mirror URL basename so that
-    // identical archives across mirrors share a cache slot.
     let fname = mirror
         .url
         .rsplit('/')
@@ -641,338 +651,190 @@ async fn try_mirror(
         .unwrap_or("urt43_download")
         .to_string();
 
-    // When caching, persist to the cache dir; otherwise use /tmp and
-    // delete on exit. `keep_on_success` tracks whether we should leave
-    // the archive on disk after a successful extraction.
-    let (archive_path, keep_on_success): (String, bool) = match cache_dir {
-        Some(dir) => (dir.join(&fname).to_string_lossy().into_owned(), true),
-        None => (
-            format!("/tmp/urt43_dl_{}.{}", std::process::id(), ext),
-            false,
-        ),
+    let tmp_dir = std::env::temp_dir();
+    let (archive_path, keep_on_success): (std::path::PathBuf, bool) = match cache_dir {
+        Some(dir) => (dir.join(&fname), true),
+        None => (tmp_dir.join(format!("urt43_dl_{}.{}", std::process::id(), ext)), false),
     };
 
-    // If a cached archive already exists, try to reuse it. We validate
-    // size + magic + archive integrity before skipping the download.
+    // Try to reuse cached archive.
     let mut have_cached = false;
     if keep_on_success {
         if let Ok(meta) = tokio::fs::metadata(&archive_path).await {
-            if meta.len() >= mirror.min_bytes
-                && validate_archive(&archive_path, mirror).await.is_ok()
-            {
-                info!(
-                    url = mirror.url,
-                    path = %archive_path,
-                    bytes = meta.len(),
-                    "Reusing cached UrT archive"
-                );
+            if meta.len() >= mirror.min_bytes && validate_archive_native(&archive_path, mirror).is_ok() {
+                info!(url = mirror.url, path = %archive_path.display(), bytes = meta.len(), "Reusing cached UrT archive");
                 have_cached = true;
             } else {
-                info!(
-                    url = mirror.url,
-                    path = %archive_path,
-                    "Cached archive invalid or too small; re-downloading"
-                );
                 let _ = tokio::fs::remove_file(&archive_path).await;
             }
         }
     } else {
-        // Non-cache path: always start clean.
         let _ = tokio::fs::remove_file(&archive_path).await;
     }
-    let tmp_path = archive_path;
-
-    // Helper: remove the archive unless we're keeping it in the cache.
-    let cleanup = |path: String, keep: bool| async move {
-        if !keep {
-            let _ = tokio::fs::remove_file(&path).await;
-        }
-    };
 
     if !have_cached {
-        // Probe HEAD first so we can fail fast with a clear HTTP status before
-        // downloading half a gigabyte.
-        let probe = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "curl -fsSIL -A 'R3-Wizard/1.0' --max-time 20 -o /dev/null \
-                 -w 'http_code=%{{http_code}} final_url=%{{url_effective}} size=%{{size_download}} \
-dl_size=%{{size_header}} time=%{{time_total}}' '{url}' 2>&1",
-                url = mirror.url
-            ))
-            .output()
-            .await
-            .map_err(|e| format!("probe spawn failed: {}", e))?;
-        let probe_out = String::from_utf8_lossy(&probe.stdout).trim().to_string();
-        if !probe.status.success() {
-            let err_text = String::from_utf8_lossy(&probe.stderr);
-            let combined = if err_text.trim().is_empty() {
-                probe_out.clone()
-            } else {
-                format!("{} :: {}", probe_out, err_text.trim())
-            };
-            return Err(format!("HEAD probe failed ({})", combined));
-        }
-        info!(url = mirror.url, probe = %probe_out, "Mirror HEAD probe ok");
+        // Download via reqwest.
+        info!(url = mirror.url, "Downloading UrT archive via reqwest");
+        let http = reqwest::Client::builder()
+            .user_agent("R3-Wizard/1.0")
+            .timeout(std::time::Duration::from_secs(1800))
+            .build()
+            .map_err(|e| format!("HTTP client build failed: {}", e))?;
 
-        // Download. Capture combined stdout+stderr via `2>&1` into a variable so
-        // we can report the real reason if curl (and wget fallback) both fail.
-        // `set -o pipefail` is bash-only so we stick with plain sh and check each
-        // command's output.
-        let dl_script = format!(
-            "out=$(curl -fL --connect-timeout 30 --max-time 1800 --retry 2 --retry-delay 3 \
-             -A 'R3-Wizard/1.0' -o '{tmp}' '{url}' 2>&1); rc=$?; \
-             if [ $rc -ne 0 ]; then \
-               echo \"curl rc=$rc: $out\"; \
-               out2=$(wget --timeout=60 --tries=2 --user-agent='R3-Wizard/1.0' \
-                     -O '{tmp}' '{url}' 2>&1); rc2=$?; \
-               if [ $rc2 -ne 0 ]; then echo \"wget rc=$rc2: $out2\"; exit $rc2; fi; \
-             fi; exit 0",
-            tmp = tmp_path,
-            url = mirror.url
-        );
-        let dl = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&dl_script)
-            .output()
-            .await
-            .map_err(|e| format!("spawn failed: {}", e))?;
-        if !dl.status.success() {
-            let combined = String::from_utf8_lossy(&dl.stdout);
-            let stderr = String::from_utf8_lossy(&dl.stderr);
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            let msg = if combined.trim().is_empty() {
-                stderr.trim().to_string()
-            } else {
-                combined.trim().to_string()
-            };
-            return Err(format!(
-                "download transport failure (exit {}): {}",
-                dl.status.code().unwrap_or(-1),
-                if msg.is_empty() { "no output captured".to_string() } else { msg }
-            ));
+        // HEAD probe to validate the URL before downloading 500MB.
+        let head = http.head(mirror.url).send().await
+            .map_err(|e| format!("HEAD probe failed: {}", e))?;
+        if !head.status().is_success() {
+            return Err(format!("HEAD probe returned HTTP {}", head.status()));
         }
 
-        // Validate size.
-        let meta = tokio::fs::metadata(&tmp_path)
-            .await
-            .map_err(|e| format!("stat {} failed: {}", tmp_path, e))?;
-        if meta.len() < mirror.min_bytes {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(format!(
-                "file too small ({} bytes, expected >= {}) — mirror likely returned an HTML error page",
-                meta.len(),
-                mirror.min_bytes
-            ));
+        let mut resp = http.get(mirror.url).send().await
+            .map_err(|e| format!("GET request failed: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("GET returned HTTP {}", resp.status()));
+        }
+
+        // Stream to file.
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(&archive_path).await
+            .map_err(|e| format!("Cannot create archive file: {}", e))?;
+        let mut downloaded: u64 = 0;
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Download interrupted: {}", e))? {
+            file.write_all(&chunk).await.map_err(|e| format!("Write failed: {}", e))?;
+            downloaded += chunk.len() as u64;
+        }
+        file.flush().await.map_err(|e| format!("Flush failed: {}", e))?;
+        drop(file);
+
+        if downloaded < mirror.min_bytes {
+            let _ = tokio::fs::remove_file(&archive_path).await;
+            return Err(format!("Downloaded {} bytes, expected >= {} — possibly an error page", downloaded, mirror.min_bytes));
         }
 
         // Validate magic bytes.
-        let mut header = [0u8; 4];
-        {
-            use tokio::io::AsyncReadExt;
-            let mut f = tokio::fs::File::open(&tmp_path)
-                .await
-                .map_err(|e| format!("open tmp failed: {}", e))?;
-            f.read_exact(&mut header)
-                .await
-                .map_err(|e| format!("read magic failed: {}", e))?;
-        }
-        match mirror.kind {
-            ArchiveKind::TarGz => {
-                if &header[..2] != [0x1f, 0x8b] {
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
-                    return Err(format!(
-                        "not a gzip archive (magic={:02x}{:02x}) — mirror returned something else",
-                        header[0], header[1]
-                    ));
-                }
-            }
-            ArchiveKind::Zip => {
-                if header != [0x50, 0x4b, 0x03, 0x04] {
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
-                    return Err(format!(
-                        "not a zip archive (magic={:02x}{:02x}{:02x}{:02x})",
-                        header[0], header[1], header[2], header[3]
-                    ));
-                }
-            }
-        }
-
-        // Archive-integrity check for freshly-downloaded archives only
-        // (cached archives were already validated above).
-        let check_cmd = match mirror.kind {
-            ArchiveKind::TarGz => format!("tar -tzf '{}' >/dev/null", tmp_path),
-            ArchiveKind::Zip => format!("unzip -tq '{}' >/dev/null", tmp_path),
-        };
-        let check = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&check_cmd)
-            .output()
-            .await
-            .map_err(|e| format!("integrity check spawn failed: {}", e))?;
-        if !check.status.success() {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(format!(
-                "archive integrity check failed: {}",
-                String::from_utf8_lossy(&check.stderr).trim()
-            ));
-        }
+        validate_archive_native(&archive_path, mirror)?;
+        info!(url = mirror.url, bytes = downloaded, "Download complete and validated");
     }
 
     // Extract.
-    let extract_cmd = match mirror.kind {
-        ArchiveKind::TarGz => format!(
-            "tar xzf '{tmp}' -C '{dst}' --strip-components=1 2>&1 || \
-             tar xzf '{tmp}' -C '{dst}' 2>&1",
-            tmp = tmp_path,
-            dst = install_path
-        ),
-        ArchiveKind::Zip => format!(
-            "unzip -q -o '{}' -d '{}' 2>&1",
-            tmp_path, install_path
-        ),
-    };
-    let ex = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&extract_cmd)
-        .output()
-        .await
-        .map_err(|e| format!("extract spawn failed: {}", e))?;
-    cleanup(tmp_path.clone(), keep_on_success).await;
-    if !ex.status.success() {
-        return Err(format!(
-            "extraction failed: {}",
-            String::from_utf8_lossy(&ex.stderr).trim()
-        ));
+    let archive_path_clone = archive_path.clone();
+    let install_path_str = install_path.to_string();
+    let mirror_kind = mirror.kind;
+    tokio::task::spawn_blocking(move || {
+        extract_archive_native(&archive_path_clone, &install_path_str, mirror_kind)
+    }).await.map_err(|e| format!("Extraction task panicked: {}", e))??;
+
+    if !keep_on_success {
+        let _ = tokio::fs::remove_file(&archive_path).await;
     }
 
-    // Flatten single-top-dir zips so q3ut4/ ends up at $install_path/q3ut4/.
-    if matches!(mirror.kind, ArchiveKind::Zip) {
-        flatten_single_top_dir(install_path).await;
-    }
-
-    // Final sanity: q3ut4/ must exist after extract.
-    let q3ut4 = Path::new(install_path).join("q3ut4");
+    // Final sanity: q3ut4/ must exist.
+    let q3ut4 = std::path::Path::new(install_path).join("q3ut4");
     if !q3ut4.is_dir() {
-        // List what's actually there so admins can tell what went wrong
-        // (zip structure changed, flatten failed, wrong archive, etc.).
-        let mut listing = Vec::new();
-        if let Ok(mut rd) = tokio::fs::read_dir(install_path).await {
-            while let Ok(Some(ent)) = rd.next_entry().await {
-                let kind = if ent.path().is_dir() { "d" } else { "f" };
-                listing.push(format!("{}:{}", kind, ent.file_name().to_string_lossy()));
-            }
-        }
-        return Err(format!(
-            "extraction produced no q3ut4/ directory under {} (contents: [{}])",
-            install_path,
-            listing.join(", ")
-        ));
+        return Err(format!("Extraction produced no q3ut4/ directory under {}", install_path));
     }
 
     Ok(())
 }
 
-/// Validate that `archive_path` is a well-formed archive of the given
-/// `mirror.kind`: checks magic bytes and runs the archive tool's integrity
-/// listing (`tar -tzf` / `unzip -tq`). Used to decide whether a cached
-/// archive can be reused without re-downloading.
-async fn validate_archive(archive_path: &str, mirror: &UrtMirror) -> Result<(), String> {
+/// Validate archive magic bytes synchronously.
+fn validate_archive_native(path: &std::path::Path, mirror: &UrtMirror) -> Result<(), String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("open failed: {}", e))?;
     let mut header = [0u8; 4];
-    {
-        use tokio::io::AsyncReadExt;
-        let mut f = tokio::fs::File::open(archive_path)
-            .await
-            .map_err(|e| format!("open failed: {}", e))?;
-        f.read_exact(&mut header)
-            .await
-            .map_err(|e| format!("read magic failed: {}", e))?;
-    }
+    f.read_exact(&mut header).map_err(|e| format!("read magic failed: {}", e))?;
     match mirror.kind {
         ArchiveKind::TarGz => {
             if &header[..2] != [0x1f, 0x8b] {
-                return Err("not a gzip archive".to_string());
+                return Err(format!("Not a gzip archive (magic={:02x}{:02x})", header[0], header[1]));
             }
         }
         ArchiveKind::Zip => {
             if header != [0x50, 0x4b, 0x03, 0x04] {
-                return Err("not a zip archive".to_string());
+                return Err(format!("Not a zip archive (magic={:02x}{:02x}{:02x}{:02x})", header[0], header[1], header[2], header[3]));
             }
         }
-    }
-    let check_cmd = match mirror.kind {
-        ArchiveKind::TarGz => format!("tar -tzf '{}' >/dev/null", archive_path),
-        ArchiveKind::Zip => format!("unzip -tq '{}' >/dev/null", archive_path),
-    };
-    let check = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&check_cmd)
-        .output()
-        .await
-        .map_err(|e| format!("integrity spawn failed: {}", e))?;
-    if !check.status.success() {
-        return Err(format!(
-            "integrity check failed: {}",
-            String::from_utf8_lossy(&check.stderr).trim()
-        ));
     }
     Ok(())
 }
 
-/// If `install_path` contains exactly one directory entry (a zip wrapper
-/// like `UrbanTerror43/`), move its contents up a level and remove it.
-/// Uses `bash -c` with dotglob/nullglob because `/bin/sh` on Ubuntu is
-/// dash, which doesn't support `shopt`.
-async fn flatten_single_top_dir(install_path: &str) {
-    let path = Path::new(install_path);
-    let mut entries = match tokio::fs::read_dir(path).await {
-        Ok(e) => e,
-        Err(e) => {
-            warn!(path = %install_path, error = %e, "flatten: read_dir failed");
-            return;
+/// Extract archive synchronously (blocking — call from spawn_blocking).
+fn extract_archive_native(archive: &std::path::Path, dest: &str, kind: ArchiveKind) -> Result<(), String> {
+    std::fs::create_dir_all(dest).map_err(|e| format!("create_dir_all failed: {}", e))?;
+    match kind {
+        ArchiveKind::TarGz => {
+            // Use the shell on Unix (tar is always present). On Windows, .tar.gz
+            // mirrors are not currently in the mirror list.
+            #[cfg(unix)]
+            {
+                let status = std::process::Command::new("tar")
+                    .args(["xzf", &archive.to_string_lossy(), "-C", dest, "--strip-components=1"])
+                    .status()
+                    .map_err(|e| format!("tar spawn failed: {}", e))?;
+                if !status.success() {
+                    return Err("tar extraction failed".to_string());
+                }
+            }
+            #[cfg(windows)]
+            return Err("TarGz extraction not supported on Windows — use a Zip mirror".to_string());
         }
-    };
-    let mut only: Option<PathBuf> = None;
-    let mut count = 0usize;
-    while let Ok(Some(ent)) = entries.next_entry().await {
-        count += 1;
-        if count > 1 {
-            info!(path = %install_path, "flatten: multiple top-level entries, nothing to flatten");
-            return;
+        ArchiveKind::Zip => {
+            use std::io::Read;
+            let file = std::fs::File::open(archive).map_err(|e| format!("open zip failed: {}", e))?;
+            let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("ZipArchive::new failed: {}", e))?;
+
+            // Detect top-level wrapper dir (e.g. "UrbanTerror43/")
+            let wrapper: Option<String> = {
+                let mut roots = std::collections::HashSet::new();
+                for i in 0..archive.len() {
+                    let entry = archive.by_index(i).map_err(|e| format!("zip index failed: {}", e))?;
+                    let name = entry.name().to_string();
+                    let top = name.splitn(2, '/').next().unwrap_or("").to_string();
+                    if !top.is_empty() { roots.insert(top); }
+                }
+                if roots.len() == 1 { roots.into_iter().next() } else { None }
+            };
+
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i).map_err(|e| format!("zip entry failed: {}", e))?;
+                let raw_name = entry.name().to_string();
+
+                // Strip wrapper prefix if present.
+                let stripped = if let Some(ref w) = wrapper {
+                    let prefix = format!("{}/", w);
+                    raw_name.strip_prefix(&prefix).map(|s| s.to_string()).unwrap_or(raw_name.clone())
+                } else {
+                    raw_name.clone()
+                };
+
+                if stripped.is_empty() { continue; }
+
+                let out_path = std::path::Path::new(dest).join(&stripped);
+
+                // Security: prevent path traversal.
+                if !out_path.starts_with(dest) {
+                    return Err(format!("Zip path traversal detected: {}", raw_name));
+                }
+
+                if entry.is_dir() {
+                    std::fs::create_dir_all(&out_path).map_err(|e| format!("mkdir failed: {}", e))?;
+                } else {
+                    if let Some(parent) = out_path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir parent failed: {}", e))?;
+                    }
+                    let mut out_file = std::fs::File::create(&out_path).map_err(|e| format!("create file failed: {}", e))?;
+                    std::io::copy(&mut entry, &mut out_file).map_err(|e| format!("copy failed: {}", e))?;
+                    // Preserve Unix executable bit on Linux/Mac.
+                    #[cfg(unix)]
+                    if let Some(mode) = entry.unix_mode() {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode));
+                    }
+                }
+            }
         }
-        only = Some(ent.path());
     }
-    let Some(dir) = only else {
-        warn!(path = %install_path, "flatten: install_path is empty after extract");
-        return;
-    };
-    if !dir.is_dir() {
-        return;
-    }
-    info!(wrapper = %dir.display(), dst = %install_path, "flatten: moving contents up one level");
-    let out = tokio::process::Command::new("bash")
-        .arg("-c")
-        .arg(format!(
-            "shopt -s dotglob nullglob && mv -- '{src}'/* '{dst}/' && rmdir -- '{src}'",
-            src = dir.display(),
-            dst = install_path
-        ))
-        .output()
-        .await;
-    match out {
-        Ok(o) if o.status.success() => {
-            info!(wrapper = %dir.display(), "flatten: succeeded");
-        }
-        Ok(o) => {
-            warn!(
-                wrapper = %dir.display(),
-                stderr = %String::from_utf8_lossy(&o.stderr).trim(),
-                stdout = %String::from_utf8_lossy(&o.stdout).trim(),
-                "flatten: mv command exited non-zero"
-            );
-        }
-        Err(e) => warn!(wrapper = %dir.display(), error = %e, "flatten: bash spawn failed"),
-    }
+    Ok(())
 }
 
 /// Start downloading and installing a UrT 4.3 dedicated server.
