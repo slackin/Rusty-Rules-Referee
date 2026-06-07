@@ -68,9 +68,9 @@ done
 
 # ---- Determine step count ----
 if [ "$SKIP_PULL" = true ]; then
-    TOTAL_STEPS=6
-else
     TOTAL_STEPS=7
+else
+    TOTAL_STEPS=8
 fi
 
 CURRENT_STEP=0
@@ -158,6 +158,32 @@ if [ ! -f "$BINARY" ]; then
 fi
 ok "Binary built: $(du -h "$BINARY" | awk '{print $1}')"
 
+# ---- Step: Cross-compile Windows binary ----
+CURRENT_STEP=$((CURRENT_STEP + 1))
+step $CURRENT_STEP "Cross-compiling Windows binary (x86_64-pc-windows-gnu)"
+
+WIN_BINARY_NAME="${BINARY_NAME}.exe"
+WIN_BINARY_FILENAME="r3-windows-x86_64"
+WIN_BINARY="target/x86_64-pc-windows-gnu/release/${WIN_BINARY_NAME}"
+
+# Ensure target + toolchain are available (idempotent)
+rustup target add x86_64-pc-windows-gnu 2>/dev/null || true
+if ! dpkg -l mingw-w64 2>/dev/null | grep -q '^ii'; then
+    apt-get install -y mingw-w64 >/dev/null 2>&1 || warn "mingw-w64 install failed — Windows binary will be skipped"
+fi
+
+if cargo build --release --target x86_64-pc-windows-gnu 2>&1 | tail -5 && [ -f "$WIN_BINARY" ]; then
+    WIN_SHA256=$(sha256sum "$WIN_BINARY" | awk '{print $1}')
+    WIN_FILE_SIZE=$(stat -c%s "$WIN_BINARY")
+    cp "$WIN_BINARY" "${PUBLISH_DIR}/binaries/${WIN_BINARY_FILENAME}"
+    chmod 644 "${PUBLISH_DIR}/binaries/${WIN_BINARY_FILENAME}"
+    ok "Windows binary built and published: $(du -h "$WIN_BINARY" | awk '{print $1}')"
+    BUILD_WIN_OK=true
+else
+    warn "Windows cross-compile failed — skipping windows-x86_64 platform in manifest"
+    BUILD_WIN_OK=false
+fi
+
 # ---- Step: Extract Build Info ----
 CURRENT_STEP=$((CURRENT_STEP + 1))
 step $CURRENT_STEP "Extracting build metadata"
@@ -182,9 +208,35 @@ mkdir -p "${PUBLISH_DIR}/binaries"
 cp "$BINARY" "${PUBLISH_DIR}/binaries/${BINARY_FILENAME}" || die "Failed to copy binary to publish path"
 ok "Binary copied to ${PUBLISH_DIR}/binaries/${BINARY_FILENAME}"
 
-# Generate latest.json (channel-qualified URLs)
+# Generate latest.json with all published platforms
 DOWNLOAD_URL="https://r3.pugbot.net/api/updates/${CHANNEL}/binaries/${BINARY_FILENAME}"
-cat > "${PUBLISH_DIR}/latest.json" <<EOF
+WIN_DOWNLOAD_URL="https://r3.pugbot.net/api/updates/${CHANNEL}/binaries/${WIN_BINARY_FILENAME}"
+
+if [ "$BUILD_WIN_OK" = true ]; then
+    cat > "${PUBLISH_DIR}/latest.json" <<EOF
+{
+  "channel": "${CHANNEL}",
+  "version": "${VERSION}",
+  "build_hash": "${BUILD_HASH}",
+  "git_commit": "${GIT_COMMIT}",
+  "released_at": "${RELEASED_AT}",
+  "platforms": {
+    "${PLATFORM}": {
+      "url": "${DOWNLOAD_URL}",
+      "sha256": "${SHA256}",
+      "size": ${FILE_SIZE}
+    },
+    "windows-x86_64": {
+      "url": "${WIN_DOWNLOAD_URL}",
+      "sha256": "${WIN_SHA256}",
+      "size": ${WIN_FILE_SIZE}
+    }
+  }
+}
+EOF
+    ok "Manifest written with linux-x86_64 + windows-x86_64 platforms"
+else
+    cat > "${PUBLISH_DIR}/latest.json" <<EOF
 {
   "channel": "${CHANNEL}",
   "version": "${VERSION}",
@@ -200,6 +252,8 @@ cat > "${PUBLISH_DIR}/latest.json" <<EOF
   }
 }
 EOF
+    ok "Manifest written (linux-x86_64 only — Windows build skipped)"
+fi
 ok "Manifest written to ${PUBLISH_DIR}/latest.json (channel: ${CHANNEL})"
 
 # Set permissions (readable by nginx)
