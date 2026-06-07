@@ -166,13 +166,18 @@ WIN_BINARY_NAME="${BINARY_NAME}.exe"
 WIN_BINARY_FILENAME="r3-windows-x86_64"
 WIN_BINARY="target/x86_64-pc-windows-gnu/release/${WIN_BINARY_NAME}"
 
+# Extract the Linux build's timestamp so the Windows binary gets the
+# identical BUILD_HASH (both share the same git commit + timestamp).
+LINUX_TIMESTAMP=$(echo "$BUILD_HASH" | cut -d'-' -f3)
+ok "Reusing Linux build timestamp for Windows: ${LINUX_TIMESTAMP}"
+
 # Ensure target + toolchain are available (idempotent)
 rustup target add x86_64-pc-windows-gnu 2>/dev/null || true
 if ! dpkg -l mingw-w64 2>/dev/null | grep -q '^ii'; then
     apt-get install -y mingw-w64 >/dev/null 2>&1 || warn "mingw-w64 install failed — Windows binary will be skipped"
 fi
 
-if cargo build --release --target x86_64-pc-windows-gnu 2>&1 | tail -5 && [ -f "$WIN_BINARY" ]; then
+if BUILD_TIMESTAMP_OVERRIDE="$LINUX_TIMESTAMP" cargo build --release --target x86_64-pc-windows-gnu 2>&1 | tail -5 && [ -f "$WIN_BINARY" ]; then
     WIN_SHA256=$(sha256sum "$WIN_BINARY" | awk '{print $1}')
     WIN_FILE_SIZE=$(stat -c%s "$WIN_BINARY")
     cp "$WIN_BINARY" "${PUBLISH_DIR}/binaries/${WIN_BINARY_FILENAME}"

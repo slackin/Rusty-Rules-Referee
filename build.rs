@@ -23,8 +23,13 @@ fn main() {
         })
         .unwrap_or_else(|| "nogit".to_string());
 
-    // Get build timestamp as YYYYMMDDHHMMSS (UTC)
-    let timestamp = {
+    // Get build timestamp as YYYYMMDDHHMMSS (UTC).
+    // If BUILD_TIMESTAMP_OVERRIDE is set (used by deploy-remote.sh to ensure
+    // all platform builds share the same timestamp and thus the same build hash),
+    // use it verbatim. Otherwise derive from the current time.
+    let timestamp = if let Ok(ts) = std::env::var("BUILD_TIMESTAMP_OVERRIDE") {
+        ts
+    } else {
         let dur = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
@@ -83,6 +88,7 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/heads/");
     println!("cargo:rerun-if-env-changed=FORCE_REBUILD");
+    println!("cargo:rerun-if-env-changed=BUILD_TIMESTAMP_OVERRIDE");
 
     // Re-embed the web UI whenever the built assets change. rust-embed reads
     // `ui/build` at macro-expansion time of the `#[derive(Embed)]` in
