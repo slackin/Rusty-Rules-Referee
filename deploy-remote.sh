@@ -158,6 +158,21 @@ if [ ! -f "$BINARY" ]; then
 fi
 ok "Binary built: $(du -h "$BINARY" | awk '{print $1}')"
 
+# ---- Step: Extract Build Info ----
+CURRENT_STEP=$((CURRENT_STEP + 1))
+step $CURRENT_STEP "Extracting build metadata"
+
+BUILD_HASH=$("./$BINARY" --build-hash 2>/dev/null | tail -1) || die "Failed to extract build hash from binary"
+SHA256=$(sha256sum "$BINARY" | awk '{print $1}')
+FILE_SIZE=$(stat -c%s "$BINARY")
+VERSION=$(echo "$BUILD_HASH" | cut -d'-' -f1)
+GIT_COMMIT=$(echo "$BUILD_HASH" | cut -d'-' -f2)
+RELEASED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+ok "Build hash: ${BUILD_HASH}"
+ok "SHA-256:    ${SHA256}"
+ok "Size:       ${FILE_SIZE} bytes"
+
 # ---- Step: Cross-compile Windows binary ----
 CURRENT_STEP=$((CURRENT_STEP + 1))
 step $CURRENT_STEP "Cross-compiling Windows binary (x86_64-pc-windows-gnu)"
@@ -188,21 +203,6 @@ else
     warn "Windows cross-compile failed — skipping windows-x86_64 platform in manifest"
     BUILD_WIN_OK=false
 fi
-
-# ---- Step: Extract Build Info ----
-CURRENT_STEP=$((CURRENT_STEP + 1))
-step $CURRENT_STEP "Extracting build metadata"
-
-BUILD_HASH=$("./$BINARY" --build-hash 2>/dev/null | tail -1) || die "Failed to extract build hash from binary"
-SHA256=$(sha256sum "$BINARY" | awk '{print $1}')
-FILE_SIZE=$(stat -c%s "$BINARY")
-VERSION=$(echo "$BUILD_HASH" | cut -d'-' -f1)
-GIT_COMMIT=$(echo "$BUILD_HASH" | cut -d'-' -f2)
-RELEASED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-ok "Build hash: ${BUILD_HASH}"
-ok "SHA-256:    ${SHA256}"
-ok "Size:       ${FILE_SIZE} bytes"
 
 # ---- Step: Publish Binary ----
 CURRENT_STEP=$((CURRENT_STEP + 1))
