@@ -59,6 +59,7 @@ impl SqliteStorage {
             include_str!("../../migrations/015_hub_update_channel.sql"),
             include_str!("../../migrations/016_hub_update_interval.sql"),
             include_str!("../../migrations/017_update_enabled.sql"),
+            include_str!("../../migrations/018_player_groups.sql"),
         ];
         for schema in migrations {
             // Strip SQL comment lines before splitting into statements
