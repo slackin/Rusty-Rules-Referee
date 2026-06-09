@@ -58,6 +58,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Archive extraction (Windows-native UrT installer, no shell dependency)
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# UPnP IGD port forwarding — auto-open game server ports on the router.
+# Enabled on all platforms; the hub calls it when spawning game servers on Windows,
+# and it's a no-op (best-effort) if the gateway doesn't support UPnP.
+igd = "0.12"
+
 # TLS (mTLS for client/server mode)
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"

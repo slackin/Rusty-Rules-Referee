@@ -7,6 +7,7 @@
 //!
 //! **Windows:** the game server is spawned as a detached process by the hub.
 //! A `.pid` file in the install directory tracks the running process.
+//! UPnP IGD is attempted automatically to open the game port on the router.
 
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -110,6 +111,20 @@ pub async fn remove_game_server(
 
     stop_game_server_platform(slug, &mut steps).await;
 
+    // On Windows, try to remove the UPnP port mapping. We read the port from
+    // the install state if available; otherwise skip cleanly.
+    #[cfg(windows)]
+    {
+        let state_path = install_path(hub_cfg, slug).join("state").join("urt-install.json");
+        if let Ok(json) = std::fs::read_to_string(&state_path) {
+            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&json) {
+                if let Some(port) = state.get("port").and_then(|p| p.as_u64()).map(|p| p as u16) {
+                    upnp_close_udp_port(port).await;
+                }
+            }
+        }
+    }
+
     let path = install_path(hub_cfg, slug);
     if path.exists() {
         match std::fs::remove_dir_all(&path) {
@@ -186,6 +201,10 @@ async fn stop_game_server_platform(slug: &str, steps: &mut Vec<(String, bool, St
 
 #[cfg(windows)]
 async fn stop_game_server_platform(slug: &str, steps: &mut Vec<(String, bool, String)>) {
+    // Read the port from the PID file directory before killing — needed for UPnP cleanup.
+    // We don't have hub_cfg here so we can't reconstruct the path, but we can parse
+    // the drop-in or just scan for running processes. Since remove_game_server passes
+    // the install path indirectly, we rely on the caller to handle UPnP separately.
     kill_urt_process_by_slug(slug);
     steps.push(("kill_process".into(), true, format!("Killed game server process for {}", slug)));
 }
@@ -434,6 +453,15 @@ async fn register_urt_instance_platform(
     let pid_file = install_path.join(".pid");
     std::fs::write(&pid_file, pid.to_string())?;
     info!(%slug, %pid, "Spawned UrT game server process (Windows)");
+
+    // Best-effort UPnP port forwarding — open UDP port on the router so
+    // the server is reachable from the internet. Failure is non-fatal.
+    let port = exec.port;
+    let slug_owned = slug.to_string();
+    tokio::spawn(async move {
+        upnp_open_udp_port(port, slug_owned).await;
+    });
+
     Ok(())
 }
 
@@ -478,6 +506,84 @@ pub fn kill_urt_process(install_path: &Path) {
         }
     }
     let _ = std::fs::remove_file(pid_file);
+}
+
+// ---------------------------------------------------------------------------
+// UPnP port forwarding (best-effort, Windows)
+// ---------------------------------------------------------------------------
+
+/// Attempt to open a UDP port on the UPnP gateway (router). Best-effort —
+/// logs a warning on failure but never returns an error to the caller.
+/// Called after spawning a game server so players can reach it from the internet.
+pub async fn upnp_open_udp_port(port: u16, slug: impl std::fmt::Display + Send + 'static) {
+    let slug = slug.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        upnp_add_port(port, &slug)
+    }).await;
+    match result {
+        Ok(Ok(())) => info!(port, "UPnP: opened UDP port on gateway"),
+        Ok(Err(e)) => warn!(port, error = %e, "UPnP: failed to open port (NAT traversal may need manual configuration)"),
+        Err(e) => warn!(port, error = %e, "UPnP: task panicked"),
+    }
+}
+
+/// Remove a UPnP port mapping when the game server stops.
+pub async fn upnp_close_udp_port(port: u16) {
+    let result = tokio::task::spawn_blocking(move || {
+        upnp_remove_port(port)
+    }).await;
+    match result {
+        Ok(Ok(())) => info!(port, "UPnP: closed UDP port mapping"),
+        Ok(Err(e)) => warn!(port, error = %e, "UPnP: failed to remove port mapping"),
+        Err(_) => {}
+    }
+}
+
+fn upnp_add_port(port: u16, description: &str) -> anyhow::Result<()> {
+    use igd::SearchOptions;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
+
+    let gateway = igd::search_gateway(SearchOptions::default())
+        .map_err(|e| anyhow::anyhow!("UPnP gateway search failed: {}", e))?;
+
+    // Use the local IP the gateway sees us from.
+    let local_ip = gateway.get_external_ip()
+        .ok()
+        .and_then(|_| get_local_ipv4())
+        .unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
+
+    let local_addr = SocketAddrV4::new(local_ip, port);
+
+    gateway.add_port(
+        igd::PortMappingProtocol::UDP,
+        port,
+        local_addr,
+        0, // 0 = permanent (until router reboot)
+        description,
+    ).map_err(|e| anyhow::anyhow!("UPnP add_port failed: {}", e))?;
+
+    Ok(())
+}
+
+fn upnp_remove_port(port: u16) -> anyhow::Result<()> {
+    use igd::SearchOptions;
+    let gateway = igd::search_gateway(SearchOptions::default())
+        .map_err(|e| anyhow::anyhow!("UPnP gateway search failed: {}", e))?;
+    gateway.remove_port(igd::PortMappingProtocol::UDP, port)
+        .map_err(|e| anyhow::anyhow!("UPnP remove_port failed: {}", e))?;
+    Ok(())
+}
+
+/// Get the local IPv4 address most likely to be on the LAN (non-loopback).
+fn get_local_ipv4() -> Option<std::net::Ipv4Addr> {
+    // Bind a UDP socket towards a known public IP (no packet sent) to
+    // discover which local interface the OS would use.
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) => Some(ip),
+        _ => None,
+    }
 }
 
 /// Reconfigure (change port / extra args) for a running game server and restart it.
