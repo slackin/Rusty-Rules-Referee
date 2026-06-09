@@ -4,7 +4,7 @@ pub mod sqlite;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, EffectiveUser, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, PlayerGroup, PlayerGroupMember, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -285,6 +285,35 @@ pub trait Storage: Send + Sync {
     async fn mark_synced(&self, ids: &[i64]) -> Result<(), StorageError>;
     async fn retry_sync(&self, id: i64) -> Result<(), StorageError>;
     async fn prune_synced(&self, older_than_days: u32) -> Result<u64, StorageError>;
+
+    // ---- Player Groups ----
+    async fn list_player_groups(&self) -> Result<Vec<PlayerGroup>, StorageError>;
+    async fn get_player_group(&self, id: i64) -> Result<PlayerGroup, StorageError>;
+    async fn create_player_group(&self, name: &str, description: &str) -> Result<i64, StorageError>;
+    async fn update_player_group(&self, id: i64, name: &str, description: &str) -> Result<(), StorageError>;
+    async fn delete_player_group(&self, id: i64) -> Result<(), StorageError>;
+
+    async fn list_player_group_members(&self, group_id: i64) -> Result<Vec<PlayerGroupMember>, StorageError>;
+    async fn get_player_group_member(&self, group_id: i64, client_guid: &str) -> Result<PlayerGroupMember, StorageError>;
+    async fn upsert_player_group_member(&self, group_id: i64, client_guid: &str, group_bits: u64, note: &str) -> Result<i64, StorageError>;
+    async fn delete_player_group_member(&self, group_id: i64, client_guid: &str) -> Result<(), StorageError>;
+
+    /// Return which player groups the given server belongs to (ordered by priority).
+    async fn get_server_player_groups(&self, server_id: i64) -> Result<Vec<PlayerGroup>, StorageError>;
+    /// Replace the full set of player groups assigned to a server.
+    async fn set_server_player_groups(&self, server_id: i64, group_ids: &[i64]) -> Result<(), StorageError>;
+
+    /// Compute the effective user list for a server: union of all assigned
+    /// group members plus the server's own `clients` rows. For a given guid,
+    /// the highest `group_bits` across all sources wins; group records with
+    /// higher priority override lower-priority ones, then local records
+    /// participate in the union (not override). Returns one row per guid.
+    async fn get_effective_users(&self, server_id: i64) -> Result<Vec<EffectiveUser>, StorageError>;
+
+    /// Return all player group members that match `guid` across all groups
+    /// assigned to `server_id`. Used to build the `effective_permissions`
+    /// payload pushed to client bots on heartbeat.
+    async fn get_effective_permission_for_guid(&self, server_id: i64, guid: &str) -> Result<Option<u64>, StorageError>;
 }
 
 /// Parse a DSN string like "mysql://user:pass@host:port/db" into components.

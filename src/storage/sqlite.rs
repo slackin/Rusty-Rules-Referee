@@ -2218,6 +2218,257 @@ impl Storage for SqliteStorage {
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(result.rows_affected())
     }
+
+    // -------------------------------------------------------------------------
+    // Player Groups — using runtime sqlx::query to avoid sqlx offline cache
+    // requirements (new tables aren't in the existing .sqlx cache).
+    // -------------------------------------------------------------------------
+
+    async fn list_player_groups(&self) -> Result<Vec<crate::core::PlayerGroup>, StorageError> {
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String)>(
+            "SELECT id, name, description, created_at, updated_at FROM player_groups ORDER BY name"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(id, name, description, created_at, updated_at)| {
+            crate::core::PlayerGroup { id, name, description, created_at: parse_dt(&created_at), updated_at: parse_dt(&updated_at) }
+        }).collect())
+    }
+
+    async fn get_player_group(&self, id: i64) -> Result<crate::core::PlayerGroup, StorageError> {
+        let row = sqlx::query_as::<_, (i64, String, String, String, String)>(
+            "SELECT id, name, description, created_at, updated_at FROM player_groups WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| StorageError::NotFound)?;
+
+        Ok(crate::core::PlayerGroup { id: row.0, name: row.1, description: row.2, created_at: parse_dt(&row.3), updated_at: parse_dt(&row.4) })
+    }
+
+    async fn create_player_group(&self, name: &str, description: &str) -> Result<i64, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO player_groups (name, description) VALUES (?, ?)"
+        )
+        .bind(name)
+        .bind(description)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn update_player_group(&self, id: i64, name: &str, description: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE player_groups SET name = ?, description = ?, updated_at = datetime('now') WHERE id = ?"
+        )
+        .bind(name)
+        .bind(description)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_player_group(&self, id: i64) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM player_groups WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn list_player_group_members(&self, group_id: i64) -> Result<Vec<crate::core::PlayerGroupMember>, StorageError> {
+        // id, player_group_id, client_guid, group_bits, note, created_at, updated_at, client_name
+        let rows = sqlx::query_as::<_, (i64, i64, String, i64, String, String, String, Option<String>)>(
+            "SELECT m.id, m.player_group_id, m.client_guid, m.group_bits, m.note, \
+                    m.created_at, m.updated_at, c.name \
+             FROM player_group_members m \
+             LEFT JOIN clients c ON c.guid = m.client_guid \
+             WHERE m.player_group_id = ? \
+             ORDER BY COALESCE(c.name, m.client_guid)"
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(id, player_group_id, client_guid, group_bits, note, created_at, updated_at, client_name)| {
+            crate::core::PlayerGroupMember {
+                id, player_group_id, client_guid, client_name, group_bits: group_bits as u64,
+                note, created_at: parse_dt(&created_at), updated_at: parse_dt(&updated_at),
+            }
+        }).collect())
+    }
+
+    async fn get_player_group_member(&self, group_id: i64, client_guid: &str) -> Result<crate::core::PlayerGroupMember, StorageError> {
+        let row = sqlx::query_as::<_, (i64, i64, String, i64, String, String, String, Option<String>)>(
+            "SELECT m.id, m.player_group_id, m.client_guid, m.group_bits, m.note, \
+                    m.created_at, m.updated_at, c.name \
+             FROM player_group_members m \
+             LEFT JOIN clients c ON c.guid = m.client_guid \
+             WHERE m.player_group_id = ? AND m.client_guid = ?"
+        )
+        .bind(group_id)
+        .bind(client_guid)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| StorageError::NotFound)?;
+
+        Ok(crate::core::PlayerGroupMember {
+            id: row.0, player_group_id: row.1, client_guid: row.2, group_bits: row.3 as u64,
+            note: row.4, created_at: parse_dt(&row.5), updated_at: parse_dt(&row.6), client_name: row.7,
+        })
+    }
+
+    async fn upsert_player_group_member(&self, group_id: i64, client_guid: &str, group_bits: u64, note: &str) -> Result<i64, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO player_group_members (player_group_id, client_guid, group_bits, note) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(player_group_id, client_guid) \
+             DO UPDATE SET group_bits = excluded.group_bits, note = excluded.note, \
+                           updated_at = datetime('now')"
+        )
+        .bind(group_id)
+        .bind(client_guid)
+        .bind(group_bits as i64)
+        .bind(note)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn delete_player_group_member(&self, group_id: i64, client_guid: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "DELETE FROM player_group_members WHERE player_group_id = ? AND client_guid = ?"
+        )
+        .bind(group_id)
+        .bind(client_guid)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_server_player_groups(&self, server_id: i64) -> Result<Vec<crate::core::PlayerGroup>, StorageError> {
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String)>(
+            "SELECT pg.id, pg.name, pg.description, pg.created_at, pg.updated_at \
+             FROM player_groups pg \
+             JOIN server_player_groups spg ON spg.player_group_id = pg.id \
+             WHERE spg.server_id = ? \
+             ORDER BY spg.priority ASC, pg.name ASC"
+        )
+        .bind(server_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(id, name, description, created_at, updated_at)| {
+            crate::core::PlayerGroup { id, name, description, created_at: parse_dt(&created_at), updated_at: parse_dt(&updated_at) }
+        }).collect())
+    }
+
+    async fn set_server_player_groups(&self, server_id: i64, group_ids: &[i64]) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM server_player_groups WHERE server_id = ?")
+            .bind(server_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        for (priority, &gid) in group_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO server_player_groups (server_id, player_group_id, priority) VALUES (?, ?, ?)"
+            )
+            .bind(server_id)
+            .bind(gid)
+            .bind(priority as i64 * 10)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn get_effective_users(&self, server_id: i64) -> Result<Vec<crate::core::EffectiveUser>, StorageError> {
+        // group rows: client_guid, group_bits, group_name, group_id, client_name
+        let group_rows = sqlx::query_as::<_, (String, i64, String, i64, Option<String>)>(
+            "SELECT m.client_guid, m.group_bits, pg.name, pg.id, c.name \
+             FROM player_group_members m \
+             JOIN server_player_groups spg ON spg.player_group_id = m.player_group_id \
+             JOIN player_groups pg ON pg.id = m.player_group_id \
+             LEFT JOIN clients c ON c.guid = m.client_guid \
+             WHERE spg.server_id = ? \
+             ORDER BY spg.priority ASC"
+        )
+        .bind(server_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        // local rows: guid, group_bits, name
+        let local_rows = sqlx::query_as::<_, (String, i64, Option<String>)>(
+            "SELECT guid, group_bits, name FROM clients WHERE group_bits > 0"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        use std::collections::HashMap;
+        let mut map: HashMap<String, crate::core::EffectiveUser> = HashMap::new();
+
+        // Local entries first (lowest priority).
+        for (guid, bits_raw, name) in &local_rows {
+            let bits = *bits_raw as u64;
+            if bits == 0 { continue; }
+            let e = map.entry(guid.clone()).or_insert_with(|| crate::core::EffectiveUser {
+                client_guid: guid.clone(), client_name: name.clone(),
+                group_bits: 0, source: "Local".to_string(), player_group_id: None,
+            });
+            if bits > e.group_bits {
+                e.group_bits = bits; e.source = "Local".to_string(); e.player_group_id = None;
+            }
+        }
+
+        // Group entries override/augment (higher group_bits wins).
+        for (client_guid, bits_raw, group_name, group_id, client_name) in &group_rows {
+            let bits = *bits_raw as u64;
+            let e = map.entry(client_guid.clone()).or_insert_with(|| crate::core::EffectiveUser {
+                client_guid: client_guid.clone(), client_name: client_name.clone(),
+                group_bits: 0, source: group_name.clone(), player_group_id: Some(*group_id),
+            });
+            if bits > e.group_bits {
+                e.group_bits = bits; e.source = group_name.clone();
+                e.player_group_id = Some(*group_id);
+                if e.client_name.is_none() { e.client_name = client_name.clone(); }
+            }
+        }
+
+        let mut result: Vec<_> = map.into_values().collect();
+        result.sort_by(|a, b| a.client_guid.cmp(&b.client_guid));
+        Ok(result)
+    }
+
+    async fn get_effective_permission_for_guid(&self, server_id: i64, guid: &str) -> Result<Option<u64>, StorageError> {
+        let row = sqlx::query_as::<_, (Option<i64>,)>(
+            "SELECT MAX(m.group_bits) \
+             FROM player_group_members m \
+             JOIN server_player_groups spg ON spg.player_group_id = m.player_group_id \
+             WHERE spg.server_id = ? AND m.client_guid = ?"
+        )
+        .bind(server_id)
+        .bind(guid)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(row.0.map(|b| b as u64))
+    }
 }
 mod tests {
     use super::*;

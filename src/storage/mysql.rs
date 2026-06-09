@@ -2645,4 +2645,45 @@ impl Storage for MysqlStorage {
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(result.rows_affected())
     }
+
+    // ---- Player Groups (MySQL stubs — full implementation pending) ----
+    async fn list_player_groups(&self) -> Result<Vec<crate::core::PlayerGroup>, StorageError> {
+        Ok(vec![])
+    }
+    async fn get_player_group(&self, _id: i64) -> Result<crate::core::PlayerGroup, StorageError> {
+        Err(StorageError::NotFound)
+    }
+    async fn create_player_group(&self, _name: &str, _description: &str) -> Result<i64, StorageError> {
+        Err(StorageError::QueryFailed("Player groups not yet implemented for MySQL".into()))
+    }
+    async fn update_player_group(&self, _id: i64, _name: &str, _description: &str) -> Result<(), StorageError> {
+        Err(StorageError::QueryFailed("Player groups not yet implemented for MySQL".into()))
+    }
+    async fn delete_player_group(&self, _id: i64) -> Result<(), StorageError> {
+        Err(StorageError::QueryFailed("Player groups not yet implemented for MySQL".into()))
+    }
+    async fn list_player_group_members(&self, _group_id: i64) -> Result<Vec<crate::core::PlayerGroupMember>, StorageError> {
+        Ok(vec![])
+    }
+    async fn get_player_group_member(&self, _group_id: i64, _client_guid: &str) -> Result<crate::core::PlayerGroupMember, StorageError> {
+        Err(StorageError::NotFound)
+    }
+    async fn upsert_player_group_member(&self, _group_id: i64, _client_guid: &str, _group_bits: u64, _note: &str) -> Result<i64, StorageError> {
+        Err(StorageError::QueryFailed("Player groups not yet implemented for MySQL".into()))
+    }
+    async fn delete_player_group_member(&self, _group_id: i64, _client_guid: &str) -> Result<(), StorageError> {
+        Err(StorageError::QueryFailed("Player groups not yet implemented for MySQL".into()))
+    }
+    async fn get_server_player_groups(&self, _server_id: i64) -> Result<Vec<crate::core::PlayerGroup>, StorageError> {
+        Ok(vec![])
+    }
+    async fn set_server_player_groups(&self, _server_id: i64, _group_ids: &[i64]) -> Result<(), StorageError> {
+        Err(StorageError::QueryFailed("Player groups not yet implemented for MySQL".into()))
+    }
+    async fn get_effective_users(&self, _server_id: i64) -> Result<Vec<crate::core::EffectiveUser>, StorageError> {
+        Ok(vec![])
+    }
+    async fn get_effective_permission_for_guid(&self, _server_id: i64, _guid: &str) -> Result<Option<u64>, StorageError> {
+        Ok(None)
+    }
 }

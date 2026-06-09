@@ -265,10 +265,25 @@ async fn handle_heartbeat(
     let update_interval = server_row.as_ref().map(|s| s.update_interval);
     let update_enabled = server_row.as_ref().map(|s| s.update_enabled);
 
+    // Compute effective player-group permissions and push to the client bot.
+    // This is best-effort — failure to fetch permissions is non-fatal.
+    let effective_permissions = state.storage
+        .get_effective_users(req.server_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|u| u.group_bits > 0)
+        .map(|u| crate::sync::protocol::EffectivePermission {
+            guid: u.client_guid,
+            group_bits: u.group_bits,
+        })
+        .collect::<Vec<_>>();
+
     Ok(Json(HeartbeatResponse {
         ok: true,
         config_version,
         pending_global_bans: Vec::new(), // TODO: track pending bans since last heartbeat
+        effective_permissions,
         update_channel,
         update_interval,
         update_enabled,

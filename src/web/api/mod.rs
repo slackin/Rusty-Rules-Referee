@@ -11,6 +11,7 @@ pub mod maprepo;
 pub mod notes;
 pub mod pairing;
 pub mod penalties;
+pub mod player_groups;
 pub mod players;
 pub mod plugins;
 pub mod server;

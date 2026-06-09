@@ -1,7 +1,7 @@
 <script>
 	import { page } from '$app/stores';
 	import { api } from '$lib/api.svelte.js';
-	import { LayoutDashboard, Users, ShieldBan, MessageSquare, ScrollText, Puzzle, Map, ListOrdered, FileCode, Crosshair } from 'lucide-svelte';
+	import { LayoutDashboard, Users, ShieldBan, MessageSquare, ScrollText, Puzzle, Map, ListOrdered, FileCode, Crosshair, UsersRound } from 'lucide-svelte';
 
 	let serverId = $derived(Number($page.params.id));
 	let server = $state(null);
@@ -19,6 +19,7 @@
 	const tabs = [
 		{ href: '', label: 'Dashboard', icon: LayoutDashboard },
 		{ href: 'players', label: 'Players', icon: Users },
+		{ href: 'users', label: 'Users', icon: UsersRound },
 		{ href: 'penalties', label: 'Penalties', icon: ShieldBan },
 		{ href: 'chat', label: 'Chat', icon: MessageSquare },
 		{ href: 'audit-log', label: 'Audit Log', icon: ScrollText },

@@ -58,21 +58,31 @@ pub struct HeartbeatResponse {
     pub config_version: i64,
     /// Global bans that the client should enforce (since last heartbeat).
     pub pending_global_bans: Vec<PenaltySync>,
-    /// Master-controlled update channel for this server. When present and
-    /// different from the client's current channel, the client updates its
-    /// local config and uses this channel for subsequent update checks.
+    /// Effective player-group permissions for this server. The client bot
+    /// applies these to its in-memory client map so in-game `!level`/`!group`
+    /// commands reflect group-assigned permissions. Each entry is the
+    /// maximum `group_bits` for that GUID across all groups assigned to this
+    /// server, merged with the server's local client records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effective_permissions: Vec<EffectivePermission>,
+    /// Master-controlled update channel for this server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_channel: Option<String>,
-    /// Master-controlled auto-update check interval in seconds. When present
-    /// and different from the client's current interval, the client updates
-    /// its local config and uses this interval for subsequent update checks.
+    /// Master-controlled auto-update check interval in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_interval: Option<u64>,
-    /// Master-controlled auto-update enable/disable toggle. When present
-    /// the client adopts this state for its auto-update loop and persists
-    /// it to the local TOML config.
+    /// Master-controlled auto-update enable/disable toggle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_enabled: Option<bool>,
+}
+
+/// A single effective permission entry pushed from master to client bot.
+/// The client updates its in-memory `Clients` map so that the player with
+/// `guid` has at least `group_bits` applied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectivePermission {
+    pub guid: String,
+    pub group_bits: u64,
 }
 
 // ---------------------------------------------------------------------------

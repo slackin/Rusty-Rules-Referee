@@ -359,4 +359,28 @@ export const api = {
 		request(`/hubs/${id}/update-interval`, { method: 'PUT', body: JSON.stringify({ interval_secs }) }),
 	setHubUpdateEnabled: (id, enabled) =>
 		request(`/hubs/${id}/update-enabled`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
+
+	// ---- Player Groups (master mode) ----
+	playerGroups: () => request('/player-groups').then(r => r.player_groups ?? []),
+	playerGroup: (id) => request(`/player-groups/${id}`),
+	createPlayerGroup: (body) =>
+		request('/player-groups', { method: 'POST', body: JSON.stringify(body) }),
+	updatePlayerGroup: (id, body) =>
+		request(`/player-groups/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+	deletePlayerGroup: (id) =>
+		request(`/player-groups/${id}`, { method: 'DELETE' }),
+	playerGroupMembers: (id) =>
+		request(`/player-groups/${id}/members`).then(r => r.members ?? []),
+	addPlayerGroupMember: (id, body) =>
+		request(`/player-groups/${id}/members`, { method: 'POST', body: JSON.stringify(body) }),
+	updatePlayerGroupMember: (groupId, guid, body) =>
+		request(`/player-groups/${groupId}/members/${encodeURIComponent(guid)}`, { method: 'PUT', body: JSON.stringify(body) }),
+	deletePlayerGroupMember: (groupId, guid) =>
+		request(`/player-groups/${groupId}/members/${encodeURIComponent(guid)}`, { method: 'DELETE' }),
+	serverPlayerGroups: (serverId) =>
+		request(`/servers/${serverId}/player-groups`).then(r => r.player_groups ?? []),
+	setServerPlayerGroups: (serverId, group_ids) =>
+		request(`/servers/${serverId}/player-groups`, { method: 'PUT', body: JSON.stringify({ group_ids }) }),
+	serverUsers: (serverId) =>
+		request(`/servers/${serverId}/users`).then(r => r.users ?? []),
 };

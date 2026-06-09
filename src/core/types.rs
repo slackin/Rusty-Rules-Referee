@@ -122,6 +122,53 @@ pub struct DashboardSummary {
     pub total_bans: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Player Groups — shared cross-server permission records
+// ---------------------------------------------------------------------------
+
+/// A named collection of player permission records that can be assigned to
+/// multiple game servers. Servers inherit the union of all assigned groups'
+/// records plus their own local `clients.group_bits` entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerGroup {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A single player entry inside a `PlayerGroup`. `client_guid` links to
+/// `clients.guid` for name/alias lookups; `group_bits` uses the same bitmask
+/// encoding as `clients.group_bits`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerGroupMember {
+    pub id: i64,
+    pub player_group_id: i64,
+    pub client_guid: String,
+    /// Display name resolved from the `clients` table (not stored).
+    #[serde(default)]
+    pub client_name: Option<String>,
+    pub group_bits: u64,
+    pub note: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Effective player permission row returned by `GET /servers/:id/users`.
+/// Merges group-sourced entries and local server entries. `source` identifies
+/// where the permission comes from so the UI can show which group set it.
+#[derive(Debug, Clone, Serialize)]
+pub struct EffectiveUser {
+    pub client_guid: String,
+    pub client_name: Option<String>,
+    pub group_bits: u64,
+    /// "Local" or the player group name (e.g. "ATL Admins").
+    pub source: String,
+    /// FK to `player_groups.id` when `source != "Local"`.
+    pub player_group_id: Option<i64>,
+}
+
 /// A registered game server (used in master/client mode).
 #[derive(Debug, Clone, Serialize)]
 pub struct GameServer {

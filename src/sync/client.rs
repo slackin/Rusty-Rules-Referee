@@ -362,6 +362,28 @@ impl ClientSyncManager {
                                         ).await;
                                     }
 
+                                    // Apply master player-group permissions to the local client map.
+                                    // For each guid in the list, find any currently connected slot
+                                    // and update their in-memory group_bits so in-game !level / !group
+                                    // commands reflect group-assigned permissions.
+                                    if !hb_resp.effective_permissions.is_empty() {
+                                        let gs = self.game_state.read().await;
+                                        if let Some(ctx) = &gs.ctx {
+                                            let all = ctx.clients.get_all().await;
+                                            for perm in &hb_resp.effective_permissions {
+                                                for c in &all {
+                                                    if c.guid == perm.guid && c.group_bits < perm.group_bits {
+                                                        let cid = c.cid.clone().unwrap_or_default();
+                                                        let new_bits = perm.group_bits;
+                                                        ctx.clients.update(&cid, |client| {
+                                                            client.group_bits = new_bits;
+                                                        }).await;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     // Apply master-controlled update channel if it changed.
                                     if let Some(remote_channel) = hb_resp.update_channel.as_ref() {
                                         let current = self.update_channel.read().await.clone();
