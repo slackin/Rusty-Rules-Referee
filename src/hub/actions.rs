@@ -253,9 +253,9 @@ enabled = true
         slug = slug,
         server_name = server_name,
         master = master_sync_url,
-        cert = certs_dir.join("client.crt").display(),
-        key = certs_dir.join("client.key").display(),
-        ca = certs_dir.join("ca.crt").display(),
+        cert = certs_dir.join("client.crt").display().to_string().replace('\\', "/"),
+        key = certs_dir.join("client.key").display().to_string().replace('\\', "/"),
+        ca = certs_dir.join("ca.crt").display().to_string().replace('\\', "/"),
     )
 }
 
