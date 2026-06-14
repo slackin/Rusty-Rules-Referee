@@ -16,7 +16,8 @@ export default defineConfig({
       { text: 'Plugins', link: '/plugins/' },
       { text: 'Commands', link: '/commands/' },
       { text: 'Dashboard', link: '/dashboard/' },
-      { text: 'Changelog', link: '/changelog' }
+      { text: 'Changelog', link: '/changelog' },
+      { text: 'Report a Bug', link: '/report-bug/' }
     ],
 
     sidebar: {

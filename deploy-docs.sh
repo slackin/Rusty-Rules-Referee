@@ -31,10 +31,17 @@ if [ ! -d "$DIST_DIR" ]; then
 fi
 
 echo "==> Deploying to $REMOTE_HOST..."
-# Preserve /media/ (demo videos, posters, etc.) so docs redeploys don't wipe
-# assets published via `video/npm run publish`.
+# rsync --delete mirrors the built docs to the web root, BUT several published
+# trees live on the server that are NOT part of the docs build and must be
+# preserved, or a docs redeploy would wipe them:
+#   media/  — demo videos/posters (published via `video/npm run publish`)
+#   api/    — the auto-update feed (binaries + latest.json manifests). Deleting
+#             this would break EVERY bot's auto-update. Critical.
+# The public bug-report page IS part of the build (docs/public/report-bug/),
+# so it is covered by the normal sync and needs no exclude.
 sshpass -p "$DEPLOY_PASS" rsync -avz --delete \
   --exclude='media/' --exclude='media' \
+  --exclude='api/' --exclude='api' \
   -e "ssh -o StrictHostKeyChecking=no" \
   "$DIST_DIR/" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 

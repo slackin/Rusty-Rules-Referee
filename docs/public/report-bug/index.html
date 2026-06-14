@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en-US" dir="ltr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Report a Bug — Rusty Rules Referee</title>
+  <meta name="description" content="Report a bug or request a feature for R3 (Rusty Rules Referee)." />
+  <style>
+    :root {
+      --bg: #1b1b1f; --panel: #202127; --border: #2e2e32; --text: #dfdfd6;
+      --muted: #98989f; --accent: #646cff; --accent-hover: #747bff;
+      --danger: #f43f5e; --ok: #10b981;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.6;
+    }
+    .wrap { max-width: 640px; margin: 0 auto; padding: 48px 20px 80px; }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .brand .logo {
+      width: 40px; height: 40px; border-radius: 10px; background: rgba(100,108,255,.12);
+      display: grid; place-items: center; color: var(--accent); font-weight: 700; font-size: 18px;
+      border: 1px solid rgba(100,108,255,.25);
+    }
+    h1 { font-size: 1.6rem; margin: 16px 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 28px; font-size: .95rem; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+    label { display: block; font-size: .85rem; font-weight: 600; margin: 16px 0 6px; }
+    label .req { color: var(--danger); }
+    label .opt { color: var(--muted); font-weight: 400; }
+    input, textarea, select {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: 8px; padding: 10px 12px; font: inherit;
+    }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+    textarea { min-height: 110px; resize: vertical; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    button {
+      margin-top: 22px; width: 100%; background: var(--accent); color: #fff; border: 0;
+      border-radius: 8px; padding: 12px; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    button:disabled { opacity: .6; cursor: default; }
+    .msg { margin-top: 16px; padding: 12px 14px; border-radius: 8px; font-size: .9rem; display: none; }
+    .msg.err { display: block; background: rgba(244,63,94,.1); color: #fda4af; border: 1px solid rgba(244,63,94,.25); }
+    .msg.ok { display: block; background: rgba(16,185,129,.1); color: #6ee7b7; border: 1px solid rgba(16,185,129,.25); }
+    .foot { text-align: center; color: var(--muted); font-size: .8rem; margin-top: 28px; }
+    .foot a { color: var(--accent); text-decoration: none; }
+    .success-card { text-align: center; }
+    .success-card .check {
+      width: 48px; height: 48px; border-radius: 50%; background: rgba(16,185,129,.12);
+      border: 1px solid rgba(16,185,129,.3); color: var(--ok); display: grid; place-items: center;
+      margin: 0 auto 14px; font-size: 24px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <div class="logo">R3</div>
+      <div>
+        <div style="font-weight:600">Rusty Rules Referee</div>
+        <div style="color:var(--muted);font-size:.8rem">Bug &amp; Feature Reports</div>
+      </div>
+    </div>
+
+    <h1>Report a Bug or Request a Feature</h1>
+    <p class="sub">Tell us what's wrong or what you'd like to see. No account needed.</p>
+
+    <div id="formCard" class="card">
+      <div id="error" class="msg err"></div>
+      <form id="bugForm">
+        <label for="title">Title <span class="req">*</span></label>
+        <input id="title" name="title" type="text" maxlength="200" placeholder="Short summary" required />
+
+        <label for="severity">Severity</label>
+        <select id="severity" name="severity">
+          <option value="low">Low — minor / cosmetic</option>
+          <option value="normal" selected>Normal</option>
+          <option value="high">High — broken feature</option>
+          <option value="critical">Critical — crash / data loss</option>
+        </select>
+
+        <label for="description">Description</label>
+        <textarea id="description" name="description" maxlength="8000" placeholder="What happened? What did you expect?"></textarea>
+
+        <label for="steps">Steps to reproduce</label>
+        <textarea id="steps" name="steps" maxlength="8000" placeholder="1. …&#10;2. …&#10;3. …"></textarea>
+
+        <label for="email">Your email <span class="opt">(optional)</span></label>
+        <input id="email" name="reporter_email" type="email" maxlength="200" placeholder="So we can follow up" />
+
+        <button id="submitBtn" type="submit">Submit report</button>
+      </form>
+    </div>
+
+    <div id="successCard" class="card success-card" style="display:none">
+      <div class="check">✓</div>
+      <h2 style="margin:0 0 6px">Thanks for the report!</h2>
+      <p style="color:var(--muted);margin:0 0 18px">Your report has been queued for review.</p>
+      <button id="anotherBtn" type="button" style="max-width:200px;margin:0 auto;background:var(--border)">Report another</button>
+    </div>
+
+    <p class="foot"><a href="/">← Back to R3 documentation</a></p>
+  </div>
+
+  <script>
+    const form = document.getElementById('bugForm');
+    const errorBox = document.getElementById('error');
+    const submitBtn = document.getElementById('submitBtn');
+    const formCard = document.getElementById('formCard');
+    const successCard = document.getElementById('successCard');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorBox.className = 'msg err'; errorBox.style.display = 'none';
+      const title = document.getElementById('title').value.trim();
+      if (!title) { errorBox.textContent = 'Please enter a title.'; errorBox.style.display = 'block'; return; }
+
+      submitBtn.disabled = true; submitBtn.textContent = 'Submitting…';
+      const payload = {
+        title,
+        description: document.getElementById('description').value.trim(),
+        steps: document.getElementById('steps').value.trim(),
+        severity: document.getElementById('severity').value,
+        reporter_email: document.getElementById('email').value.trim() || null
+      };
+      try {
+        const res = await fetch('/api/v1/bug-reports', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.status === 429) throw new Error('Too many submissions. Please try again later.');
+        if (!res.ok) {
+          let m = 'Submission failed. Please try again.';
+          try { const j = await res.json(); if (j.error) m = j.error; } catch {}
+          throw new Error(m);
+        }
+        formCard.style.display = 'none';
+        successCard.style.display = 'block';
+      } catch (err) {
+        errorBox.textContent = err.message || 'Submission failed.';
+        errorBox.style.display = 'block';
+      } finally {
+        submitBtn.disabled = false; submitBtn.textContent = 'Submit report';
+      }
+    });
+
+    document.getElementById('anotherBtn').addEventListener('click', () => {
+      form.reset();
+      successCard.style.display = 'none';
+      formCard.style.display = 'block';
+    });
+  </script>
+</body>
+</html>
