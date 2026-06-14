@@ -20,71 +20,17 @@ use crate::web::state::AppState;
 
 /// Enumerate the models the admin may choose from.
 ///
-/// Tries to ask the Copilot CLI for its available models; on any failure falls
-/// back to the curated list in config so the UI always has something to show.
+/// The GitHub Copilot CLI has no model-enumeration command — models are
+/// selected with `--model <id>` and discovered interactively. So the
+/// selectable set is the curated list maintained in config (`fallback_models`),
+/// which the admin can edit. The configured `default_model` is guaranteed to be
+/// present.
 pub async fn list_models(cfg: &AiBugSection) -> Vec<String> {
-    if let Some(models) = query_copilot_models(cfg).await {
-        if !models.is_empty() {
-            return models;
-        }
+    let mut models = cfg.fallback_models.clone();
+    if !cfg.default_model.is_empty() && !models.iter().any(|m| m == &cfg.default_model) {
+        models.insert(0, cfg.default_model.clone());
     }
-    cfg.fallback_models.clone()
-}
-
-/// Attempt to read the model list from the Copilot CLI. Returns `None` on any
-/// error (binary missing, non-zero exit, unparseable output).
-#[cfg(unix)]
-async fn query_copilot_models(cfg: &AiBugSection) -> Option<Vec<String>> {
-    use tokio::process::Command;
-
-    let output = Command::new(&cfg.copilot_bin)
-        .args(["--list-models"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-
-    // Prefer JSON output if the CLI emits it; otherwise parse one id per line.
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-        if let Some(arr) = json.as_array() {
-            let ids: Vec<String> = arr
-                .iter()
-                .filter_map(|v| {
-                    v.get("id")
-                        .and_then(|x| x.as_str())
-                        .or_else(|| v.as_str())
-                        .map(|s| s.to_string())
-                })
-                .collect();
-            if !ids.is_empty() {
-                return Some(ids);
-            }
-        }
-    }
-
-    let ids: Vec<String> = text
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
-        .collect();
-    if ids.is_empty() {
-        None
-    } else {
-        Some(ids)
-    }
-}
-
-#[cfg(not(unix))]
-async fn query_copilot_models(_cfg: &AiBugSection) -> Option<Vec<String>> {
-    None
+    models
 }
 
 /// Spawn the fix job as a background task and register its abort handle so it
@@ -211,7 +157,20 @@ async fn run_job_inner(
         job_id,
         &worktree,
         &cfg.copilot_bin,
-        &["--model", model, "--allow-all-tools", "-p", &prompt],
+        &[
+            "--model",
+            model,
+            // Non-interactive automation: allow tools + file paths without
+            // prompts, but explicitly DENY `git push` so the agent can't push
+            // on its own — the runner performs the push deterministically after
+            // the test gates pass.
+            "--allow-all-tools",
+            "--allow-all-paths",
+            "--deny-tool=shell(git push)",
+            "--no-color",
+            "-p",
+            &prompt,
+        ],
     )
     .await
     .map_err(|e| format!("agent failed: {e}"))?;
