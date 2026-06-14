@@ -40,7 +40,7 @@ fi
 # ---- Dedicated work dir for AI jobs ----
 step "Preparing AI work directory"
 WORK_DIR="${R3_AI_WORK_DIR:-/opt/r3-ai}"
-RUN_USER="${R3_RUN_USER:-tex}"   # the user the R3 master runs as
+RUN_USER="${R3_RUN_USER:-root}"   # the user the R3 master runs as (root or r3)
 mkdir -p "$WORK_DIR"
 chown "$RUN_USER":"$RUN_USER" "$WORK_DIR" 2>/dev/null || true
 ok "Work dir ready: $WORK_DIR (owner: $RUN_USER)"
@@ -65,10 +65,10 @@ cat <<EOF
        Environment=COPILOT_GITHUB_TOKEN=<token>
 
   B) Interactive device login (stores creds in ~${RUN_USER}/.copilot):
-       sudo -u ${RUN_USER} -H copilot login
+       copilot login        # run as ${RUN_USER}
 
   Verify it works (as the run user):
-       sudo -u ${RUN_USER} -H copilot -p "say ok" --allow-all-tools
+       copilot -p "say ok" --allow-all-tools
 
   NOTE: the Copilot CLI has NO model-list command. Models are chosen with
   --model <id>; the selectable set is the curated [aibug] fallback_models in
