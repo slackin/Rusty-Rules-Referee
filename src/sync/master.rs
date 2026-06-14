@@ -402,6 +402,18 @@ async fn persist_penalty(
     let storage = &state.storage;
     let client_id = ensure_client(storage, &penalty.client_guid, &penalty.client_name).await?;
 
+    // Record the offending client as "seen" on this server so they appear in
+    // the server's Users tab (and so ban-evasion matching has their signals).
+    let _ = storage
+        .record_server_client(
+            penalty.server_id,
+            &penalty.client_guid,
+            Some(&penalty.client_name),
+            None,
+            None,
+        )
+        .await;
+
     let ptype = match penalty.penalty_type.as_str() {
         "Warning" => crate::core::PenaltyType::Warning,
         "Notice" => crate::core::PenaltyType::Notice,
@@ -470,6 +482,9 @@ async fn handle_player_sync(
                     }
                 }
                 existing.group_bits = p.group_bits;
+                if let Some(auth) = p.auth.as_ref().filter(|a| !a.is_empty()) {
+                    existing.auth = auth.clone();
+                }
                 existing.time_edit = chrono::Utc::now();
                 if let Err(e) = state.storage.save_client(&existing).await {
                     debug!(guid = %p.guid, error = %e, "Failed to update client on master");
@@ -483,10 +498,29 @@ async fn handle_player_sync(
                     }
                 }
                 c.group_bits = p.group_bits;
+                if let Some(auth) = p.auth.as_ref().filter(|a| !a.is_empty()) {
+                    c.auth = auth.clone();
+                }
                 if let Err(e) = state.storage.save_client(&c).await {
                     debug!(guid = %p.guid, error = %e, "Failed to create client on master");
                 }
             }
+        }
+
+        // Record per-server "seen" so the Users tab can list everyone who has
+        // connected to this server (not just those with penalties/permissions).
+        if let Err(e) = state
+            .storage
+            .record_server_client(
+                batch.server_id,
+                &p.guid,
+                Some(&p.name),
+                p.ip.as_deref(),
+                p.auth.as_deref(),
+            )
+            .await
+        {
+            debug!(guid = %p.guid, error = %e, "Failed to record per-server client seen");
         }
     }
 

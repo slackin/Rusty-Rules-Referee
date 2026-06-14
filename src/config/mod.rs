@@ -64,6 +64,8 @@ pub struct RefereeConfig {
     #[serde(default)]
     pub map_repo: MapRepoSection,
     #[serde(default)]
+    pub aibug: AiBugSection,
+    #[serde(default)]
     pub plugins: Vec<PluginConfig>,
 }
 
@@ -224,6 +226,95 @@ fn default_update_interval() -> u64 {
 
 fn default_auto_restart() -> bool {
     true
+}
+
+/// AI bug-fix runner configuration (master mode, Unix build server only).
+///
+/// When `enabled`, approved bug reports spawn the GitHub Copilot CLI on the
+/// build server to fix the issue on a branch, run the test gates, push to
+/// GitHub, and publish to the `dev` update channel for manual promotion.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AiBugSection {
+    /// Master switch. When false, approval endpoints return an error and no
+    /// agent process is ever spawned.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the canonical repo checkout on the build server.
+    #[serde(default = "default_aibug_repo_dir")]
+    pub repo_dir: String,
+    /// Directory under which per-job git worktrees are created.
+    #[serde(default = "default_aibug_work_dir")]
+    pub work_dir: String,
+    /// Path/name of the GitHub Copilot CLI binary.
+    #[serde(default = "default_aibug_copilot_bin")]
+    pub copilot_bin: String,
+    /// Default model id when the admin doesn't pick one.
+    #[serde(default = "default_aibug_model")]
+    pub default_model: String,
+    /// Curated fallback model list used when the CLI can't enumerate models.
+    #[serde(default = "default_aibug_fallback_models")]
+    pub fallback_models: Vec<String>,
+    /// Max public bug submissions per IP per hour.
+    #[serde(default = "default_aibug_rate_limit")]
+    pub rate_limit_per_hour: u32,
+    /// Update channel to publish branch builds to. Locked to `dev` by design.
+    #[serde(default = "default_aibug_channel")]
+    pub deploy_channel: String,
+    /// Hard timeout (seconds) for a single agent run before it is killed.
+    #[serde(default = "default_aibug_timeout")]
+    pub job_timeout_secs: u64,
+}
+
+impl Default for AiBugSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            repo_dir: default_aibug_repo_dir(),
+            work_dir: default_aibug_work_dir(),
+            copilot_bin: default_aibug_copilot_bin(),
+            default_model: default_aibug_model(),
+            fallback_models: default_aibug_fallback_models(),
+            rate_limit_per_hour: default_aibug_rate_limit(),
+            deploy_channel: default_aibug_channel(),
+            job_timeout_secs: default_aibug_timeout(),
+        }
+    }
+}
+
+fn default_aibug_repo_dir() -> String {
+    "/opt/r3-build".to_string()
+}
+
+fn default_aibug_work_dir() -> String {
+    "/opt/r3-ai".to_string()
+}
+
+fn default_aibug_copilot_bin() -> String {
+    "copilot".to_string()
+}
+
+fn default_aibug_model() -> String {
+    "claude-sonnet-4.5".to_string()
+}
+
+fn default_aibug_fallback_models() -> Vec<String> {
+    vec![
+        "claude-sonnet-4.5".to_string(),
+        "claude-opus-4.1".to_string(),
+        "claude-haiku-4.5".to_string(),
+    ]
+}
+
+fn default_aibug_rate_limit() -> u32 {
+    5
+}
+
+fn default_aibug_channel() -> String {
+    "dev".to_string()
+}
+
+fn default_aibug_timeout() -> u64 {
+    1800
 }
 
 /// Master server configuration (used when running in master mode).

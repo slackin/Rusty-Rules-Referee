@@ -250,3 +250,19 @@ pub async fn get_server_users(
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
     }
 }
+
+/// GET /api/v1/servers/:id/known-users
+///
+/// Full known-users list: every client seen on this server plus members of
+/// any player group assigned to it. Includes effective permission level,
+/// active-ban status, and ban-evasion signals.
+pub async fn get_server_known_users(
+    AdminOnly(_): AdminOnly,
+    State(state): State<AppState>,
+    Path(server_id): Path<i64>,
+) -> impl IntoResponse {
+    match state.storage.get_server_known_users(server_id).await {
+        Ok(users) => Json(serde_json::json!({ "users": users })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    }
+}

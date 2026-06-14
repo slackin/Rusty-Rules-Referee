@@ -8,7 +8,7 @@
 	import {
 		LayoutDashboard, Users, Shield, Gavel, Terminal, BarChart3, Settings,
 		UserCog, LogOut, Menu, X, ChevronDown, KeyRound, ScrollText, MessageSquare,
-		Map, BookOpen, Sliders, History, Server, Link, Crosshair, HardDrive, UsersRound
+		Map, BookOpen, Sliders, History, Server, Link, Crosshair, HardDrive, UsersRound, Bug
 	} from 'lucide-svelte';
 
 	let { children } = $props();
@@ -36,6 +36,7 @@
 		{ href: '/live-gear', label: 'Live Gear', icon: Crosshair },
 		{ href: '/commands', label: 'Commands', icon: BookOpen },
 		{ href: '/audit-log', label: 'Audit Log', icon: ScrollText },
+		{ href: '/bug-reports', label: 'Bug Reports', icon: Bug },
 		{ href: '/config', label: 'Configuration', icon: Settings },
 		{ href: '/admin-users', label: 'Admin Users', icon: UserCog }
 	];
@@ -49,6 +50,7 @@
 		{ href: '/map-defaults', label: 'Map Defaults', icon: Sliders },
 		{ href: '/penalties', label: 'Penalties', icon: Gavel },
 		{ href: '/audit-log', label: 'Audit Log', icon: ScrollText },
+		{ href: '/bug-reports', label: 'Bug Reports', icon: Bug },
 		{ href: '/config', label: 'Configuration', icon: Settings },
 		{ href: '/admin-users', label: 'Admin Users', icon: UserCog }
 	];

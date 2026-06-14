@@ -458,9 +458,46 @@ impl ClientSyncManager {
                         }
                     }
 
-                    // Periodic sync (prune old queue entries)
+                    // Periodic sync (prune old queue entries + push the
+                    // connected-player roster so the master can maintain a
+                    // per-server known-users list and global client records).
                     _ = sync_timer.tick() => {
                         let _ = self.queue.prune(7).await;
+
+                        let players: Vec<PlayerSync> = {
+                            let gs = self.game_state.read().await;
+                            if let Some(clients) = gs.clients.as_ref() {
+                                clients.get_all().await.into_iter().map(|c| {
+                                    let auth = if c.auth.is_empty() {
+                                        c.auth_name.clone().filter(|s| !s.is_empty())
+                                    } else {
+                                        Some(c.auth.clone())
+                                    };
+                                    PlayerSync {
+                                        guid: c.guid.clone(),
+                                        name: c.current_name.clone().unwrap_or_else(|| c.name.clone()),
+                                        ip: c.ip.map(|ip| ip.to_string()),
+                                        group_bits: c.group_bits,
+                                        aliases: Vec::new(),
+                                        auth,
+                                    }
+                                }).filter(|p| !p.guid.is_empty()).collect()
+                            } else {
+                                Vec::new()
+                            }
+                        };
+
+                        if !players.is_empty() {
+                            let batch = PlayerSyncBatch { server_id, players };
+                            if let Err(e) = http_client
+                                .post(format!("{}/internal/players", base_url))
+                                .json(&batch)
+                                .send()
+                                .await
+                            {
+                                debug!(error = %e, "Player sync push failed (will retry next tick)");
+                            }
+                        }
                     }
 
                     // Poll master for pending requests (config scan, install, etc.)

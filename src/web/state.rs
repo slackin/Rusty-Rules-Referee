@@ -43,6 +43,12 @@ pub struct AppState {
     /// build that doesn't populate the extended `InstallComplete` fields
     /// (master mode only).
     pub pending_wizard_params: Option<Arc<RwLock<HashMap<i64, GameServerWizardParams>>>>,
+    /// Per-IP timestamps of recent public bug-report submissions, for rate
+    /// limiting. Keyed by client IP string.
+    pub bug_report_rate: Arc<RwLock<HashMap<String, Vec<std::time::Instant>>>>,
+    /// Running AI fix jobs keyed by bug_jobs.id, for cancellation. Holds the
+    /// task abort handle (master mode only).
+    pub bug_job_handles: Arc<RwLock<HashMap<i64, tokio::task::AbortHandle>>>,
 }
 
 impl AppState {

@@ -383,4 +383,24 @@ export const api = {
 		request(`/servers/${serverId}/player-groups`, { method: 'PUT', body: JSON.stringify({ group_ids }) }),
 	serverUsers: (serverId) =>
 		request(`/servers/${serverId}/users`).then(r => r.users ?? []),
+	serverKnownUsers: (serverId) =>
+		request(`/servers/${serverId}/known-users`).then(r => r.users ?? []),
+
+	// Bug reports — public submission + admin triage + AI fix jobs
+	submitBugReport: (report) =>
+		request('/bug-reports', { method: 'POST', body: JSON.stringify(report) }),
+	bugReports: (status = '') =>
+		request(`/bug-reports${status ? '?status=' + encodeURIComponent(status) : ''}`).then(r => r.reports ?? []),
+	bugReport: (id) => request(`/bug-reports/${id}`),
+	updateBugReport: (id, body) =>
+		request(`/bug-reports/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+	deleteBugReport: (id) =>
+		request(`/bug-reports/${id}`, { method: 'DELETE' }),
+	approveBugReport: (id, model) =>
+		request(`/bug-reports/${id}/approve`, { method: 'POST', body: JSON.stringify({ model }) }),
+	bugJobs: () => request('/bug-jobs').then(r => r.jobs ?? []),
+	bugJob: (id) => request(`/bug-jobs/${id}`).then(r => r.job),
+	cancelBugJob: (id) =>
+		request(`/bug-jobs/${id}/cancel`, { method: 'POST' }),
+	aiModels: () => request('/ai/models'),
 };

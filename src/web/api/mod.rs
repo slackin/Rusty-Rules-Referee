@@ -1,5 +1,6 @@
 pub mod aliases;
 pub mod audit;
+pub mod bugs;
 pub mod chat;
 pub mod commands;
 pub mod config;

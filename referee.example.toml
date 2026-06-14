@@ -58,6 +58,21 @@ refresh_interval_hours = 24   # How often the master refreshes the cache.
                                         # bot process (e.g. systemd
                                         # ProtectHome=yes, read-only mount).
 
+# ---- AI bug-fix runner (master mode on the Unix build server only) ----
+# Drives the GitHub Copilot CLI (Claude models via your Copilot subscription)
+# to fix admin-approved bug reports on a branch, run the test gates, push to
+# GitHub, and publish to the `dev` update channel for manual promotion.
+[aibug]
+enabled = false                  # Master switch. Requires the Copilot CLI on the build server.
+# repo_dir = "/opt/r3-build"     # Canonical repo checkout on the build server.
+# work_dir = "/opt/r3-ai"        # Per-job git worktrees are created here.
+# copilot_bin = "copilot"        # Path/name of the GitHub Copilot CLI binary.
+# default_model = "claude-sonnet-4.5"
+# fallback_models = ["claude-sonnet-4.5", "claude-opus-4.1", "claude-haiku-4.5"]
+# rate_limit_per_hour = 5        # Max public bug submissions per IP per hour.
+# deploy_channel = "dev"         # Locked to dev by design; promote via promote.sh.
+# job_timeout_secs = 1800        # Hard timeout for a single agent run.
+
 # Plugins to load (order matters for dependencies)
 
 # ---- Core admin plugin (must be first) ----

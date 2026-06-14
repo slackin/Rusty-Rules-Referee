@@ -2,9 +2,10 @@ pub mod mysql;
 pub mod sqlite;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use thiserror::Error;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, EffectiveUser, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, PlayerGroup, PlayerGroupMember, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, BugJob, BugReport, ChatMessage, Client, DashboardSummary, EffectiveUser, GameServer, Group, Hub, HubHostInfo, HubMetricSample, KnownUser, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, PlayerGroup, PlayerGroupMember, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -314,6 +315,40 @@ pub trait Storage: Send + Sync {
     /// assigned to `server_id`. Used to build the `effective_permissions`
     /// payload pushed to client bots on heartbeat.
     async fn get_effective_permission_for_guid(&self, server_id: i64, guid: &str) -> Result<Option<u64>, StorageError>;
+
+    /// Record (or refresh) that `guid` was seen on `server_id`, capturing the
+    /// most recent name/ip/auth. Upserts the `server_clients` junction so the
+    /// Users tab can list every player that has connected to the server.
+    async fn record_server_client(
+        &self,
+        server_id: i64,
+        guid: &str,
+        name: Option<&str>,
+        ip: Option<&str>,
+        auth: Option<&str>,
+    ) -> Result<(), StorageError>;
+
+    /// Full known-users list for a server: every client seen on the server
+    /// (via `server_clients`) unioned with members of player groups assigned
+    /// to it. Includes effective permission level, active-ban status, and
+    /// ban-evasion signals (shared ip/guid/auth/alias with a banned account).
+    async fn get_server_known_users(&self, server_id: i64) -> Result<Vec<KnownUser>, StorageError>;
+
+    // ---- Bug reports & AI fix jobs ----
+    async fn create_bug_report(&self, report: &BugReport) -> Result<i64, StorageError>;
+    async fn get_bug_report(&self, id: i64) -> Result<BugReport, StorageError>;
+    async fn list_bug_reports(&self, status: Option<&str>, limit: u32, offset: u32) -> Result<Vec<BugReport>, StorageError>;
+    async fn update_bug_report(&self, report: &BugReport) -> Result<(), StorageError>;
+    async fn delete_bug_report(&self, id: i64) -> Result<(), StorageError>;
+    async fn count_recent_bug_reports_by_ip(&self, ip: &str, since: DateTime<Utc>) -> Result<u64, StorageError>;
+
+    async fn create_bug_job(&self, job: &BugJob) -> Result<i64, StorageError>;
+    async fn get_bug_job(&self, id: i64) -> Result<BugJob, StorageError>;
+    async fn list_bug_jobs(&self, bug_report_id: Option<i64>, limit: u32, offset: u32) -> Result<Vec<BugJob>, StorageError>;
+    async fn update_bug_job(&self, job: &BugJob) -> Result<(), StorageError>;
+    /// Append a chunk to the job log and update status/timestamps in one call.
+    async fn append_bug_job_log(&self, id: i64, chunk: &str) -> Result<(), StorageError>;
+    async fn set_bug_job_status(&self, id: i64, status: &str, error: Option<&str>) -> Result<(), StorageError>;
 }
 
 /// Parse a DSN string like "mysql://user:pass@host:port/db" into components.

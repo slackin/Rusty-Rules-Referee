@@ -4,7 +4,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRo
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, BugJob, BugReport, ChatMessage, Client, DashboardSummary, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct SqliteStorage {
@@ -60,6 +60,8 @@ impl SqliteStorage {
             include_str!("../../migrations/016_hub_update_interval.sql"),
             include_str!("../../migrations/017_update_enabled.sql"),
             include_str!("../../migrations/018_player_groups.sql"),
+            include_str!("../../migrations/019_server_clients.sql"),
+            include_str!("../../migrations/020_bug_reports.sql"),
         ];
         for schema in migrations {
             // Strip SQL comment lines before splitting into statements
@@ -248,6 +250,40 @@ fn row_to_chat_message(row: &SqliteRow) -> ChatMessage {
         message: row.get("message"),
         time_add: parse_dt(row.get("time_add")),
         server_id: row.try_get("server_id").ok(),
+    }
+}
+
+fn row_to_bug_report(row: &SqliteRow) -> BugReport {
+    BugReport {
+        id: row.get("id"),
+        title: row.get("title"),
+        description: row.get("description"),
+        steps: row.get("steps"),
+        severity: row.get("severity"),
+        reporter_email: row.try_get("reporter_email").ok(),
+        status: row.get("status"),
+        ip_address: row.try_get("ip_address").ok(),
+        admin_notes: row.get("admin_notes"),
+        created_at: parse_dt(row.get("created_at")),
+        updated_at: parse_dt(row.get("updated_at")),
+    }
+}
+
+fn row_to_bug_job(row: &SqliteRow) -> BugJob {
+    BugJob {
+        id: row.get("id"),
+        bug_report_id: row.get("bug_report_id"),
+        model: row.get("model"),
+        status: row.get("status"),
+        branch_name: row.get("branch_name"),
+        git_commit: row.try_get("git_commit").ok(),
+        log: row.get("log"),
+        error: row.try_get("error").ok(),
+        created_by: row.try_get("created_by").ok(),
+        started_at: row.try_get::<Option<String>, _>("started_at").ok().flatten().map(|s| parse_dt(&s)),
+        finished_at: row.try_get::<Option<String>, _>("finished_at").ok().flatten().map(|s| parse_dt(&s)),
+        created_at: parse_dt(row.get("created_at")),
+        updated_at: parse_dt(row.get("updated_at")),
     }
 }
 
@@ -2469,6 +2505,411 @@ impl Storage for SqliteStorage {
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
 
         Ok(row.0.map(|b| b as u64))
+    }
+
+    async fn record_server_client(
+        &self,
+        server_id: i64,
+        guid: &str,
+        name: Option<&str>,
+        ip: Option<&str>,
+        auth: Option<&str>,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO server_clients (server_id, client_guid, last_name, last_ip, last_auth, first_seen, last_seen) \
+             VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
+             ON CONFLICT(server_id, client_guid) DO UPDATE SET \
+               last_name = COALESCE(excluded.last_name, server_clients.last_name), \
+               last_ip   = COALESCE(excluded.last_ip, server_clients.last_ip), \
+               last_auth = COALESCE(excluded.last_auth, server_clients.last_auth), \
+               last_seen = datetime('now')"
+        )
+        .bind(server_id)
+        .bind(guid)
+        .bind(name)
+        .bind(ip)
+        .bind(auth.filter(|a| !a.is_empty()))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_server_known_users(&self, server_id: i64) -> Result<Vec<crate::core::KnownUser>, StorageError> {
+        use std::collections::HashMap;
+
+        // --- 1. Effective permission rows (group + local), reuse existing logic. ---
+        let effective = self.get_effective_users(server_id).await?;
+        let mut eff_by_guid: HashMap<String, &crate::core::EffectiveUser> = HashMap::new();
+        for e in &effective {
+            eff_by_guid.insert(e.client_guid.clone(), e);
+        }
+
+        // --- 2. Canonical client rows (id, guid, name, ip, auth, last_visit, group_bits). ---
+        //    auth column added in migration 005; COALESCE guards older rows.
+        let client_rows = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>, Option<String>, i64)>(
+            "SELECT id, guid, name, ip, auth, last_visit, group_bits FROM clients"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        let mut client_by_guid: HashMap<String, (i64, Option<String>, Option<String>, Option<String>, Option<String>, u64)> = HashMap::new();
+        for (id, guid, name, ip, auth, last_visit, bits) in &client_rows {
+            client_by_guid.insert(
+                guid.clone(),
+                (*id, name.clone(), ip.clone(), auth.clone(), last_visit.clone(), *bits as u64),
+            );
+        }
+
+        // --- 3. GUIDs seen on this server (connected at least once). ---
+        let seen_rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>)>(
+            "SELECT client_guid, last_name, last_ip, last_auth, last_seen FROM server_clients WHERE server_id = ?"
+        )
+        .bind(server_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        let mut seen_by_guid: HashMap<String, (Option<String>, Option<String>, Option<String>, Option<String>)> = HashMap::new();
+        for (guid, name, ip, auth, last_seen) in &seen_rows {
+            seen_by_guid.insert(guid.clone(), (name.clone(), ip.clone(), auth.clone(), last_seen.clone()));
+        }
+
+        // --- 4. Active bans + the banning accounts' identity signals. ---
+        //    Pull ip/auth/guid of every currently-banned client, plus all of
+        //    their recorded aliases, so we can flag evasion in Rust.
+        let banned_clients = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>)>(
+            "SELECT DISTINCT c.id, c.guid, c.ip, c.auth \
+             FROM penalties p JOIN clients c ON c.id = p.client_id \
+             WHERE p.type IN ('Ban','TempBan') AND p.inactive = 0 \
+               AND (p.time_expire IS NULL OR p.time_expire > datetime('now'))"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        let mut banned_ids = std::collections::HashSet::new();
+        let mut banned_guids = std::collections::HashSet::new();
+        let mut banned_ips = std::collections::HashSet::new();
+        let mut banned_auths = std::collections::HashSet::new();
+        for (id, guid, ip, auth) in &banned_clients {
+            banned_ids.insert(*id);
+            banned_guids.insert(guid.clone());
+            if let Some(ip) = ip.as_ref().filter(|s| !s.is_empty()) { banned_ips.insert(ip.clone()); }
+            if let Some(a) = auth.as_ref().filter(|s| !s.is_empty()) { banned_auths.insert(a.clone()); }
+        }
+        // Aliases (names) used by banned clients.
+        let mut banned_names = std::collections::HashSet::new();
+        if !banned_ids.is_empty() {
+            let alias_rows = sqlx::query_as::<_, (String,)>(
+                "SELECT DISTINCT a.alias FROM aliases a \
+                 JOIN penalties p ON p.client_id = a.client_id \
+                 WHERE p.type IN ('Ban','TempBan') AND p.inactive = 0 \
+                   AND (p.time_expire IS NULL OR p.time_expire > datetime('now'))"
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            for (alias,) in &alias_rows {
+                let n = alias.trim().to_lowercase();
+                if !n.is_empty() { banned_names.insert(n); }
+            }
+        }
+
+        // --- 5. Build the candidate set: union of (seen on server) and
+        //        (has effective permission via group/local). ---
+        let mut guids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        guids.extend(seen_by_guid.keys().cloned());
+        guids.extend(eff_by_guid.keys().cloned());
+
+        let mut out: Vec<crate::core::KnownUser> = Vec::with_capacity(guids.len());
+        for guid in guids {
+            let client = client_by_guid.get(&guid);
+            let seen = seen_by_guid.get(&guid);
+            let eff = eff_by_guid.get(&guid);
+
+            let client_id = client.map(|c| c.0).unwrap_or(0);
+            // Name preference: live client row, then per-server last seen.
+            let name = client.and_then(|c| c.1.clone())
+                .or_else(|| seen.and_then(|s| s.0.clone()));
+            let ip = client.and_then(|c| c.2.clone())
+                .or_else(|| seen.and_then(|s| s.1.clone()));
+            let auth = client.and_then(|c| c.3.clone()).filter(|a| !a.is_empty())
+                .or_else(|| seen.and_then(|s| s.2.clone()).filter(|a| !a.is_empty()));
+            let last_seen_str = seen.and_then(|s| s.3.clone())
+                .or_else(|| client.and_then(|c| c.4.clone()));
+            let last_seen = last_seen_str.and_then(|s| {
+                NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                    .map(|ndt| ndt.and_utc())
+                    .ok()
+            });
+
+            // Effective permission level: prefer the merged group/local result.
+            let (group_bits, source, player_group_id) = match eff {
+                Some(e) => (e.group_bits, e.source.clone(), e.player_group_id),
+                None => {
+                    let bits = client.map(|c| c.5).unwrap_or(0);
+                    if bits > 0 {
+                        (bits, "Local".to_string(), None)
+                    } else {
+                        (0, "Seen".to_string(), None)
+                    }
+                }
+            };
+
+            let banned = banned_ids.contains(&client_id) || banned_guids.contains(&guid);
+
+            // Ban-evasion: only flag accounts that are NOT themselves the
+            // banned record, but share a signal with a banned account.
+            let mut evasion = Vec::new();
+            if !banned {
+                if let Some(a) = auth.as_ref().filter(|s| !s.is_empty()) {
+                    if banned_auths.contains(a) { evasion.push("auth".to_string()); }
+                }
+                if banned_guids.contains(&guid) { evasion.push("guid".to_string()); }
+                if let Some(ip) = ip.as_ref().filter(|s| !s.is_empty()) {
+                    if banned_ips.contains(ip) { evasion.push("ip".to_string()); }
+                }
+                if let Some(n) = name.as_ref() {
+                    let lower = n.trim().to_lowercase();
+                    if !lower.is_empty() && banned_names.contains(&lower) {
+                        evasion.push("alias".to_string());
+                    }
+                }
+            }
+
+            out.push(crate::core::KnownUser {
+                client_id,
+                client_guid: guid,
+                auth,
+                client_name: name,
+                ip,
+                last_seen,
+                group_bits,
+                source,
+                player_group_id,
+                banned,
+                evasion,
+            });
+        }
+
+        // Sort: banned/evaders first, then by permission level desc, then name.
+        out.sort_by(|a, b| {
+            let a_flag = a.banned || !a.evasion.is_empty();
+            let b_flag = b.banned || !b.evasion.is_empty();
+            b_flag.cmp(&a_flag)
+                .then(b.group_bits.cmp(&a.group_bits))
+                .then(a.client_name.cmp(&b.client_name))
+        });
+        Ok(out)
+    }
+
+    // ---- Bug reports & AI fix jobs ----
+
+    async fn create_bug_report(&self, report: &BugReport) -> Result<i64, StorageError> {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let result = sqlx::query(
+            "INSERT INTO bug_reports (title, description, steps, severity, reporter_email, status, ip_address, admin_notes, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&report.title)
+        .bind(&report.description)
+        .bind(&report.steps)
+        .bind(&report.severity)
+        .bind(&report.reporter_email)
+        .bind(&report.status)
+        .bind(&report.ip_address)
+        .bind(&report.admin_notes)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn get_bug_report(&self, id: i64) -> Result<BugReport, StorageError> {
+        let row = sqlx::query("SELECT * FROM bug_reports WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        match row {
+            Some(r) => Ok(row_to_bug_report(&r)),
+            None => Err(StorageError::NotFound),
+        }
+    }
+
+    async fn list_bug_reports(&self, status: Option<&str>, limit: u32, offset: u32) -> Result<Vec<BugReport>, StorageError> {
+        let rows = if let Some(s) = status {
+            sqlx::query("SELECT * FROM bug_reports WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+                .bind(s)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+        } else {
+            sqlx::query("SELECT * FROM bug_reports ORDER BY created_at DESC LIMIT ? OFFSET ?")
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+        }
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_bug_report).collect())
+    }
+
+    async fn update_bug_report(&self, report: &BugReport) -> Result<(), StorageError> {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        sqlx::query(
+            "UPDATE bug_reports SET title = ?, description = ?, steps = ?, severity = ?, reporter_email = ?, status = ?, admin_notes = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(&report.title)
+        .bind(&report.description)
+        .bind(&report.steps)
+        .bind(&report.severity)
+        .bind(&report.reporter_email)
+        .bind(&report.status)
+        .bind(&report.admin_notes)
+        .bind(&now)
+        .bind(report.id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_bug_report(&self, id: i64) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM bug_reports WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn count_recent_bug_reports_by_ip(&self, ip: &str, since: DateTime<Utc>) -> Result<u64, StorageError> {
+        let since_str = since.format("%Y-%m-%d %H:%M:%S").to_string();
+        let row = sqlx::query("SELECT COUNT(*) AS n FROM bug_reports WHERE ip_address = ? AND created_at >= ?")
+            .bind(ip)
+            .bind(&since_str)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.get::<i64, _>("n") as u64)
+    }
+
+    async fn create_bug_job(&self, job: &BugJob) -> Result<i64, StorageError> {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let result = sqlx::query(
+            "INSERT INTO bug_jobs (bug_report_id, model, status, branch_name, git_commit, log, error, created_by, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(job.bug_report_id)
+        .bind(&job.model)
+        .bind(&job.status)
+        .bind(&job.branch_name)
+        .bind(&job.git_commit)
+        .bind(&job.log)
+        .bind(&job.error)
+        .bind(job.created_by)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn get_bug_job(&self, id: i64) -> Result<BugJob, StorageError> {
+        let row = sqlx::query("SELECT * FROM bug_jobs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        match row {
+            Some(r) => Ok(row_to_bug_job(&r)),
+            None => Err(StorageError::NotFound),
+        }
+    }
+
+    async fn list_bug_jobs(&self, bug_report_id: Option<i64>, limit: u32, offset: u32) -> Result<Vec<BugJob>, StorageError> {
+        let rows = if let Some(rid) = bug_report_id {
+            sqlx::query("SELECT * FROM bug_jobs WHERE bug_report_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+                .bind(rid)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+        } else {
+            sqlx::query("SELECT * FROM bug_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?")
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+        }
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_bug_job).collect())
+    }
+
+    async fn update_bug_job(&self, job: &BugJob) -> Result<(), StorageError> {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let started = job.started_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string());
+        let finished = job.finished_at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string());
+        sqlx::query(
+            "UPDATE bug_jobs SET model = ?, status = ?, branch_name = ?, git_commit = ?, log = ?, error = ?, started_at = ?, finished_at = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(&job.model)
+        .bind(&job.status)
+        .bind(&job.branch_name)
+        .bind(&job.git_commit)
+        .bind(&job.log)
+        .bind(&job.error)
+        .bind(&started)
+        .bind(&finished)
+        .bind(&now)
+        .bind(job.id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn append_bug_job_log(&self, id: i64, chunk: &str) -> Result<(), StorageError> {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        sqlx::query("UPDATE bug_jobs SET log = log || ?, updated_at = ? WHERE id = ?")
+            .bind(chunk)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_bug_job_status(&self, id: i64, status: &str, error: Option<&str>) -> Result<(), StorageError> {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let terminal = matches!(status, "success" | "failed" | "cancelled");
+        if terminal {
+            sqlx::query("UPDATE bug_jobs SET status = ?, error = ?, finished_at = ?, updated_at = ? WHERE id = ?")
+                .bind(status)
+                .bind(error)
+                .bind(&now)
+                .bind(&now)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        } else {
+            sqlx::query("UPDATE bug_jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?")
+                .bind(status)
+                .bind(error)
+                .bind(&now)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 mod tests {

@@ -143,6 +143,10 @@ pub struct PlayerSync {
     pub ip: Option<String>,
     pub group_bits: u64,
     pub aliases: Vec<String>,
+    /// FrozenSand auth account (primary identity signal). Empty/None when the
+    /// player has no auth. Added later — defaults for backward compatibility.
+    #[serde(default)]
+    pub auth: Option<String>,
 }
 
 /// Batch of player data pushed from client to master.

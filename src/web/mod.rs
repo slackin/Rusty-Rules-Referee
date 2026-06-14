@@ -216,6 +216,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/servers/:id/player-groups", get(api::player_groups::get_server_groups))
         .route("/servers/:id/player-groups", put(api::player_groups::set_server_groups))
         .route("/servers/:id/users", get(api::player_groups::get_server_users))
+        .route("/servers/:id/known-users", get(api::player_groups::get_server_known_users))
         // First-run setup wizard
         .route("/setup/status", get(api::setup::setup_status))
         .route("/setup/complete", post(api::setup::complete_setup))
@@ -225,7 +226,18 @@ pub fn build_router(state: AppState) -> Router {
         // Version & updates
         .route("/version", get(api::version::get_version))
         .route("/version/check", post(api::version::check_update))
-        .route("/version/update", post(api::version::apply_latest_update));
+        .route("/version/update", post(api::version::apply_latest_update))
+        // Bug reports — public submission + admin triage + AI fix jobs
+        .route("/bug-reports", post(api::bugs::submit_bug_report))
+        .route("/bug-reports", get(api::bugs::list_bug_reports))
+        .route("/bug-reports/:id", get(api::bugs::get_bug_report))
+        .route("/bug-reports/:id", put(api::bugs::update_bug_report))
+        .route("/bug-reports/:id", delete(api::bugs::delete_bug_report))
+        .route("/bug-reports/:id/approve", post(api::bugs::approve_bug_report))
+        .route("/bug-jobs", get(api::bugs::list_bug_jobs))
+        .route("/bug-jobs/:id", get(api::bugs::get_bug_job))
+        .route("/bug-jobs/:id/cancel", post(api::bugs::cancel_bug_job))
+        .route("/ai/models", get(api::bugs::list_models));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -356,6 +368,8 @@ pub async fn start_server(
         } else {
             None
         },
+        bug_report_rate: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        bug_job_handles: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     let app = build_router(state);

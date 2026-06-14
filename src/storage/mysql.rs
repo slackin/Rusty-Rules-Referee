@@ -4,7 +4,7 @@ use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::Row;
 use tracing::info;
 
-use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, ChatMessage, Client, DashboardSummary, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
+use crate::core::{Alias, AdminNote, AdminUser, AuditEntry, BugJob, BugReport, ChatMessage, Client, DashboardSummary, GameServer, Group, Hub, HubHostInfo, HubMetricSample, MapConfig, MapConfigDefault, MapRepoEntry, Penalty, PenaltyType, ServerMap, ServerMapScanStatus, SyncQueueEntry, VoteRecord};
 use crate::storage::{Storage, StorageError, StorageProtocol};
 
 pub struct MysqlStorage {
@@ -270,6 +270,39 @@ impl MysqlStorage {
                 content TEXT NOT NULL,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (admin_user_id) REFERENCES admin_users(id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS bug_reports (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                title VARCHAR(255) NOT NULL,
+                description TEXT NOT NULL,
+                steps TEXT NOT NULL,
+                severity VARCHAR(20) NOT NULL DEFAULT 'normal',
+                reporter_email VARCHAR(255),
+                status VARCHAR(20) NOT NULL DEFAULT 'new',
+                ip_address VARCHAR(45),
+                admin_notes TEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_bug_reports_status (status),
+                INDEX idx_bug_reports_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "CREATE TABLE IF NOT EXISTS bug_jobs (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                bug_report_id BIGINT NOT NULL,
+                model VARCHAR(128) NOT NULL DEFAULT '',
+                status VARCHAR(20) NOT NULL DEFAULT 'queued',
+                branch_name VARCHAR(255) NOT NULL DEFAULT '',
+                git_commit VARCHAR(64),
+                log LONGTEXT NOT NULL,
+                error TEXT,
+                created_by BIGINT,
+                started_at DATETIME,
+                finished_at DATETIME,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_bug_jobs_report (bug_report_id),
+                INDEX idx_bug_jobs_status (status),
+                FOREIGN KEY (bug_report_id) REFERENCES bug_reports(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         ];
 
@@ -756,6 +789,40 @@ fn row_to_chat_message(row: &MySqlRow) -> ChatMessage {
         message: row.get("message"),
         time_add: parse_dt(row.get("time_add")),
         server_id: row.try_get("server_id").ok(),
+    }
+}
+
+fn row_to_bug_report(row: &MySqlRow) -> BugReport {
+    BugReport {
+        id: row.get("id"),
+        title: row.get("title"),
+        description: row.get("description"),
+        steps: row.get("steps"),
+        severity: row.get("severity"),
+        reporter_email: row.try_get("reporter_email").ok(),
+        status: row.get("status"),
+        ip_address: row.try_get("ip_address").ok(),
+        admin_notes: row.get("admin_notes"),
+        created_at: parse_dt(row.get("created_at")),
+        updated_at: parse_dt(row.get("updated_at")),
+    }
+}
+
+fn row_to_bug_job(row: &MySqlRow) -> BugJob {
+    BugJob {
+        id: row.get("id"),
+        bug_report_id: row.get("bug_report_id"),
+        model: row.get("model"),
+        status: row.get("status"),
+        branch_name: row.get("branch_name"),
+        git_commit: row.try_get("git_commit").ok(),
+        log: row.get("log"),
+        error: row.try_get("error").ok(),
+        created_by: row.try_get("created_by").ok(),
+        started_at: row.try_get::<Option<NaiveDateTime>, _>("started_at").ok().flatten().map(|n| n.and_utc()),
+        finished_at: row.try_get::<Option<NaiveDateTime>, _>("finished_at").ok().flatten().map(|n| n.and_utc()),
+        created_at: parse_dt(row.get("created_at")),
+        updated_at: parse_dt(row.get("updated_at")),
     }
 }
 
@@ -2685,5 +2752,208 @@ impl Storage for MysqlStorage {
     }
     async fn get_effective_permission_for_guid(&self, _server_id: i64, _guid: &str) -> Result<Option<u64>, StorageError> {
         Ok(None)
+    }
+    async fn record_server_client(
+        &self,
+        _server_id: i64,
+        _guid: &str,
+        _name: Option<&str>,
+        _ip: Option<&str>,
+        _auth: Option<&str>,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn get_server_known_users(&self, _server_id: i64) -> Result<Vec<crate::core::KnownUser>, StorageError> {
+        Ok(vec![])
+    }
+
+    // ---- Bug reports & AI fix jobs ----
+
+    async fn create_bug_report(&self, report: &BugReport) -> Result<i64, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO bug_reports (title, description, steps, severity, reporter_email, status, ip_address, admin_notes) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&report.title)
+        .bind(&report.description)
+        .bind(&report.steps)
+        .bind(&report.severity)
+        .bind(&report.reporter_email)
+        .bind(&report.status)
+        .bind(&report.ip_address)
+        .bind(&report.admin_notes)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_id() as i64)
+    }
+
+    async fn get_bug_report(&self, id: i64) -> Result<BugReport, StorageError> {
+        let row = sqlx::query("SELECT * FROM bug_reports WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        match row {
+            Some(r) => Ok(row_to_bug_report(&r)),
+            None => Err(StorageError::NotFound),
+        }
+    }
+
+    async fn list_bug_reports(&self, status: Option<&str>, limit: u32, offset: u32) -> Result<Vec<BugReport>, StorageError> {
+        let rows = if let Some(s) = status {
+            sqlx::query("SELECT * FROM bug_reports WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+                .bind(s)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+        } else {
+            sqlx::query("SELECT * FROM bug_reports ORDER BY created_at DESC LIMIT ? OFFSET ?")
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+        }
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_bug_report).collect())
+    }
+
+    async fn update_bug_report(&self, report: &BugReport) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE bug_reports SET title = ?, description = ?, steps = ?, severity = ?, reporter_email = ?, status = ?, admin_notes = ?, updated_at = NOW() WHERE id = ?"
+        )
+        .bind(&report.title)
+        .bind(&report.description)
+        .bind(&report.steps)
+        .bind(&report.severity)
+        .bind(&report.reporter_email)
+        .bind(&report.status)
+        .bind(&report.admin_notes)
+        .bind(report.id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_bug_report(&self, id: i64) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM bug_reports WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn count_recent_bug_reports_by_ip(&self, ip: &str, since: DateTime<Utc>) -> Result<u64, StorageError> {
+        let row = sqlx::query("SELECT COUNT(*) AS n FROM bug_reports WHERE ip_address = ? AND created_at >= ?")
+            .bind(ip)
+            .bind(since.naive_utc())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.get::<i64, _>("n") as u64)
+    }
+
+    async fn create_bug_job(&self, job: &BugJob) -> Result<i64, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO bug_jobs (bug_report_id, model, status, branch_name, git_commit, log, error, created_by) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(job.bug_report_id)
+        .bind(&job.model)
+        .bind(&job.status)
+        .bind(&job.branch_name)
+        .bind(&job.git_commit)
+        .bind(&job.log)
+        .bind(&job.error)
+        .bind(job.created_by)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(result.last_insert_id() as i64)
+    }
+
+    async fn get_bug_job(&self, id: i64) -> Result<BugJob, StorageError> {
+        let row = sqlx::query("SELECT * FROM bug_jobs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        match row {
+            Some(r) => Ok(row_to_bug_job(&r)),
+            None => Err(StorageError::NotFound),
+        }
+    }
+
+    async fn list_bug_jobs(&self, bug_report_id: Option<i64>, limit: u32, offset: u32) -> Result<Vec<BugJob>, StorageError> {
+        let rows = if let Some(rid) = bug_report_id {
+            sqlx::query("SELECT * FROM bug_jobs WHERE bug_report_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+                .bind(rid)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+        } else {
+            sqlx::query("SELECT * FROM bug_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?")
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(&self.pool)
+                .await
+        }
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(rows.iter().map(row_to_bug_job).collect())
+    }
+
+    async fn update_bug_job(&self, job: &BugJob) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE bug_jobs SET model = ?, status = ?, branch_name = ?, git_commit = ?, log = ?, error = ?, started_at = ?, finished_at = ?, updated_at = NOW() WHERE id = ?"
+        )
+        .bind(&job.model)
+        .bind(&job.status)
+        .bind(&job.branch_name)
+        .bind(&job.git_commit)
+        .bind(&job.log)
+        .bind(&job.error)
+        .bind(job.started_at.map(|d| d.naive_utc()))
+        .bind(job.finished_at.map(|d| d.naive_utc()))
+        .bind(job.id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn append_bug_job_log(&self, id: i64, chunk: &str) -> Result<(), StorageError> {
+        sqlx::query("UPDATE bug_jobs SET log = CONCAT(log, ?), updated_at = NOW() WHERE id = ?")
+            .bind(chunk)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_bug_job_status(&self, id: i64, status: &str, error: Option<&str>) -> Result<(), StorageError> {
+        let terminal = matches!(status, "success" | "failed" | "cancelled");
+        if terminal {
+            sqlx::query("UPDATE bug_jobs SET status = ?, error = ?, finished_at = NOW(), updated_at = NOW() WHERE id = ?")
+                .bind(status)
+                .bind(error)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        } else {
+            sqlx::query("UPDATE bug_jobs SET status = ?, error = ?, updated_at = NOW() WHERE id = ?")
+                .bind(status)
+                .bind(error)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        }
+        Ok(())
     }
 }

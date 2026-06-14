@@ -18,6 +18,7 @@ pub mod storage;
 pub mod sync;
 pub mod update;
 pub mod web;
+pub mod aibug;
 pub mod maprepo;
 pub mod mapscan;
 

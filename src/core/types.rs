@@ -169,6 +169,37 @@ pub struct EffectiveUser {
     pub player_group_id: Option<i64>,
 }
 
+/// A known player as listed on a server's Users tab. Unlike [`EffectiveUser`]
+/// (permissions only), this includes *every* client that has connected to the
+/// server, plus members of any player group assigned to it.
+///
+/// Identity is anchored on GUID in storage (always present), but `auth` — the
+/// in-game FrozenSand account — is the strongest identity signal and is shown
+/// as the primary identifier when available. Ban-evasion matching prefers auth,
+/// then GUID, IP, and alias.
+#[derive(Debug, Clone, Serialize)]
+pub struct KnownUser {
+    pub client_id: i64,
+    pub client_guid: String,
+    /// FrozenSand auth account — primary identity signal when present.
+    pub auth: Option<String>,
+    pub client_name: Option<String>,
+    pub ip: Option<String>,
+    pub last_seen: Option<DateTime<Utc>>,
+    /// Effective permission level on this server (max of local + group bits).
+    pub group_bits: u64,
+    /// Where the permission/listing comes from: "Local", a group name, or
+    /// "Seen" (connected but no special permissions).
+    pub source: String,
+    /// FK to `player_groups.id` when the permission comes from a group.
+    pub player_group_id: Option<i64>,
+    /// True when this client currently has an active Ban/TempBan.
+    pub banned: bool,
+    /// Ban-evasion signals matched against *other* banned accounts. Any of
+    /// "ip", "guid", "auth", "alias". Empty when no match.
+    pub evasion: Vec<String>,
+}
+
 /// A registered game server (used in master/client mode).
 #[derive(Debug, Clone, Serialize)]
 pub struct GameServer {
@@ -420,4 +451,44 @@ pub struct ServerMapScanStatus {
     pub last_scan_ok: bool,
     pub last_scan_error: Option<String>,
     pub map_count: i64,
+}
+
+/// A public-submitted bug/feature report queued for admin triage.
+#[derive(Debug, Clone, Serialize)]
+pub struct BugReport {
+    pub id: i64,
+    pub title: String,
+    pub description: String,
+    pub steps: String,
+    /// low | normal | high | critical
+    pub severity: String,
+    pub reporter_email: Option<String>,
+    /// new | triaged | approved | in_progress | completed | failed | rejected
+    pub status: String,
+    pub ip_address: Option<String>,
+    pub admin_notes: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// An AI fix job: one attempt to resolve a bug report via the Copilot CLI.
+#[derive(Debug, Clone, Serialize)]
+pub struct BugJob {
+    pub id: i64,
+    pub bug_report_id: i64,
+    /// Copilot model id used for this run.
+    pub model: String,
+    /// queued | running | testing | deploying | success | failed | cancelled
+    pub status: String,
+    pub branch_name: String,
+    pub git_commit: Option<String>,
+    /// Streamed agent + build output.
+    pub log: String,
+    pub error: Option<String>,
+    /// admin_users.id that approved this job.
+    pub created_by: Option<i64>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
