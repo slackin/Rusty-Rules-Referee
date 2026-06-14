@@ -149,6 +149,25 @@ async fn run_job_inner(
     )
     .await?;
 
+    // Set a local commit identity so the runner's own commit isn't anonymous
+    // (and so the agent's commits, if any, have a sensible author).
+    let _ = run_streamed(
+        state,
+        job_id,
+        &worktree,
+        "git",
+        &["config", "user.name", "R3 AI Fixer"],
+    )
+    .await;
+    let _ = run_streamed(
+        state,
+        job_id,
+        &worktree,
+        "git",
+        &["config", "user.email", "ai-fixer@r3.pugbot.net"],
+    )
+    .await;
+
     // Run the agent.
     append(state, job_id, "\n--- running Copilot agent ---\n").await;
     let prompt = build_prompt(report);
@@ -192,6 +211,55 @@ async fn run_job_inner(
         return Err("agent produced no changes".to_string());
     }
 
+    // Guard against a runaway change set (e.g. the agent ran a whole-repo
+    // `cargo fmt`/`prettier`, or touched far more than the fix warrants). Count
+    // distinct files changed vs origin/main across BOTH committed and working
+    // changes; abort rather than push an unreviewable branch.
+    let changed_files = run_capture(
+        &worktree,
+        "git",
+        &["diff", "--name-only", "origin/main", "HEAD"],
+    )
+    .await
+    .unwrap_or_default();
+    let working_files = run_capture(&worktree, "git", &["status", "--porcelain"]).await?;
+    let mut files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for l in changed_files.lines() {
+        let t = l.trim();
+        if !t.is_empty() {
+            files.insert(t.to_string());
+        }
+    }
+    for l in working_files.lines() {
+        // porcelain lines look like "XY path"; take everything after the status.
+        if let Some(p) = l.get(3..) {
+            let t = p.trim();
+            if !t.is_empty() {
+                files.insert(t.to_string());
+            }
+        }
+    }
+    const MAX_CHANGED_FILES: usize = 25;
+    if files.len() > MAX_CHANGED_FILES {
+        append(
+            state,
+            job_id,
+            &format!(
+                "\n[abort] change set too large: {} files (limit {}). Likely a whole-repo \
+reformat or an over-broad edit. Refusing to push.\nFiles:\n{}\n",
+                files.len(),
+                MAX_CHANGED_FILES,
+                files.iter().take(60).cloned().collect::<Vec<_>>().join("\n")
+            ),
+        )
+        .await;
+        return Err(format!(
+            "change set too large ({} files > {}) — refusing to push",
+            files.len(),
+            MAX_CHANGED_FILES
+        ));
+    }
+
     // Test/build gates.
     let _ = state
         .storage
@@ -219,13 +287,16 @@ async fn run_job_inner(
         &["run", "build"],
     )
     .await?;
-    append(state, job_id, "\n--- gates: cargo fmt ---\n").await;
-    run_streamed(state, job_id, &worktree, "cargo", &["fmt", "--all"]).await?;
-    // clippy is ADVISORY, not a hard gate. The project's ship criteria
-    // (deploy-remote.sh) is `cargo build --release` + `npm run build` only; the
-    // existing codebase carries clippy lints (some `correctness`-category ones
-    // are deny-by-default, so `cargo clippy` exits non-zero even when the build
-    // succeeds). Run it for signal, but never fail the job on it.
+    // NOTE: deliberately NO `cargo fmt --all` gate. The repo is not
+    // fmt-clean, so `cargo fmt --all` reformats the ENTIRE codebase (dozens of
+    // unrelated files); `git add -A` would then sweep all of that into the fix
+    // commit, producing a huge unreviewable branch. The project's actual ship
+    // criteria (deploy-remote.sh) never runs fmt — it gates on build + UI build
+    // only. The agent is responsible for formatting just the lines it touches.
+    // clippy is ADVISORY, not a hard gate. The existing codebase carries clippy
+    // lints (some `correctness`-category ones are deny-by-default, so
+    // `cargo clippy` exits non-zero even when the build succeeds). Run it for
+    // signal, but never fail the job on it.
     append(state, job_id, "\n--- gates: cargo clippy (advisory) ---\n").await;
     if let Err(e) = run_streamed(state, job_id, &worktree, "cargo", &["clippy"]).await {
         append(state, job_id, &format!("(clippy advisory — not blocking: {e})\n")).await;
@@ -341,9 +412,13 @@ async fn run_job_inner(
 fn build_prompt(report: &BugReport) -> String {
     format!(
         "You are fixing an issue in the Rusty-Rules-Referee codebase (Rust + Axum backend, \
-SvelteKit UI under ui/). Make the minimal correct change to resolve the report below, \
-following existing conventions. Do not change unrelated code. Ensure `cargo fmt`, \
-`cargo test`, and `cd ui && npm run build` all pass, and do not introduce new clippy warnings.\n\n\
+SvelteKit UI under ui/). Make the MINIMAL correct change to resolve the report below, \
+following existing conventions. Touch as few files as possible — ideally only the \
+file(s) the bug is about. DO NOT run repo-wide formatters (no `cargo fmt --all`, no \
+`prettier .`); only hand-format the specific lines you edit. Do not refactor or \
+reformat unrelated code. The change must stay small and reviewable. It must still \
+compile: `cargo build --release` and `cd ui && npm run build` must pass, and \
+`cargo test` must pass.\n\n\
 # Bug report #{id}\n\
 Title: {title}\n\
 Severity: {severity}\n\n\
