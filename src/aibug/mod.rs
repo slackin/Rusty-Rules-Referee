@@ -186,12 +186,11 @@ async fn run_job_inner(
         .storage
         .set_bug_job_status(job_id, "testing", None)
         .await;
-    append(state, job_id, "\n--- gates: cargo fmt ---\n").await;
-    run_streamed(state, job_id, &worktree, "cargo", &["fmt", "--all"]).await?;
-    append(state, job_id, "\n--- gates: cargo clippy ---\n").await;
-    run_streamed(state, job_id, &worktree, "cargo", &["clippy"]).await?;
-    append(state, job_id, "\n--- gates: cargo test ---\n").await;
-    run_streamed(state, job_id, &worktree, "cargo", &["test"]).await?;
+    // IMPORTANT: build the SvelteKit UI FIRST. The backend embeds `ui/build`
+    // via rust-embed (`UiAssets` in web/mod.rs); if that directory is absent,
+    // the derived `UiAssets::get` method doesn't exist and EVERY cargo command
+    // (clippy/test/build) fails to compile. A fresh worktree has no ui/build,
+    // so the UI must be produced before any cargo gate runs.
     append(state, job_id, "\n--- gates: ui build ---\n").await;
     run_streamed(
         state,
@@ -209,6 +208,12 @@ async fn run_job_inner(
         &["run", "build"],
     )
     .await?;
+    append(state, job_id, "\n--- gates: cargo fmt ---\n").await;
+    run_streamed(state, job_id, &worktree, "cargo", &["fmt", "--all"]).await?;
+    append(state, job_id, "\n--- gates: cargo clippy ---\n").await;
+    run_streamed(state, job_id, &worktree, "cargo", &["clippy"]).await?;
+    append(state, job_id, "\n--- gates: cargo test ---\n").await;
+    run_streamed(state, job_id, &worktree, "cargo", &["test"]).await?;
     append(state, job_id, "\n--- gates: cargo build --release ---\n").await;
     run_streamed(state, job_id, &worktree, "cargo", &["build", "--release"]).await?;
 
