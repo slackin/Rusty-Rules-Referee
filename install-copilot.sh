@@ -40,23 +40,44 @@ fi
 # ---- Dedicated work dir for AI jobs ----
 step "Preparing AI work directory"
 WORK_DIR="${R3_AI_WORK_DIR:-/opt/r3-ai}"
+RUN_USER="${R3_RUN_USER:-tex}"   # the user the R3 master runs as
 mkdir -p "$WORK_DIR"
-ok "Work dir ready: $WORK_DIR"
+chown "$RUN_USER":"$RUN_USER" "$WORK_DIR" 2>/dev/null || true
+ok "Work dir ready: $WORK_DIR (owner: $RUN_USER)"
 
-# ---- Auth reminder ----
+# ---- Auth ----
+# The Copilot CLI authenticates as the user that runs it. The R3 master spawns
+# the agent in-process, so it must be authenticated for that user ($RUN_USER).
+# Two supported methods:
 step "Authentication"
-echo ""
-echo -e "  ${YELLOW}ACTION REQUIRED:${NC} authenticate the Copilot CLI with your account."
-echo "    Run interactively on this server:"
-echo ""
-echo "      copilot         # then follow the device-code login, or"
-echo "      gh auth login   # if using the gh-backed flow"
-echo ""
-echo "  Verify model access:"
-echo "      copilot --list-models"
-echo ""
-echo -e "  Then enable the runner in the master config:"
-echo "      [aibug]"
-echo "      enabled = true"
-echo ""
+cat <<EOF
+
+  The agent runs as the master's service user: ${RUN_USER}.
+  Authenticate Copilot for THAT user, using ONE of:
+
+  A) Headless token (recommended for automation):
+     Create a GitHub fine-grained PAT with the "Copilot Requests" permission
+     (and "Contents: read & write" if the same token will push fixes), then
+     expose it to the master service as an environment variable:
+       COPILOT_GITHUB_TOKEN=<token>     (or GH_TOKEN / GITHUB_TOKEN)
+     e.g. add to the systemd unit:  systemctl edit r3.service
+       [Service]
+       Environment=COPILOT_GITHUB_TOKEN=<token>
+
+  B) Interactive device login (stores creds in ~${RUN_USER}/.copilot):
+       sudo -u ${RUN_USER} -H copilot login
+
+  Verify it works (as the run user):
+       sudo -u ${RUN_USER} -H copilot -p "say ok" --allow-all-tools
+
+  NOTE: the Copilot CLI has NO model-list command. Models are chosen with
+  --model <id>; the selectable set is the curated [aibug] fallback_models in
+  the master config. Discover available ids interactively via the /model
+  command inside \`copilot\`.
+
+  Then enable the runner in the master config and restart:
+       [aibug]
+       enabled = true
+       sudo systemctl restart r3.service
+EOF
 ok "Copilot CLI provisioning complete"
