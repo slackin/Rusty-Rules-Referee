@@ -397,18 +397,33 @@ async fn run_streamed(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    if let Some(out) = stdout {
-        let mut reader = BufReader::new(out).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            append(state, job_id, &format!("{line}\n")).await;
+    // CRITICAL: read stdout and stderr CONCURRENTLY. Draining one to EOF before
+    // the other deadlocks when the child fills the second pipe's ~64KB buffer
+    // while still writing the first (e.g. vite/npm write heavily to both). Each
+    // stream is pumped by its own task into the job log.
+    let out_task = {
+        let state = state.clone();
+        async move {
+            if let Some(out) = stdout {
+                let mut reader = BufReader::new(out).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    append(&state, job_id, &format!("{line}\n")).await;
+                }
+            }
         }
-    }
-    if let Some(err) = stderr {
-        let mut reader = BufReader::new(err).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            append(state, job_id, &format!("{line}\n")).await;
+    };
+    let err_task = {
+        let state = state.clone();
+        async move {
+            if let Some(err) = stderr {
+                let mut reader = BufReader::new(err).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    append(&state, job_id, &format!("{line}\n")).await;
+                }
+            }
         }
-    }
+    };
+    tokio::join!(out_task, err_task);
 
     let status = child
         .wait()
