@@ -175,9 +175,20 @@ async fn run_job_inner(
     .await
     .map_err(|e| format!("agent failed: {e}"))?;
 
-    // Verify the agent actually changed something.
-    let diff = run_capture(&worktree, "git", &["status", "--porcelain"]).await?;
-    if diff.trim().is_empty() {
+    // Verify the agent actually changed something. The agent may EITHER leave
+    // edits uncommitted in the working tree OR commit them itself (Copilot
+    // often does the latter). Treat both as "has changes": a dirty tree, or
+    // the branch HEAD having moved ahead of origin/main.
+    let dirty = run_capture(&worktree, "git", &["status", "--porcelain"]).await?;
+    let ahead = run_capture(
+        &worktree,
+        "git",
+        &["rev-list", "--count", "origin/main..HEAD"],
+    )
+    .await
+    .unwrap_or_default();
+    let ahead_n: u32 = ahead.trim().parse().unwrap_or(0);
+    if dirty.trim().is_empty() && ahead_n == 0 {
         return Err("agent produced no changes".to_string());
     }
 
@@ -217,18 +228,32 @@ async fn run_job_inner(
     append(state, job_id, "\n--- gates: cargo build --release ---\n").await;
     run_streamed(state, job_id, &worktree, "cargo", &["build", "--release"]).await?;
 
-    // Commit & push the branch.
+    // Commit & push the branch. The agent may have already committed its edits,
+    // and the `cargo fmt` gate above may have re-dirtied the tree. Stage
+    // everything and commit ONLY if there's something staged — `git commit`
+    // hard-errors on an empty commit, which is not a failure here (the agent's
+    // own commit already carries the fix).
     append(state, job_id, "\n--- commit & push ---\n").await;
     run_streamed(state, job_id, &worktree, "git", &["add", "-A"]).await?;
-    let commit_msg = format!("ai-fix: bug #{} — {}", report.id, report.title);
-    run_streamed(
-        state,
-        job_id,
-        &worktree,
-        "git",
-        &["commit", "-m", &commit_msg],
-    )
-    .await?;
+    let staged = run_capture(&worktree, "git", &["diff", "--cached", "--name-only"]).await?;
+    if !staged.trim().is_empty() {
+        let commit_msg = format!("ai-fix: bug #{} — {}", report.id, report.title);
+        run_streamed(
+            state,
+            job_id,
+            &worktree,
+            "git",
+            &["commit", "-m", &commit_msg],
+        )
+        .await?;
+    } else {
+        append(
+            state,
+            job_id,
+            "(nothing left to stage — using the agent's own commit)\n",
+        )
+        .await;
+    }
     let commit = run_capture(&worktree, "git", &["rev-parse", "--short=8", "HEAD"]).await?;
     let commit = commit.trim().to_string();
     run_streamed(
