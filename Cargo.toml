@@ -84,3 +84,6 @@ sysinfo = { version = "0.32", default-features = false, features = ["system", "d
 
 [dev-dependencies]
 # (intentionally empty — all tests rely on std + first-party code)
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
